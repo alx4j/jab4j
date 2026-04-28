@@ -1,0 +1,18 @@
+<configuration>
+  <contextName>jab4j-player-tests</contextName>
+
+  <appender name="STDERR" class="ch.qos.logback.core.ConsoleAppender">
+    <target>System.err</target>
+    <encoder>
+      <pattern>%d{yyyy-MM-dd'T'HH:mm:ss.SSSXXX} %-5level [%contextName] [%replace(%thread){'ForkJoinPool-[0-9]+-worker-','test-worker-'}] %logger{36} - %msg%n%ex</pattern>
+    </encoder>
+  </appender>
+
+  <logger name="pro.alx4j.jab4j" level="WARN" additivity="false">
+    <appender-ref ref="STDERR" />
+  </logger>
+
+  <root level="WARN">
+    <appender-ref ref="STDERR" />
+  </root>
+</configuration>

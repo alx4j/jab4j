@@ -1,0 +1,10 @@
+snapshotId: "sha256:c39c547cf8d855082c55e51c075e88c44ea7fff0c2002d281d137307e73fe288"
+codecProfileHashPath: "modules/jab4j-core/src/main/java/pro/alx4j/jab4j/tile/internal/SupportedTileCodecProfiles.java"
+generationDateUtc: "2026-03-22T18:46:00Z"
+generationToolVersion: "jab4j-fixture-v1"
+codecProfileId: "balanced-v1"
+transportProfileId: "safe-v1"
+fixtureCategory: "codec-corpus"
+notes:
+  - "Positive fixtures are frozen logical-tile vectors generated from the milestone-one Java encoder subset."
+  - "Negative fixtures reference a committed positive base fixture plus a deterministic mutation or alternate decode profile."

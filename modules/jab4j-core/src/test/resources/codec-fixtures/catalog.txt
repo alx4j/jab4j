@@ -1,0 +1,7 @@
+codec-fixtures/positive/codec-roundtrip-empty.properties
+codec-fixtures/positive/codec-roundtrip-hello.properties
+codec-fixtures/positive/codec-roundtrip-a150.properties
+codec-fixtures/negative/codec-unsupported-profile.properties
+codec-fixtures/negative/codec-corrupted-finder.properties
+codec-fixtures/negative/codec-corrupted-data.properties
+codec-fixtures/negative/codec-invalid-color.properties

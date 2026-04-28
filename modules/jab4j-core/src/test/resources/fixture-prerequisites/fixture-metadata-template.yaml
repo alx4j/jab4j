@@ -1,0 +1,11 @@
+snapshotId: "sha256:c39c547cf8d855082c55e51c075e88c44ea7fff0c2002d281d137307e73fe288"
+codecProfileHashPath: "modules/jab4j-core/src/main/java/pro/alx4j/jab4j/tile/internal/SupportedTileCodecProfiles.java"
+generationDateUtc: "<required-utc-timestamp>"
+generationToolVersion: "<required-tool-version>"
+codecProfileId: "<required-codec-profile>"
+transportProfileId: "<required-transport-profile>"
+layoutProfileId: "<optional-layout-profile>"
+fixtureCategory: "<required-category>"
+notes:
+  - "Record one metadata document per generated fixture or corpus."
+  - "Do not add unsupported codec branches until fixtures cover them."
