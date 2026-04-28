@@ -8,7 +8,7 @@
     </encoder>
   </appender>
 
-  <logger name="pro.alx4j.jab4j" level="WARN" additivity="false">
+  <logger name="com.alx4j.jab4j" level="WARN" additivity="false">
     <appender-ref ref="STDERR" />
   </logger>
 

@@ -1,6 +1,6 @@
-module pro.alx4j.jab4j.cli {
+module com.alx4j.jab4j.cli {
     requires org.slf4j;
-    requires pro.alx4j.jab4j.writer;
+    requires com.alx4j.jab4j.writer;
 
-    exports pro.alx4j.jab4j.cli;
+    exports com.alx4j.jab4j.cli;
 }
