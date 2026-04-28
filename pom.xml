@@ -13,10 +13,18 @@
   <description>Java implementation for transferring data as JAB Code sequences, including deterministic packaging, encoding, rendering, playback, and writing modules.</description>
   <url>https://github.com/alx4j/jab4j</url>
 
+  <licenses>
+    <license>
+      <name>GNU Lesser General Public License v2.1 or later</name>
+      <url>https://www.gnu.org/licenses/old-licenses/lgpl-2.1.html</url>
+      <distribution>repo</distribution>
+    </license>
+  </licenses>
+
   <developers>
     <developer>
       <id>alx4j</id>
-      <name>alx4j</name>
+      <name>Oleksii Stupin</name>
       <url>https://github.com/alx4j</url>
     </developer>
   </developers>
