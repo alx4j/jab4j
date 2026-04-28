@@ -1,0 +1,3 @@
+# Release-sensitive files.
+**/pom.xml @alx4j
+.github/ @alx4j
