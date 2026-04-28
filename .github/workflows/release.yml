@@ -4,6 +4,12 @@ on:
   push:
     tags:
       - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release version without the leading v, for example 0.1.0.
+        required: true
+        type: string
 
 concurrency:
   group: release
@@ -16,6 +22,11 @@ jobs:
 
     permissions:
       contents: read
+
+    outputs:
+      create_tag: ${{ steps.release.outputs.create_tag }}
+      tag: ${{ steps.release.outputs.tag }}
+      version: ${{ steps.release.outputs.version }}
 
     steps:
       - name: Check out repository
@@ -31,11 +42,20 @@ jobs:
           cache: maven
 
       - name: Validate tag, version, and target commit
+        id: release
         shell: bash
         run: |
           set -euo pipefail
 
-          TAG="${GITHUB_REF_NAME}"
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            VERSION="${{ inputs.version }}"
+            TAG="v$VERSION"
+            CREATE_TAG=true
+          else
+            TAG="${GITHUB_REF_NAME}"
+            VERSION="${TAG#v}"
+            CREATE_TAG=false
+          fi
 
           if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
             echo "Invalid release tag: $TAG"
@@ -43,7 +63,11 @@ jobs:
             exit 1
           fi
 
-          VERSION="${TAG#v}"
+          if [[ "$VERSION" == *-SNAPSHOT ]]; then
+            echo "Refusing to release a SNAPSHOT version: $VERSION"
+            exit 1
+          fi
+
           POM_VERSION="$(mvn -q -DforceStdout help:evaluate -Dexpression=project.version)"
 
           if [[ "$POM_VERSION" != "$VERSION" ]]; then
@@ -54,22 +78,47 @@ jobs:
             exit 1
           fi
 
-          if [[ "$POM_VERSION" == *-SNAPSHOT ]]; then
-            echo "Refusing to release a SNAPSHOT version: $POM_VERSION"
-            exit 1
-          fi
+          git fetch origin main:refs/remotes/origin/main --tags
 
-          git fetch origin main:refs/remotes/origin/main
-
-          TAG_COMMIT="$(git rev-list -n 1 "$TAG")"
           MAIN_COMMIT="$(git rev-parse origin/main)"
 
-          if [[ "$TAG_COMMIT" != "$MAIN_COMMIT" ]]; then
-            echo "Release tag must point at the current origin/main commit."
-            echo "Tag commit:  $TAG_COMMIT"
-            echo "Main commit: $MAIN_COMMIT"
-            exit 1
+          if [[ "$CREATE_TAG" == "true" ]]; then
+            HEAD_COMMIT="$(git rev-parse HEAD)"
+
+            if [[ "$HEAD_COMMIT" != "$MAIN_COMMIT" ]]; then
+              echo "Manual release workflow must run from the current origin/main commit."
+              echo "HEAD commit: $HEAD_COMMIT"
+              echo "Main commit: $MAIN_COMMIT"
+              exit 1
+            fi
+
+            if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+              TAG_COMMIT="$(git rev-list -n 1 "$TAG")"
+
+              if [[ "$TAG_COMMIT" != "$MAIN_COMMIT" ]]; then
+                echo "Release tag already exists but does not point at current origin/main."
+                echo "Tag commit:  $TAG_COMMIT"
+                echo "Main commit: $MAIN_COMMIT"
+                exit 1
+              fi
+
+              echo "Release tag already exists at current origin/main: $TAG"
+              CREATE_TAG=false
+            fi
+          else
+            TAG_COMMIT="$(git rev-list -n 1 "$TAG")"
+
+            if [[ "$TAG_COMMIT" != "$MAIN_COMMIT" ]]; then
+              echo "Release tag must point at the current origin/main commit."
+              echo "Tag commit:  $TAG_COMMIT"
+              echo "Main commit: $MAIN_COMMIT"
+              exit 1
+            fi
           fi
+
+          echo "create_tag=$CREATE_TAG" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Verify release build without signing
         run: mvn -B -ntp -Prelease -Dgpg.skip=true clean verify
@@ -101,6 +150,18 @@ jobs:
           gpg-private-key: ${{ secrets.MAVEN_GPG_PRIVATE_KEY }}
           gpg-passphrase: MAVEN_GPG_PASSPHRASE
 
+      - name: Create release tag
+        if: needs.validate.outputs.create_tag == 'true'
+        env:
+          RELEASE_TAG: ${{ needs.validate.outputs.tag }}
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$RELEASE_TAG" -m "Release $RELEASE_TAG"
+          git push origin "refs/tags/$RELEASE_TAG"
+
       - name: Publish signed artifacts
         env:
           CENTRAL_USERNAME: ${{ secrets.CENTRAL_USERNAME }}
@@ -115,8 +176,9 @@ jobs:
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.validate.outputs.tag }}
         run: |
-          gh release create "$GITHUB_REF_NAME" \
+          gh release create "$RELEASE_TAG" \
             --verify-tag \
-            --title "$GITHUB_REF_NAME" \
+            --title "$RELEASE_TAG" \
             --generate-notes
