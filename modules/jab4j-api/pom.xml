@@ -13,6 +13,7 @@
   <artifactId>jab4j-api</artifactId>
   <packaging>jar</packaging>
   <name>jab4j-api</name>
+  <description>Public API models and contracts for jab4j JAB Code transfer workflows.</description>
 
   <dependencies>
     <dependency>

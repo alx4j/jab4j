@@ -13,6 +13,7 @@
   <artifactId>jab4j-player</artifactId>
   <packaging>jar</packaging>
   <name>jab4j-player</name>
+  <description>Deterministic playback and display support for rendered jab4j frame sequences.</description>
 
   <dependencies>
     <dependency>

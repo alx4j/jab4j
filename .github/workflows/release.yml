@@ -170,7 +170,7 @@ jobs:
         run: >
           mvn -B -ntp -Prelease
           -Dcentral.autoPublish=true
-          -Dcentral.waitUntil=published
+          -Dcentral.waitUntil=validated
           clean deploy
 
       - name: Create GitHub release

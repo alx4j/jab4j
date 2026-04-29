@@ -13,6 +13,7 @@
   <artifactId>jab4j-cli</artifactId>
   <packaging>jar</packaging>
   <name>jab4j-cli</name>
+  <description>Command-line interface for running jab4j file-to-JAB-Code writer workflows.</description>
 
   <dependencies>
     <dependency>

@@ -13,6 +13,7 @@
   <artifactId>jab4j-core</artifactId>
   <packaging>jar</packaging>
   <name>jab4j-core</name>
+  <description>Core packaging, transport planning, tile encoding, and rendering support for jab4j.</description>
 
   <dependencies>
     <dependency>

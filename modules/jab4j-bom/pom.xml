@@ -13,6 +13,7 @@
   <artifactId>jab4j-bom</artifactId>
   <packaging>pom</packaging>
   <name>jab4j-bom</name>
+  <description>Bill of materials for aligning jab4j module versions in Maven builds.</description>
 
   <dependencyManagement>
     <dependencies>

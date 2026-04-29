@@ -13,6 +13,7 @@
   <artifactId>jab4j-writer</artifactId>
   <packaging>jar</packaging>
   <name>jab4j-writer</name>
+  <description>Writer service for packaging files and rendering them as deterministic JAB Code frame sequences.</description>
 
   <dependencies>
     <dependency>
