@@ -6,6 +6,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import com.alx4j.jab4j.api.model.FrameType;
+import com.alx4j.jab4j.render.internal.ArgbPixelList;
 
 /**
  * Immutable full-frame raster ready for playback.
@@ -44,7 +45,7 @@ public record RenderedFrame(
         if (widthPixels <= 0 || heightPixels <= 0) {
             throw new FrameRenderException("frame dimensions must be positive");
         }
-        argbPixels = List.copyOf(Objects.requireNonNull(argbPixels, "argbPixels must not be null"));
+        argbPixels = ArgbPixelList.copyOf(Objects.requireNonNull(argbPixels, "argbPixels must not be null"));
         if (argbPixels.size() != widthPixels * heightPixels) {
             throw new FrameRenderException("argbPixels size must equal widthPixels * heightPixels");
         }

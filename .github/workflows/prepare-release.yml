@@ -1,20 +1,10 @@
-name: Prepare Release PR
+name: "Release :: Step 1 :: Prepare release"
 
 on:
   workflow_dispatch:
-    inputs:
-      version:
-        description: Release version without the leading v, for example 0.1.0.
-        required: true
-        type: string
-      auto_merge:
-        description: Enable auto-merge for the release PR.
-        required: true
-        default: false
-        type: boolean
 
 concurrency:
-  group: prepare-release-${{ inputs.version }}
+  group: prepare-release
   cancel-in-progress: false
 
 permissions:
@@ -41,24 +31,24 @@ jobs:
           java-version: '17'
           cache: maven
 
-      - name: Validate release version
+      - name: Resolve release version
         id: release
         shell: bash
         run: |
           set -euo pipefail
 
-          VERSION="${{ inputs.version }}"
-
-          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "Invalid release version: $VERSION"
-            echo "Expected a stable version such as 1.2.3."
-            exit 1
-          fi
-
           CURRENT_VERSION="$(mvn -q -DforceStdout help:evaluate -Dexpression=project.version)"
 
           if [[ "$CURRENT_VERSION" != *-SNAPSHOT ]]; then
             echo "Current Maven version must be a SNAPSHOT version before preparing a release."
+            echo "Current Maven version is $CURRENT_VERSION."
+            exit 1
+          fi
+
+          VERSION="${CURRENT_VERSION%-SNAPSHOT}"
+
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Resolved release version is not a stable semantic version: $VERSION"
             echo "Current Maven version is $CURRENT_VERSION."
             exit 1
           fi
@@ -130,7 +120,6 @@ jobs:
           echo "url=$PR_URL" >> "$GITHUB_OUTPUT"
 
       - name: Enable auto-merge
-        if: inputs.auto_merge
         env:
           GH_TOKEN: ${{ secrets.RELEASE_AUTOMATION_TOKEN || github.token }}
           PR_URL: ${{ steps.pr.outputs.url }}

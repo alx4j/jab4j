@@ -5,6 +5,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import com.alx4j.jab4j.render.internal.ArgbPixelList;
 import com.alx4j.jab4j.tile.TileCodecException;
 
 /**
@@ -40,7 +41,7 @@ public record RenderedTile(
         if (heightPixels <= 0) {
             throw new TileCodecException("heightPixels must be positive");
         }
-        argbPixels = List.copyOf(Objects.requireNonNull(argbPixels, "argbPixels must not be null"));
+        argbPixels = ArgbPixelList.copyOf(Objects.requireNonNull(argbPixels, "argbPixels must not be null"));
         if (argbPixels.size() != widthPixels * heightPixels) {
             throw new TileCodecException("argbPixels size must equal widthPixels * heightPixels");
         }

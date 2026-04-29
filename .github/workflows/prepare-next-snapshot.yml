@@ -1,24 +1,15 @@
-name: Prepare Next Snapshot PR
+name: "Release :: Step 3 :: Prepare next snapshot"
 
 on:
   workflow_dispatch:
     inputs:
-      released_version:
-        description: Released version currently on main, for example 0.1.0.
-        required: true
-        type: string
       next_snapshot:
-        description: Next development version, for example 0.1.1-SNAPSHOT.
-        required: true
+        description: Optional next development version, for example 0.1.1-SNAPSHOT. Defaults to the next patch snapshot.
+        required: false
         type: string
-      auto_merge:
-        description: Enable auto-merge for the next snapshot PR.
-        required: true
-        default: false
-        type: boolean
 
 concurrency:
-  group: prepare-next-snapshot-${{ inputs.next_snapshot }}
+  group: prepare-next-snapshot
   cancel-in-progress: false
 
 permissions:
@@ -51,13 +42,19 @@ jobs:
         run: |
           set -euo pipefail
 
-          RELEASED_VERSION="${{ inputs.released_version }}"
+          CURRENT_VERSION="$(mvn -q -DforceStdout help:evaluate -Dexpression=project.version)"
+
+          if [[ ! "$CURRENT_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Current Maven version must be a stable release before preparing the next snapshot."
+            echo "Current Maven version is $CURRENT_VERSION."
+            exit 1
+          fi
+
           NEXT_SNAPSHOT="${{ inputs.next_snapshot }}"
 
-          if [[ ! "$RELEASED_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "Invalid released version: $RELEASED_VERSION"
-            echo "Expected a stable version such as 1.2.3."
-            exit 1
+          if [[ -z "$NEXT_SNAPSHOT" ]]; then
+            IFS=. read -r MAJOR MINOR PATCH <<< "$CURRENT_VERSION"
+            NEXT_SNAPSHOT="$MAJOR.$MINOR.$((PATCH + 1))-SNAPSHOT"
           fi
 
           if [[ ! "$NEXT_SNAPSHOT" =~ ^[0-9]+\.[0-9]+\.[0-9]+-SNAPSHOT$ ]]; then
@@ -66,18 +63,10 @@ jobs:
             exit 1
           fi
 
-          CURRENT_VERSION="$(mvn -q -DforceStdout help:evaluate -Dexpression=project.version)"
-
-          if [[ "$CURRENT_VERSION" != "$RELEASED_VERSION" ]]; then
-            echo "Current Maven version must be $RELEASED_VERSION before preparing $NEXT_SNAPSHOT."
-            echo "Current Maven version is $CURRENT_VERSION."
-            exit 1
-          fi
-
           SAFE_BRANCH_VERSION="${NEXT_SNAPSHOT//./-}"
           echo "branch=release/next-snapshot-$SAFE_BRANCH_VERSION" >> "$GITHUB_OUTPUT"
           echo "next_snapshot=$NEXT_SNAPSHOT" >> "$GITHUB_OUTPUT"
-          echo "released_version=$RELEASED_VERSION" >> "$GITHUB_OUTPUT"
+          echo "released_version=$CURRENT_VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Set next snapshot version
         env:
@@ -142,7 +131,6 @@ jobs:
           echo "url=$PR_URL" >> "$GITHUB_OUTPUT"
 
       - name: Enable auto-merge
-        if: inputs.auto_merge
         env:
           GH_TOKEN: ${{ secrets.RELEASE_AUTOMATION_TOKEN || github.token }}
           PR_URL: ${{ steps.pr.outputs.url }}

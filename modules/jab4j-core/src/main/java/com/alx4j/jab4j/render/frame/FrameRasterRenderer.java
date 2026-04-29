@@ -1,7 +1,6 @@
 package com.alx4j.jab4j.render.frame;
 
 import java.nio.ByteBuffer;
-import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -11,11 +10,12 @@ import org.slf4j.LoggerFactory;
 import com.alx4j.jab4j.api.model.FrameDescriptor;
 import com.alx4j.jab4j.api.model.LayoutProfile;
 import com.alx4j.jab4j.api.model.TilePayload;
-import com.alx4j.jab4j.support.HashingUtils;
+import com.alx4j.jab4j.render.internal.ArgbPixelList;
 import com.alx4j.jab4j.render.layout.FixedLayoutPlan;
 import com.alx4j.jab4j.render.layout.FixedLayoutPlanner;
 import com.alx4j.jab4j.render.layout.TilePlacement;
 import com.alx4j.jab4j.render.tile.RenderedTile;
+import com.alx4j.jab4j.support.HashingUtils;
 
 /**
  * Composes deterministic full-frame rasters from transport frame descriptors and slot-sized rendered tiles.
@@ -95,7 +95,7 @@ public final class FrameRasterRenderer {
                     frameDescriptor.frameType(),
                     profile.frameWidthPx(),
                     profile.frameHeightPx(),
-                    toList(pixels),
+                    ArgbPixelList.copyOf(pixels),
                     diagnostics
             );
         } catch (FrameRenderException exception) {
@@ -258,8 +258,12 @@ public final class FrameRasterRenderer {
         for (int row = 0; row < renderedTile.heightPixels(); row++) {
             int destinationStart = ((placement.yPx() + row) * frameWidth) + placement.xPx();
             int sourceStart = row * tileWidth;
-            for (int col = 0; col < tileWidth; col++) {
-                pixels[destinationStart + col] = tilePixels.get(sourceStart + col);
+            if (tilePixels instanceof ArgbPixelList argbPixels) {
+                argbPixels.copyTo(sourceStart, pixels, destinationStart, tileWidth);
+            } else {
+                for (int col = 0; col < tileWidth; col++) {
+                    pixels[destinationStart + col] = tilePixels.get(sourceStart + col);
+                }
             }
         }
     }
@@ -300,14 +304,6 @@ public final class FrameRasterRenderer {
         for (int index = 0; index < pixels.length; index++) {
             pixels[index] = color;
         }
-    }
-
-    private List<Integer> toList(int[] pixels) {
-        List<Integer> values = new ArrayList<>(pixels.length);
-        for (int pixel : pixels) {
-            values.add(pixel);
-        }
-        return values;
     }
 
     private byte[] toBytes(int[] pixels) {

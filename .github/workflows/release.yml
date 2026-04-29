@@ -1,4 +1,4 @@
-name: Release
+name: "Release :: Step 2 :: Publish to Maven Central"
 
 on:
   push:

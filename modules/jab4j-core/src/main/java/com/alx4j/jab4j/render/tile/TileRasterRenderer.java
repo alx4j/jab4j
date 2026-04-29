@@ -1,18 +1,18 @@
 package com.alx4j.jab4j.render.tile;
 
 import java.nio.ByteBuffer;
-import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import com.alx4j.jab4j.api.model.LayoutProfile;
-import com.alx4j.jab4j.support.HashingUtils;
+import com.alx4j.jab4j.render.internal.ArgbPixelList;
 import com.alx4j.jab4j.render.layout.FixedLayoutPlan;
 import com.alx4j.jab4j.render.layout.LayoutValidationException;
-import com.alx4j.jab4j.tile.LogicalTile;
 import com.alx4j.jab4j.render.tile.RenderedTile;
+import com.alx4j.jab4j.support.HashingUtils;
+import com.alx4j.jab4j.tile.LogicalTile;
 import com.alx4j.jab4j.tile.TileCodecException;
 
 /**
@@ -99,7 +99,7 @@ public final class TileRasterRenderer {
             return new RenderedTile(
                     layoutPlan.tileSlotWidthPx(),
                     layoutPlan.tileSlotHeightPx(),
-                    toList(pixels),
+                    ArgbPixelList.copyOf(pixels),
                     PALETTE,
                     diagnostics
             );
@@ -184,14 +184,6 @@ public final class TileRasterRenderer {
         for (int index = 0; index < pixels.length; index++) {
             pixels[index] = color;
         }
-    }
-
-    private List<Integer> toList(int[] pixels) {
-        List<Integer> values = new ArrayList<>(pixels.length);
-        for (int pixel : pixels) {
-            values.add(pixel);
-        }
-        return values;
     }
 
     private byte[] toBytes(int[] pixels) {
