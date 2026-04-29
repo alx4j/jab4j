@@ -10,6 +10,7 @@ import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HexFormat;
@@ -262,31 +263,26 @@ public final class WriterImageSequenceInputAdapter {
 
     private DiscoveredFrames discoverFrames(Path imageSequenceDirectory) {
         List<Path> frameFiles = new ArrayList<>();
-        int pngFileCount = 0;
         try (Stream<Path> children = Files.list(imageSequenceDirectory)) {
             List<Path> regularFiles = children.filter(Files::isRegularFile)
                     .sorted(Comparator.comparing(this::fileName))
                     .toList();
             for (Path file : regularFiles) {
                 String fileName = file.getFileName().toString();
+                Optional<FrameIdentity> frameIdentity = parseFrameIdentity(fileName);
                 if (fileName.toLowerCase(Locale.ROOT).endsWith(PNG_SUFFIX)) {
-                    pngFileCount++;
+                    if (frameIdentity.isEmpty()) {
+                        throw new ReaderInputException(
+                                "Unrecognized PNG frame file " + fileName + " is not present in frame-sequence.txt"
+                        );
+                    }
                 }
-                if (parseFrameIdentity(fileName).isPresent()) {
+                if (frameIdentity.isPresent()) {
                     frameFiles.add(file);
                 }
             }
         } catch (IOException exception) {
             throw new ReaderInputException("Failed to list imageSequence directory " + imageSequenceDirectory, exception);
-        }
-
-        if (frameFiles.isEmpty()) {
-            if (pngFileCount == 0) {
-                throw new ReaderInputException(
-                        "PNG frames are required for reader input; metadata-only frameSequence exports are not supported"
-                );
-            }
-            throw new ReaderInputException("No recognizable jab4j PNG frame files were found in " + imageSequenceDirectory);
         }
 
         Map<FrameIdentity, LoadedFrame> framesByIdentity = new LinkedHashMap<>();
@@ -395,16 +391,6 @@ public final class WriterImageSequenceInputAdapter {
             SequenceMetadata metadata,
             Map<FrameIdentity, LoadedFrame> framesByIdentity
     ) {
-        if (framesByIdentity.size() != metadata.frames().size()) {
-            throw new ReaderInputException(
-                    "frame-sequence.txt declares "
-                            + metadata.frames().size()
-                            + " frames but "
-                            + framesByIdentity.size()
-                            + " unique PNG frame identities were discovered"
-            );
-        }
-
         List<ReaderFrame> orderedFrames = new ArrayList<>(metadata.frames().size());
         for (MetadataFrame metadataFrame : metadata.frames()) {
             LoadedFrame loadedFrame = framesByIdentity.get(metadataFrame.identity());
@@ -493,7 +479,7 @@ public final class WriterImageSequenceInputAdapter {
     private record DiscoveredFrames(Map<FrameIdentity, LoadedFrame> framesByIdentity, List<ReaderWarning> warnings) {
 
         private DiscoveredFrames {
-            framesByIdentity = Map.copyOf(framesByIdentity);
+            framesByIdentity = Collections.unmodifiableMap(new LinkedHashMap<>(framesByIdentity));
             warnings = List.copyOf(warnings);
         }
     }

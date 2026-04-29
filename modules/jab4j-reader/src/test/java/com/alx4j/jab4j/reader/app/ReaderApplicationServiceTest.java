@@ -194,6 +194,27 @@ class ReaderApplicationServiceTest {
     }
 
     @Test
+    @DisplayName("Missing PNG frames listed in metadata are rejected by frame identity")
+    void missingPngFramesListedInMetadataAreRejectedByFrameIdentity() {
+        TestFrame syncFrame = frame(0L, FrameType.SYNC, 0xFF111111);
+        TestFrame dataFrame = frame(1L, FrameType.DATA, 0xFF222222);
+        Path imageSequence = writeImageSequence(
+                "missing-listed-frame",
+                List.of(syncFrame, dataFrame),
+                List.of(file(syncFrame))
+        );
+
+        ReaderDecodeAttempt attempt = service.startDecode(imageSequence);
+
+        assertAll(
+                () -> assertEquals(ReaderDecodeStatus.INPUT_REJECTED, attempt.status()),
+                () -> assertFalse(attempt.accepted()),
+                () -> assertTrue(attempt.message().contains("frame-0001-DATA")),
+                () -> assertTrue(attempt.message().contains("has no matching PNG frame"))
+        );
+    }
+
+    @Test
     @DisplayName("Metadata-only frameSequence exports are rejected because PNG frames are required")
     void metadataOnlyFrameSequenceExportsAreRejectedBecausePngFramesAreRequired() {
         Path frameSequence = tempDir.resolve("metadata-only").resolve("frameSequence");
@@ -230,8 +251,8 @@ class ReaderApplicationServiceTest {
     }
 
     @Test
-    @DisplayName("Folders with PNGs but no recognizable jab4j frames are rejected")
-    void foldersWithPngsButNoRecognizableJab4jFramesAreRejected() {
+    @DisplayName("Unrecognized PNG frame files are rejected")
+    void unrecognizedPngFrameFilesAreRejected() {
         TestFrame syncFrame = frame(0L, FrameType.SYNC, 0xFF111111);
         Path imageSequence = writeImageSequence("no-recognizable-frames", List.of(syncFrame), List.of());
         writePng(imageSequence.resolve("preview.png"), syncFrame);
@@ -240,7 +261,29 @@ class ReaderApplicationServiceTest {
 
         assertAll(
                 () -> assertFalse(attempt.accepted()),
-                () -> assertTrue(attempt.message().contains("No recognizable jab4j PNG frame files"))
+                () -> assertEquals(ReaderDecodeStatus.INPUT_REJECTED, attempt.status()),
+                () -> assertTrue(attempt.message().contains("Unrecognized PNG frame file preview.png"))
+        );
+    }
+
+    @Test
+    @DisplayName("Extra recognized PNG frames missing from metadata are rejected by frame identity")
+    void extraRecognizedPngFramesMissingFromMetadataAreRejectedByFrameIdentity() {
+        TestFrame syncFrame = frame(0L, FrameType.SYNC, 0xFF111111);
+        TestFrame dataFrame = frame(1L, FrameType.DATA, 0xFF222222);
+        Path imageSequence = writeImageSequence(
+                "extra-recognized-frame",
+                List.of(syncFrame),
+                List.of(file(syncFrame), file(dataFrame))
+        );
+
+        ReaderDecodeAttempt attempt = service.startDecode(imageSequence);
+
+        assertAll(
+                () -> assertFalse(attempt.accepted()),
+                () -> assertEquals(ReaderDecodeStatus.INPUT_REJECTED, attempt.status()),
+                () -> assertTrue(attempt.message().contains("frame-0001-DATA")),
+                () -> assertTrue(attempt.message().contains("not present in frame-sequence.txt"))
         );
     }
 
