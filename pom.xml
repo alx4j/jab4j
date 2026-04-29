@@ -43,6 +43,8 @@
     <module>modules/jab4j-core</module>
     <module>modules/jab4j-player</module>
     <module>modules/jab4j-writer</module>
+    <module>modules/jab4j-reader</module>
+    <module>modules/jab4j-reader-cli</module>
     <module>modules/jab4j-cli</module>
   </modules>
 
