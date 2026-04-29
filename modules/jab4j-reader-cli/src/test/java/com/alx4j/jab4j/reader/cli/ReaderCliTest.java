@@ -64,6 +64,7 @@ class ReaderCliTest {
     private static final Instant FIXED_CREATED_AT = Instant.parse("2026-03-22T18:00:00Z");
     private static final ProtocolVersion FIXED_PROTOCOL_VERSION = new ProtocolVersion("1.0", 1);
     private static final String FIXED_DIGEST = "digest-123";
+    private static final int RESTORE_FIXTURE_CHUNK_BYTES = 256;
     private static final LayoutProfile DEFAULT_PROFILE = new LayoutProfile(
             "desktop-1080p-safe",
             2,
@@ -272,7 +273,7 @@ class ReaderCliTest {
 
     private RestoreFixture writeRestorableImageSequence(String parentName) {
         Path sourceRoot = sourceTree(parentName + "-source");
-        TransportSessionPlan plan = writerPlan(sourceRoot, "payload", 5);
+        TransportSessionPlan plan = writerPlan(sourceRoot, "payload", RESTORE_FIXTURE_CHUNK_BYTES);
         List<RenderedFrame> frames = plan.frameDescriptors().stream()
                 .map(this::renderFrame)
                 .toList();
