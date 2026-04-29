@@ -4,7 +4,7 @@ import java.util.EnumSet;
 import java.util.Objects;
 
 /**
- * Structured reader-side failure raised after writer-export input validation succeeds.
+ * Structured reader-side failure raised after input validation accepts a frame set.
  */
 final class ReaderContentDecodeException extends RuntimeException {
 

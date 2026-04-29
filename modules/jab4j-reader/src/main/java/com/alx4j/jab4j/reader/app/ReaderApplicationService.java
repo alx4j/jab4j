@@ -12,7 +12,10 @@ import com.alx4j.jab4j.reader.restore.ReaderRestoreService;
 import com.alx4j.jab4j.reader.writer.WriterImageSequenceInputAdapter;
 
 /**
- * Reader application boundary for validating input and starting a decode attempt.
+ * Reader application boundary for the current local MVP decode-and-restore flow.
+ *
+ * <p>The default service currently starts from writer {@code imageSequence} PNG exports only. Downstream restore
+ * remains driven by decoded transfer content rather than by the local writer folder layout.</p>
  */
 public final class ReaderApplicationService {
 
@@ -23,7 +26,7 @@ public final class ReaderApplicationService {
     private final ReaderRestoreService readerRestoreService;
 
     /**
-     * Creates a reader service with the default writer-export input adapter.
+     * Creates a reader service with the default writer-export {@code imageSequence} input adapter.
      */
     public ReaderApplicationService() {
         this(new WriterImageSequenceInputAdapter(), new ReaderContentDecoder(), new ReaderRestoreService());
@@ -43,9 +46,10 @@ public final class ReaderApplicationService {
     }
 
     /**
-     * Validates a writer-exported imageSequence folder and represents the start of reader decoding.
+     * Validates current writer {@code imageSequence} PNG input and decodes its accepted frame content.
      *
-     * @param inputPath exact imageSequence directory or parent session directory
+     * @param inputPath exact {@code imageSequence} directory or parent session directory with exactly one
+     *         {@code imageSequence} child
      * @return structured accepted or rejected decode-attempt result
      */
     public ReaderDecodeAttempt startDecode(Path inputPath) {

@@ -4,7 +4,7 @@ import java.nio.file.Path;
 import java.util.Objects;
 
 /**
- * Parses reader CLI arguments into the input and output paths required for restore.
+ * Parses reader CLI arguments into the current writer-export input path and restore output path.
  */
 final class ReaderCliParser {
 

@@ -6,7 +6,8 @@ import java.util.Objects;
 /**
  * Immutable reader CLI arguments for a decode-and-restore run.
  *
- * @param inputPath frame export or session directory to decode
+ * @param inputPath current writer {@code imageSequence} PNG export directory or parent session directory with exactly
+ *         one {@code imageSequence} child
  * @param outputPath restore target directory
  */
 record ReaderCliOptions(Path inputPath, Path outputPath) {

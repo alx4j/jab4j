@@ -12,7 +12,11 @@ import com.alx4j.jab4j.reader.frame.ReaderWarning;
 import com.alx4j.jab4j.reader.restore.ReaderRestoreResult;
 
 /**
- * Command-line entry point for restoring decoded writer-exported frame sets to a local output directory.
+ * Local command-line entry point for restoring current writer {@code imageSequence} PNG exports.
+ *
+ * <p>The CLI accepts the exact {@code imageSequence} directory or a parent session directory with exactly one
+ * {@code imageSequence} child. iPhone, camera, video, upload, and SaaS capture are future directions and are not
+ * supported by this MVP command.</p>
  */
 public final class ReaderCli {
 
@@ -178,6 +182,11 @@ public final class ReaderCli {
     }
 
     private static String usage() {
-        return "Usage: jab4j-reader-cli --input <imageSequence-or-session-directory> --output <restore-directory>";
+        return String.join(System.lineSeparator(),
+                "Usage: jab4j-reader-cli --input <imageSequence-or-session-directory> --output <restore-directory>",
+                "Input: current writer imageSequence PNG export directory, or a parent session directory with exactly one imageSequence child.",
+                "frame-sequence.txt is an MVP writer-export validation helper for lossless PNG frames.",
+                "Unsupported in this MVP: iPhone, camera, video, upload, or SaaS capture."
+        );
     }
 }

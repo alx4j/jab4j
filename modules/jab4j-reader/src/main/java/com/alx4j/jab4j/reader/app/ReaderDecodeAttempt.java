@@ -13,9 +13,10 @@ import com.alx4j.jab4j.reader.frame.ReaderWarning;
  * Structured result for one reader input validation and decode-attempt boundary.
  *
  * @param status decode-attempt status
- * @param inputDirectory normalized imageSequence directory when available
+ * @param inputDirectory normalized reader input directory; successful MVP attempts report the normalized
+ *         {@code imageSequence} directory
  * @param frameSet accepted source-neutral frame set when validation succeeds
- * @param decodedContent decoded frame content when content decoding succeeds
+ * @param decodedContent decoded transfer content when content decoding succeeds
  * @param warnings structured non-fatal warnings emitted during normalization
  * @param message human-readable result detail
  */
@@ -39,9 +40,9 @@ public record ReaderDecodeAttempt(
      * Creates a validated reader decode-attempt result.
      *
      * @param status decode-attempt status
-     * @param inputDirectory normalized imageSequence directory when available
+     * @param inputDirectory normalized reader input directory
      * @param frameSet accepted frame set when validation succeeds
-     * @param decodedContent decoded frame content when content decoding succeeds
+     * @param decodedContent decoded transfer content when content decoding succeeds
      * @param warnings structured warnings
      * @param message result detail
      */
@@ -80,7 +81,7 @@ public record ReaderDecodeAttempt(
     /**
      * Creates an accepted result after the decode-attempt boundary is reached.
      *
-     * @param inputDirectory normalized imageSequence directory
+     * @param inputDirectory normalized accepted input directory
      * @param frameSet accepted frame set
      * @param warnings structured normalization warnings
      * @return accepted reader decode-attempt result
@@ -102,11 +103,11 @@ public record ReaderDecodeAttempt(
     }
 
     /**
-     * Creates a result containing successfully decoded frame content.
+     * Creates a result containing successfully decoded transfer content.
      *
-     * @param inputDirectory normalized imageSequence directory
+     * @param inputDirectory normalized accepted input directory
      * @param frameSet accepted frame set
-     * @param decodedContent decoded frame content
+     * @param decodedContent decoded transfer content
      * @param warnings structured normalization warnings
      * @return successful reader decode result
      */
@@ -123,14 +124,14 @@ public record ReaderDecodeAttempt(
                 Optional.of(Objects.requireNonNull(frameSet, "frameSet must not be null")),
                 Optional.of(content),
                 warnings,
-                "Frame content decoded from supported writer-exported PNG frames"
+                "Decoded transfer content from accepted reader frames"
         );
     }
 
     /**
      * Creates a structured content-decode failure after input validation succeeded.
      *
-     * @param inputDirectory normalized imageSequence directory
+     * @param inputDirectory normalized accepted input directory
      * @param frameSet accepted frame set
      * @param warnings structured normalization warnings
      * @param status content-decode failure status

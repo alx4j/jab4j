@@ -12,7 +12,7 @@ import com.alx4j.jab4j.api.model.FrameType;
  * @param widthPixels raster width in pixels
  * @param heightPixels raster height in pixels
  * @param argbPixels row-major ARGB pixel buffer
- * @param pixelSha256 writer-compatible hash over row-major ARGB integers
+ * @param pixelSha256 SHA-256 hash over row-major ARGB integers supplied by the accepting input boundary
  */
 public record ReaderFrame(
         long frameIndex,
@@ -31,7 +31,7 @@ public record ReaderFrame(
      * @param widthPixels raster width in pixels
      * @param heightPixels raster height in pixels
      * @param argbPixels row-major ARGB pixels
-     * @param pixelSha256 writer-compatible ARGB pixel hash
+     * @param pixelSha256 accepted ARGB pixel hash
      */
     public ReaderFrame {
         if (frameIndex < 0) {

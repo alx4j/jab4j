@@ -263,7 +263,10 @@ class ReaderCliTest {
                 () -> assertTrue(stderrText.contains("USAGE_ERROR message=One --output path is required")),
                 () -> assertTrue(stderrText.contains(
                         "Usage: jab4j-reader-cli --input <imageSequence-or-session-directory> --output <restore-directory>"
-                ))
+                )),
+                () -> assertTrue(stderrText.contains("Input: current writer imageSequence PNG export directory")),
+                () -> assertTrue(stderrText.contains("frame-sequence.txt is an MVP writer-export validation helper")),
+                () -> assertTrue(stderrText.contains("Unsupported in this MVP: iPhone, camera, video, upload, or SaaS capture."))
         );
     }
 

@@ -10,7 +10,7 @@ import com.alx4j.jab4j.reader.frame.ReaderFrameSet;
  * Source-neutral restore input after frame content has been decoded.
  *
  * @param sessionId accepted transfer session id
- * @param finalSessionDigest accepted final writer session digest
+ * @param finalSessionDigest accepted final transfer session digest
  * @param decodedContent decoded payload envelopes from the reader content boundary
  * @param outputDirectory caller-selected restore output directory
  */
@@ -25,7 +25,7 @@ public record ReaderRestoreRequest(
      * Creates a validated restore request.
      *
      * @param sessionId accepted transfer session id
-     * @param finalSessionDigest accepted final writer session digest
+     * @param finalSessionDigest accepted final transfer session digest
      * @param decodedContent decoded payload envelopes
      * @param outputDirectory caller-selected output directory
      */
