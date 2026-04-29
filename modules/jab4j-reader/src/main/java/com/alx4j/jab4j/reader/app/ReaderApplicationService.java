@@ -6,6 +6,9 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import com.alx4j.jab4j.reader.content.DecodedFrameSetContent;
 import com.alx4j.jab4j.reader.frame.ReaderFrameSet;
+import com.alx4j.jab4j.reader.restore.ReaderRestoreRequest;
+import com.alx4j.jab4j.reader.restore.ReaderRestoreResult;
+import com.alx4j.jab4j.reader.restore.ReaderRestoreService;
 import com.alx4j.jab4j.reader.writer.WriterImageSequenceInputAdapter;
 
 /**
@@ -17,23 +20,26 @@ public final class ReaderApplicationService {
 
     private final WriterImageSequenceInputAdapter writerImageSequenceInputAdapter;
     private final ReaderContentDecoder readerContentDecoder;
+    private final ReaderRestoreService readerRestoreService;
 
     /**
      * Creates a reader service with the default writer-export input adapter.
      */
     public ReaderApplicationService() {
-        this(new WriterImageSequenceInputAdapter(), new ReaderContentDecoder());
+        this(new WriterImageSequenceInputAdapter(), new ReaderContentDecoder(), new ReaderRestoreService());
     }
 
     private ReaderApplicationService(
             WriterImageSequenceInputAdapter writerImageSequenceInputAdapter,
-            ReaderContentDecoder readerContentDecoder
+            ReaderContentDecoder readerContentDecoder,
+            ReaderRestoreService readerRestoreService
     ) {
         this.writerImageSequenceInputAdapter = Objects.requireNonNull(
                 writerImageSequenceInputAdapter,
                 "writerImageSequenceInputAdapter must not be null"
         );
         this.readerContentDecoder = Objects.requireNonNull(readerContentDecoder, "readerContentDecoder must not be null");
+        this.readerRestoreService = Objects.requireNonNull(readerRestoreService, "readerRestoreService must not be null");
     }
 
     /**
@@ -92,5 +98,34 @@ public final class ReaderApplicationService {
             );
             return ReaderDecodeAttempt.rejected(normalizedInputPath, exception.getMessage());
         }
+    }
+
+    /**
+     * Restores decoded frame content into the selected output directory.
+     *
+     * @param request decoded restore request
+     * @return structured restore result
+     */
+    public ReaderRestoreResult restoreDecodedContent(ReaderRestoreRequest request) {
+        return readerRestoreService.restore(request);
+    }
+
+    /**
+     * Restores a successful decode attempt into the selected output directory.
+     *
+     * @param decodeAttempt successful reader decode attempt
+     * @param outputDirectory caller-selected output directory
+     * @return structured restore result
+     */
+    public ReaderRestoreResult restoreDecodedContent(ReaderDecodeAttempt decodeAttempt, Path outputDirectory) {
+        Objects.requireNonNull(decodeAttempt, "decodeAttempt must not be null");
+        if (!decodeAttempt.decoded()) {
+            throw new IllegalArgumentException("restore requires a CONTENT_DECODED reader decode attempt");
+        }
+        return restoreDecodedContent(ReaderRestoreRequest.from(
+                decodeAttempt.frameSet().orElseThrow(),
+                decodeAttempt.decodedContent().orElseThrow(),
+                outputDirectory
+        ));
     }
 }
