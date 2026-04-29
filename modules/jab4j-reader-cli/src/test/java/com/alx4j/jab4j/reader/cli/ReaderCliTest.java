@@ -64,6 +64,7 @@ class ReaderCliTest {
     private static final Instant FIXED_CREATED_AT = Instant.parse("2026-03-22T18:00:00Z");
     private static final ProtocolVersion FIXED_PROTOCOL_VERSION = new ProtocolVersion("1.0", 1);
     private static final String FIXED_DIGEST = "digest-123";
+    private static final int RESTORE_FIXTURE_CHUNK_BYTES = 256;
     private static final LayoutProfile DEFAULT_PROFILE = new LayoutProfile(
             "desktop-1080p-safe",
             2,
@@ -263,13 +264,16 @@ class ReaderCliTest {
                 () -> assertTrue(stderrText.contains("USAGE_ERROR message=One --output path is required")),
                 () -> assertTrue(stderrText.contains(
                         "Usage: jab4j-reader-cli --input <imageSequence-or-session-directory> --output <restore-directory>"
-                ))
+                )),
+                () -> assertTrue(stderrText.contains("Input: current writer imageSequence PNG export directory")),
+                () -> assertTrue(stderrText.contains("frame-sequence.txt is an MVP writer-export validation helper")),
+                () -> assertTrue(stderrText.contains("Unsupported in this MVP: iPhone, camera, video, upload, or SaaS capture."))
         );
     }
 
     private RestoreFixture writeRestorableImageSequence(String parentName) {
         Path sourceRoot = sourceTree(parentName + "-source");
-        TransportSessionPlan plan = writerPlan(sourceRoot, "payload", 5);
+        TransportSessionPlan plan = writerPlan(sourceRoot, "payload", RESTORE_FIXTURE_CHUNK_BYTES);
         List<RenderedFrame> frames = plan.frameDescriptors().stream()
                 .map(this::renderFrame)
                 .toList();

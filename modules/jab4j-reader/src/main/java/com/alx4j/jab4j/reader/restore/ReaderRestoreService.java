@@ -6,7 +6,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * Restores a validated decoded reader frame set into a caller-selected output directory.
+ * Restores decoded transfer content into a caller-selected output directory.
  */
 public final class ReaderRestoreService {
 

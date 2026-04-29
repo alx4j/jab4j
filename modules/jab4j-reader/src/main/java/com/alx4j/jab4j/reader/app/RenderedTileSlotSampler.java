@@ -178,7 +178,7 @@ final class RenderedTileSlotSampler {
     }
 
     private int pixelAt(ReaderFrame frame, int row, int col) {
-        return frame.argbPixels().get((row * frame.widthPixels()) + col);
+        return frame.argbPixelAt(row, col);
     }
 
     /**

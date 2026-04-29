@@ -11,7 +11,7 @@ import com.alx4j.jab4j.api.model.SessionId;
  * Ordered source-neutral frame set accepted by the reader input boundary.
  *
  * @param sessionId transfer session id
- * @param finalSessionDigest final writer session digest associated with the export
+ * @param finalSessionDigest accepted final transfer session digest
  * @param frames ordered accepted reader frames
  */
 public record ReaderFrameSet(SessionId sessionId, String finalSessionDigest, List<ReaderFrame> frames) {
@@ -20,7 +20,7 @@ public record ReaderFrameSet(SessionId sessionId, String finalSessionDigest, Lis
      * Creates a validated reader frame set.
      *
      * @param sessionId transfer session id
-     * @param finalSessionDigest final writer session digest
+     * @param finalSessionDigest accepted final transfer session digest
      * @param frames ordered accepted frames
      */
     public ReaderFrameSet {

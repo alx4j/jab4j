@@ -499,16 +499,12 @@ public final class WriterImageSequenceInputAdapter {
         }
 
         private ReaderFrame toReaderFrame() {
-            List<Integer> pixels = new ArrayList<>(argbPixels.length);
-            for (int pixel : argbPixels) {
-                pixels.add(pixel);
-            }
-            return new ReaderFrame(
+            return ReaderFrame.fromArgbPixels(
                     identity.frameIndex(),
                     identity.frameType(),
                     widthPixels,
                     heightPixels,
-                    pixels,
+                    argbPixels,
                     pixelSha256
             );
         }

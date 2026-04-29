@@ -25,7 +25,7 @@ import com.alx4j.jab4j.api.model.TilePayload;
 import com.alx4j.jab4j.reader.content.DecodedFrameContent;
 
 /**
- * Reassembles decoded writer payload bodies into one validated restore plan.
+ * Reassembles decoded transfer payload bodies into one validated restore plan.
  */
 final class RestoreReassembler {
 
