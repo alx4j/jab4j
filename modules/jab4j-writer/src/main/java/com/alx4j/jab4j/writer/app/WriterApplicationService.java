@@ -62,6 +62,7 @@ import com.alx4j.jab4j.tile.TileCodecProfiles;
 import com.alx4j.jab4j.tile.TileCodecs;
 import com.alx4j.jab4j.tile.TileEncoder;
 import com.alx4j.jab4j.render.tile.TileRasterRenderer;
+import com.alx4j.jab4j.transfer.TilePayloadEnvelopeCodec;
 import com.alx4j.jab4j.transfer.TransferPlanner;
 import com.alx4j.jab4j.transfer.TransportSessionPlan;
 
@@ -80,6 +81,7 @@ public final class WriterApplicationService {
     private final InputCatalogBuilder catalogBuilder;
     private final TransferPlanner transferPlanner;
     private final TileEncoder tileEncoder;
+    private final TilePayloadEnvelopeCodec envelopeCodec = new TilePayloadEnvelopeCodec();
     private final FixedLayoutPlanner fixedLayoutPlanner;
     private final TileRasterRenderer tileRasterRenderer;
     private final FrameRasterRenderer frameRasterRenderer;
@@ -680,7 +682,7 @@ public final class WriterApplicationService {
         List<RenderedTile> renderedTiles = new ArrayList<>(frameDescriptor.tiles().size());
         for (TilePayload tilePayload : frameDescriptor.tiles()) {
             try {
-                LogicalTile logicalTile = tileEncoder.encode(tilePayload.body(), codecProfile);
+                LogicalTile logicalTile = tileEncoder.encode(envelopeCodec.serialize(tilePayload), codecProfile);
                 renderedTiles.add(tileRasterRenderer.render(logicalTile, layoutPlan));
             } catch (RuntimeException exception) {
                 throw new WriterJobException(
