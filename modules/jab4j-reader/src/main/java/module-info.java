@@ -5,5 +5,6 @@ module com.alx4j.jab4j.reader {
     requires com.alx4j.jab4j.core;
 
     exports com.alx4j.jab4j.reader.app;
+    exports com.alx4j.jab4j.reader.content;
     exports com.alx4j.jab4j.reader.frame;
 }

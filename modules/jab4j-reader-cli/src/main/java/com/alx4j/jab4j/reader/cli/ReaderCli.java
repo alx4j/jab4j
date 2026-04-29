@@ -5,8 +5,11 @@ import java.nio.file.Path;
 import java.util.Objects;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import com.alx4j.jab4j.api.model.TilePayload;
 import com.alx4j.jab4j.reader.app.ReaderApplicationService;
 import com.alx4j.jab4j.reader.app.ReaderDecodeAttempt;
+import com.alx4j.jab4j.reader.content.DecodedFrameContent;
+import com.alx4j.jab4j.reader.content.DecodedFrameSetContent;
 import com.alx4j.jab4j.reader.frame.ReaderFrameSet;
 import com.alx4j.jab4j.reader.frame.ReaderWarning;
 
@@ -54,33 +57,60 @@ public final class ReaderCli {
             Path inputPath = parser.parse(args);
             LOGGER.info("Reader CLI starting inputPath={}", inputPath);
             ReaderDecodeAttempt attempt = readerApplicationService.startDecode(inputPath);
-            if (!attempt.accepted()) {
+            if (!attempt.decoded()) {
                 LOGGER.warn(
-                        "Reader CLI rejected inputPath={} message={}",
+                        "Reader CLI did not decode inputPath={} status={} message={}",
                         inputPath,
+                        attempt.status(),
                         attempt.message()
                 );
-                stderr.println("REJECTED " + attempt.message());
+                stderr.println(attempt.status() + " " + attempt.message());
                 return EXIT_RUNTIME_FAILURE;
             }
 
             ReaderFrameSet frameSet = attempt.frameSet().orElseThrow();
+            DecodedFrameSetContent decodedContent = attempt.decodedContent().orElseThrow();
             stdout.printf(
-                    "ACCEPTED inputDirectory=%s sessionId=%s frames=%d finalSessionDigest=%s warnings=%d%n",
+                    "CONTENT_DECODED inputDirectory=%s sessionId=%s frames=%d decodedTiles=%d layoutProfileId=%s finalSessionDigest=%s warnings=%d%n",
                     attempt.inputDirectory(),
                     frameSet.sessionId(),
                     frameSet.frames().size(),
+                    decodedContent.decodedTileCount(),
+                    decodedContent.layoutProfileId(),
                     frameSet.finalSessionDigest(),
                     attempt.warnings().size()
             );
+            for (DecodedFrameContent frame : decodedContent.frames()) {
+                stdout.printf(
+                        "FRAME frameIndex=%d frameType=%s layoutProfileId=%s decodedTiles=%d%n",
+                        frame.frameIndex(),
+                        frame.frameType(),
+                        frame.layoutProfileId(),
+                        frame.tilePayloads().size()
+                );
+                for (TilePayload payload : frame.tilePayloads()) {
+                    stdout.printf(
+                            "TILE frameIndex=%d tileIndex=%d totalTiles=%d payloadKind=%s payloadSequenceNumber=%d payloadBytes=%d payloadCrc32c=%s flags=%d%n",
+                            payload.frameIndex(),
+                            payload.tileIndex().value(),
+                            payload.totalTilesInFrame(),
+                            payload.payloadKind(),
+                            payload.payloadSequenceNumber(),
+                            payload.payloadByteLength(),
+                            Integer.toUnsignedString(payload.payloadCrc32c()),
+                            payload.flags()
+                    );
+                }
+            }
             for (ReaderWarning warning : attempt.warnings()) {
                 stdout.printf("WARNING %s %s%n", warning.code(), warning.message());
             }
             LOGGER.info(
-                    "Reader CLI accepted inputDirectory={} sessionId={} frames={} warnings={}",
+                    "Reader CLI decoded inputDirectory={} sessionId={} frames={} decodedTiles={} warnings={}",
                     attempt.inputDirectory(),
                     frameSet.sessionId(),
                     frameSet.frames().size(),
+                    decodedContent.decodedTileCount(),
                     attempt.warnings().size()
             );
             return EXIT_SUCCESS;
