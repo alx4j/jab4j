@@ -124,6 +124,77 @@ class ReaderRestoreServiceTest {
     }
 
     @Test
+    @DisplayName("Decoded content session mismatches return invalid-decoded-content without publishing output")
+    void decodedContentSessionMismatchFailsAsInvalidDecodedContent() throws IOException {
+        RestoreFixture fixture = writerFixture(sourceTree("invalid-decoded-source"), "payload", 5);
+        SessionId decodedSessionId = new SessionId(UUID.fromString("bbbbbbbb-cccc-dddd-eeee-ffffffffffff"));
+        DecodedFrameSetContent content = new DecodedFrameSetContent(
+                decodedSessionId,
+                fixture.content().layoutProfileId(),
+                fixture.content().frames()
+        );
+        Path output = tempDir.resolve("restore-invalid-decoded");
+
+        ReaderRestoreResult result = restoreService.restore(new ReaderRestoreRequest(
+                FIXED_SESSION_ID,
+                fixture.plan().finalSessionDigest(),
+                content,
+                output
+        ));
+
+        assertAll(
+                () -> assertEquals(ReaderRestoreStatus.INVALID_DECODED_CONTENT, result.status()),
+                () -> assertTrue(result.message().contains("Decoded content sessionId")),
+                () -> assertFailedCounts(result),
+                () -> assertFalse(Files.exists(output.resolve("payload")))
+        );
+    }
+
+    @Test
+    @DisplayName("Equivalent repeated file chunks are accepted")
+    void equivalentRepeatedFileChunksAreAccepted() throws IOException {
+        RestoreFixture fixture = writerFixture(sourceTree("repeat-equivalent-source"), "payload", 5);
+        DecodedFrameSetContent content = appendFirstPayload(
+                fixture.content(),
+                PayloadKind.FILE_CHUNK,
+                UnaryOperator.identity()
+        );
+        Path output = tempDir.resolve("restore-repeat-equivalent");
+
+        ReaderRestoreResult result = restore(new RestoreFixture(fixture.plan(), content), output);
+
+        assertAll(
+                () -> assertEquals(ReaderRestoreStatus.RESTORED, result.status()),
+                () -> assertTrue(Files.exists(output.resolve("payload/docs/alpha.txt")))
+        );
+    }
+
+    @Test
+    @DisplayName("Conflicting repeated manifest fragments are rejected before publishing output")
+    void conflictingRepeatedManifestFragmentsFail() throws IOException {
+        RestoreFixture fixture = writerFixture(sourceTree("repeat-conflict-source"), "payload", 5);
+        DecodedFrameSetContent content = appendFirstPayload(
+                fixture.content(),
+                PayloadKind.MANIFEST_FRAGMENT,
+                payload -> withBody(
+                        payload,
+                        bytes(replaceRequired(text(payload.body()), "rootAlias=payload", "rootAlias=conflict"))
+                )
+        );
+        Path output = tempDir.resolve("restore-repeat-conflict");
+
+        ReaderRestoreResult result = restore(new RestoreFixture(fixture.plan(), content), output);
+
+        assertAll(
+                () -> assertEquals(ReaderRestoreStatus.INCONSISTENT_CONTENT, result.status()),
+                () -> assertTrue(result.message().contains("Repeated manifest fragment")),
+                () -> assertFailedCounts(result),
+                () -> assertFalse(Files.exists(output.resolve("payload"))),
+                () -> assertFalse(Files.exists(output.resolve("conflict")))
+        );
+    }
+
+    @Test
     @DisplayName("Missing manifest fragments fail before publishing output")
     void missingManifestFragmentFails() throws IOException {
         RestoreFixture fixture = writerFixture(largeManifestSource("fragment-source"), "payload", 8);
@@ -139,7 +210,7 @@ class ReaderRestoreServiceTest {
 
         assertAll(
                 () -> assertEquals(ReaderRestoreStatus.INCOMPLETE_CONTENT, result.status()),
-                () -> assertFalse(result.restored()),
+                () -> assertFailedCounts(result),
                 () -> assertFalse(Files.exists(output.resolve("payload")))
         );
     }
@@ -159,6 +230,7 @@ class ReaderRestoreServiceTest {
 
         assertAll(
                 () -> assertEquals(ReaderRestoreStatus.INCOMPLETE_CONTENT, result.status()),
+                () -> assertFailedCounts(result),
                 () -> assertFalse(Files.exists(output.resolve("payload")))
         );
     }
@@ -254,6 +326,7 @@ class ReaderRestoreServiceTest {
 
         assertAll(
                 () -> assertEquals(ReaderRestoreStatus.OUTPUT_CONFLICT, result.status()),
+                () -> assertFailedCounts(result),
                 () -> assertEquals("keep", Files.readString(output.resolve("payload/existing.txt")))
         );
     }
@@ -404,6 +477,39 @@ class ReaderRestoreServiceTest {
         return new DecodedFrameSetContent(content.sessionId(), content.layoutProfileId(), frames);
     }
 
+    private DecodedFrameSetContent appendFirstPayload(
+            DecodedFrameSetContent content,
+            PayloadKind payloadKind,
+            UnaryOperator<TilePayload> duplicateTransformer
+    ) {
+        boolean[] appended = {false};
+        List<DecodedFrameContent> frames = content.frames().stream()
+                .map(frame -> {
+                    List<TilePayload> payloads = new ArrayList<>(frame.tilePayloads());
+                    if (!appended[0]) {
+                        frame.tilePayloads().stream()
+                                .filter(payload -> payload.payloadKind() == payloadKind)
+                                .findFirst()
+                                .map(duplicateTransformer)
+                                .ifPresent(payload -> {
+                                    payloads.add(payload);
+                                    appended[0] = true;
+                                });
+                    }
+                    return new DecodedFrameContent(
+                            frame.frameIndex(),
+                            frame.frameType(),
+                            frame.layoutProfileId(),
+                            payloads
+                    );
+                })
+                .toList();
+        if (!appended[0]) {
+            throw new AssertionError("No payload found for kind " + payloadKind);
+        }
+        return new DecodedFrameSetContent(content.sessionId(), content.layoutProfileId(), frames);
+    }
+
     private DecodedFrameSetContent rewriteManifest(
             RestoreFixture fixture,
             UnaryOperator<List<FileRecord>> fileMutator,
@@ -436,6 +542,15 @@ class ReaderRestoreServiceTest {
             }
         }
         return counts.values().stream().anyMatch(count -> count > threshold);
+    }
+
+    private void assertFailedCounts(ReaderRestoreResult result) {
+        assertAll(
+                () -> assertFalse(result.restored()),
+                () -> assertEquals(0, result.restoredFileCount()),
+                () -> assertEquals(0, result.restoredDirectoryCount()),
+                () -> assertEquals(0, result.totalRestoredBytes())
+        );
     }
 
     private List<Integer> manifestFragmentIndexes(DecodedFrameSetContent content) {
@@ -564,6 +679,13 @@ class ReaderRestoreServiceTest {
 
     private String text(byte[] bytes) {
         return new String(bytes, StandardCharsets.UTF_8);
+    }
+
+    private String replaceRequired(String value, String expected, String replacement) {
+        if (!value.contains(expected)) {
+            throw new AssertionError("Expected text not found: " + expected);
+        }
+        return value.replace(expected, replacement);
     }
 
     private record RestoreFixture(TransportSessionPlan plan, DecodedFrameSetContent content) {
