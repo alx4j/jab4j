@@ -1,20 +1,18 @@
 package com.alx4j.jab4j.reader.cli;
 
 import java.io.PrintStream;
-import java.nio.file.Path;
 import java.util.Objects;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import com.alx4j.jab4j.api.model.TilePayload;
 import com.alx4j.jab4j.reader.app.ReaderApplicationService;
 import com.alx4j.jab4j.reader.app.ReaderDecodeAttempt;
-import com.alx4j.jab4j.reader.content.DecodedFrameContent;
 import com.alx4j.jab4j.reader.content.DecodedFrameSetContent;
 import com.alx4j.jab4j.reader.frame.ReaderFrameSet;
 import com.alx4j.jab4j.reader.frame.ReaderWarning;
+import com.alx4j.jab4j.reader.restore.ReaderRestoreResult;
 
 /**
- * Command-line entry point for validating writer-exported frame sets before reader decoding.
+ * Command-line entry point for restoring decoded writer-exported frame sets to a local output directory.
  */
 public final class ReaderCli {
 
@@ -54,69 +52,54 @@ public final class ReaderCli {
         Objects.requireNonNull(stderr, "stderr must not be null");
 
         try {
-            Path inputPath = parser.parse(args);
-            LOGGER.info("Reader CLI starting inputPath={}", inputPath);
-            ReaderDecodeAttempt attempt = readerApplicationService.startDecode(inputPath);
+            ReaderCliOptions options = parser.parse(args);
+            LOGGER.info("Reader CLI starting inputPath={} outputPath={}", options.inputPath(), options.outputPath());
+            ReaderDecodeAttempt attempt = readerApplicationService.startDecode(options.inputPath());
             if (!attempt.decoded()) {
                 LOGGER.warn(
-                        "Reader CLI did not decode inputPath={} status={} message={}",
-                        inputPath,
+                        "Reader CLI decode failed inputPath={} status={} message={}",
+                        options.inputPath(),
                         attempt.status(),
                         attempt.message()
                 );
-                stderr.println(attempt.status() + " " + attempt.message());
+                renderDecodeFailure(stderr, attempt);
                 return EXIT_RUNTIME_FAILURE;
             }
 
             ReaderFrameSet frameSet = attempt.frameSet().orElseThrow();
             DecodedFrameSetContent decodedContent = attempt.decodedContent().orElseThrow();
-            stdout.printf(
-                    "CONTENT_DECODED inputDirectory=%s sessionId=%s frames=%d decodedTiles=%d layoutProfileId=%s finalSessionDigest=%s warnings=%d%n",
-                    attempt.inputDirectory(),
-                    frameSet.sessionId(),
-                    frameSet.frames().size(),
-                    decodedContent.decodedTileCount(),
-                    decodedContent.layoutProfileId(),
-                    frameSet.finalSessionDigest(),
-                    attempt.warnings().size()
-            );
-            for (DecodedFrameContent frame : decodedContent.frames()) {
-                stdout.printf(
-                        "FRAME frameIndex=%d frameType=%s layoutProfileId=%s decodedTiles=%d%n",
-                        frame.frameIndex(),
-                        frame.frameType(),
-                        frame.layoutProfileId(),
-                        frame.tilePayloads().size()
+            ReaderRestoreResult restoreResult =
+                    readerApplicationService.restoreDecodedContent(attempt, options.outputPath());
+            if (!restoreResult.restored()) {
+                LOGGER.warn(
+                        "Reader CLI restore failed inputDirectory={} outputDirectory={} sessionId={} status={} message={}",
+                        attempt.inputDirectory(),
+                        restoreResult.outputDirectory(),
+                        restoreResult.sessionId(),
+                        restoreResult.status(),
+                        restoreResult.message()
                 );
-                for (TilePayload payload : frame.tilePayloads()) {
-                    stdout.printf(
-                            "TILE frameIndex=%d tileIndex=%d totalTiles=%d payloadKind=%s payloadSequenceNumber=%d payloadBytes=%d payloadCrc32c=%s flags=%d%n",
-                            payload.frameIndex(),
-                            payload.tileIndex().value(),
-                            payload.totalTilesInFrame(),
-                            payload.payloadKind(),
-                            payload.payloadSequenceNumber(),
-                            payload.payloadByteLength(),
-                            Integer.toUnsignedString(payload.payloadCrc32c()),
-                            payload.flags()
-                    );
-                }
+                renderRestoreFailure(stderr, attempt, restoreResult);
+                return EXIT_RUNTIME_FAILURE;
             }
-            for (ReaderWarning warning : attempt.warnings()) {
-                stdout.printf("WARNING %s %s%n", warning.code(), warning.message());
-            }
+
+            renderRestored(stdout, attempt, frameSet, decodedContent, restoreResult);
             LOGGER.info(
-                    "Reader CLI decoded inputDirectory={} sessionId={} frames={} decodedTiles={} warnings={}",
+                    "Reader CLI restored inputDirectory={} outputDirectory={} sessionId={} frames={} decodedTiles={} restoredFiles={} restoredDirectories={} totalRestoredBytes={} warnings={}",
                     attempt.inputDirectory(),
-                    frameSet.sessionId(),
+                    restoreResult.outputDirectory(),
+                    restoreResult.sessionId(),
                     frameSet.frames().size(),
                     decodedContent.decodedTileCount(),
+                    restoreResult.restoredFileCount(),
+                    restoreResult.restoredDirectoryCount(),
+                    restoreResult.totalRestoredBytes(),
                     attempt.warnings().size()
             );
             return EXIT_SUCCESS;
         } catch (ReaderCliException exception) {
             LOGGER.warn("Reader CLI usage error message={}", exception.getMessage());
-            stderr.println(exception.getMessage());
+            stderr.println("USAGE_ERROR message=" + exception.getMessage());
             stderr.println(usage());
             return EXIT_USAGE_ERROR;
         } catch (RuntimeException exception) {
@@ -126,7 +109,7 @@ public final class ReaderCli {
                     exception.getClass().getSimpleName(),
                     exception
             );
-            stderr.println("FAILED " + exception.getMessage());
+            stderr.println("FAILED message=" + exception.getMessage());
             return EXIT_RUNTIME_FAILURE;
         }
     }
@@ -140,7 +123,61 @@ public final class ReaderCli {
         System.exit(new ReaderCli().run(args, System.out, System.err));
     }
 
+    private void renderRestored(
+            PrintStream stdout,
+            ReaderDecodeAttempt attempt,
+            ReaderFrameSet frameSet,
+            DecodedFrameSetContent decodedContent,
+            ReaderRestoreResult restoreResult
+    ) {
+        stdout.printf(
+                "RESTORED sessionId=%s inputDirectory=%s outputDirectory=%s frames=%d decodedTiles=%d restoredFiles=%d restoredDirectories=%d totalRestoredBytes=%d warnings=%d%n",
+                restoreResult.sessionId(),
+                attempt.inputDirectory(),
+                restoreResult.outputDirectory(),
+                frameSet.frames().size(),
+                decodedContent.decodedTileCount(),
+                restoreResult.restoredFileCount(),
+                restoreResult.restoredDirectoryCount(),
+                restoreResult.totalRestoredBytes(),
+                attempt.warnings().size()
+        );
+        renderWarnings(stdout, attempt);
+    }
+
+    private void renderDecodeFailure(PrintStream stderr, ReaderDecodeAttempt attempt) {
+        stderr.printf(
+                "DECODE_FAILED status=%s inputDirectory=%s message=%s%n",
+                attempt.status(),
+                attempt.inputDirectory(),
+                attempt.message()
+        );
+        renderWarnings(stderr, attempt);
+    }
+
+    private void renderRestoreFailure(
+            PrintStream stderr,
+            ReaderDecodeAttempt attempt,
+            ReaderRestoreResult restoreResult
+    ) {
+        stderr.printf(
+                "RESTORE_FAILED status=%s sessionId=%s inputDirectory=%s outputDirectory=%s message=%s%n",
+                restoreResult.status(),
+                restoreResult.sessionId(),
+                attempt.inputDirectory(),
+                restoreResult.outputDirectory(),
+                restoreResult.message()
+        );
+        renderWarnings(stderr, attempt);
+    }
+
+    private void renderWarnings(PrintStream stream, ReaderDecodeAttempt attempt) {
+        for (ReaderWarning warning : attempt.warnings()) {
+            stream.printf("WARNING code=%s message=%s%n", warning.code(), warning.message());
+        }
+    }
+
     private static String usage() {
-        return "Usage: jab4j-reader-cli --input <imageSequence-or-session-directory>";
+        return "Usage: jab4j-reader-cli --input <imageSequence-or-session-directory> --output <restore-directory>";
     }
 }
