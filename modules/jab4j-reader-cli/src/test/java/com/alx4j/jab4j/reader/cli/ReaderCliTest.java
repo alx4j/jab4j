@@ -55,6 +55,11 @@ import com.alx4j.jab4j.tile.TileCodecs;
 import com.alx4j.jab4j.transfer.TilePayloadEnvelopeCodec;
 import com.alx4j.jab4j.transfer.TransportSessionPlan;
 import com.alx4j.jab4j.transfer.TransportSessionPlanner;
+import com.alx4j.jab4j.writer.app.WriterApplicationService;
+import com.alx4j.jab4j.writer.app.WriterJobObserver;
+import com.alx4j.jab4j.writer.app.WriterRunRequest;
+import com.alx4j.jab4j.writer.config.RuntimeConfig;
+import com.alx4j.jab4j.writer.config.RuntimeConfigPatch;
 
 @DisplayName("Reader CLI execution")
 class ReaderCliTest {
@@ -128,6 +133,71 @@ class ReaderCliTest {
                         Files.readAllBytes(output.resolve("payload/docs/alpha.txt"))
                 ),
                 () -> assertEquals(0, Files.size(output.resolve("payload/empty.bin")))
+        );
+    }
+
+    @Test
+    @DisplayName("Actual writer export restores through the reader CLI")
+    void actualWriterExportRestoresThroughReaderCli() {
+        assertActualWriterExportRestoresThroughReaderCli(null, "actual-writer-default");
+        assertActualWriterExportRestoresThroughReaderCli("debug-low-density", "actual-writer-debug");
+    }
+
+    private void assertActualWriterExportRestoresThroughReaderCli(String profile, String testName) {
+        Path sourceRoot = sourceTree(testName + "-source");
+        WriterApplicationService writer = new WriterApplicationService(
+                () -> FIXED_CREATED_AT,
+                () -> FIXED_SESSION_ID,
+                tempDir.resolve(testName + "-diagnostics"),
+                tempDir.resolve(testName + "-exports")
+        );
+        var writerResult = writer.run(new WriterRunRequest(
+                new RuntimeConfigPatch(
+                        profile == null ? null : new RuntimeConfigPatch.AppPatch(profile, null, null),
+                        new RuntimeConfigPatch.InputPatch(List.of(
+                                new RuntimeConfig.InputRootConfig(sourceRoot.toString(), null)
+                        )),
+                        null,
+                        null,
+                        new RuntimeConfigPatch.TransportPatch(
+                                null,
+                                RESTORE_FIXTURE_CHUNK_BYTES,
+                                null,
+                                null,
+                                null,
+                                null,
+                                null
+                        ),
+                        null,
+                        new RuntimeConfigPatch.ExportPatch(Boolean.TRUE, "imageSequence"),
+                        null
+                ),
+                true
+        ), WriterJobObserver.noOp());
+        Path output = tempDir.resolve(testName + "-restore");
+        ReaderCli cli = new ReaderCli();
+        ByteArrayOutputStream stdout = new ByteArrayOutputStream();
+        ByteArrayOutputStream stderr = new ByteArrayOutputStream();
+
+        int exitCode = cli.run(
+                new String[] {"--input", writerResult.exportArtifacts().exportDirectory().toString(), "--output", output.toString()},
+                new PrintStream(stdout, true, StandardCharsets.UTF_8),
+                new PrintStream(stderr, true, StandardCharsets.UTF_8)
+        );
+
+        String stdoutText = stdout.toString(StandardCharsets.UTF_8);
+        assertAll(
+                () -> assertEquals(0, exitCode),
+                () -> assertTrue(stdoutText.contains("RESTORED ")),
+                () -> assertTrue(stdoutText.contains("sessionId=" + FIXED_SESSION_ID)),
+                () -> assertEquals("", stderr.toString(StandardCharsets.UTF_8)),
+                () -> assertTrue(Files.isDirectory(output.resolve("root-001/docs"))),
+                () -> assertTrue(Files.isDirectory(output.resolve("root-001/empty-dir"))),
+                () -> assertArrayEquals(
+                        Files.readAllBytes(sourceRoot.resolve("docs/alpha.txt")),
+                        Files.readAllBytes(output.resolve("root-001/docs/alpha.txt"))
+                ),
+                () -> assertEquals(0, Files.size(output.resolve("root-001/empty.bin")))
         );
     }
 
