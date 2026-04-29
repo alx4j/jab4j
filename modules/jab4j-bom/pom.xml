@@ -39,6 +39,16 @@
       </dependency>
       <dependency>
         <groupId>com.alx4j</groupId>
+        <artifactId>jab4j-reader</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>com.alx4j</groupId>
+        <artifactId>jab4j-reader-cli</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>com.alx4j</groupId>
         <artifactId>jab4j-cli</artifactId>
         <version>${project.version}</version>
       </dependency>
