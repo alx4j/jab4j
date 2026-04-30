@@ -194,6 +194,62 @@ class WriterApplicationServiceTest {
     }
 
     @Test
+    @DisplayName("Debug-low-density dry-run export pairs the exact image sequence with the same run")
+    void debugLowDensityDryRunExportPairsExactImageSequenceWithSameRun() throws Exception {
+        Path inputRoot = Files.createDirectory(tempDir.resolve("capture-input"));
+        Files.writeString(inputRoot.resolve("capture.txt"), "capture-ready");
+        WriterApplicationService service =
+                service(tempDir.resolve("diagnostics-capture"), tempDir.resolve("exports-capture"));
+        List<WriterJobEvent> events = new ArrayList<>();
+        AtomicReference<WriterJobException> failure = new AtomicReference<>();
+
+        WriterRunResult result = service.run(
+                captureReadyDryRunExportRequest(inputRoot),
+                capturingObserver(events, failure)
+        );
+
+        Path frameSequence = result.exportArtifacts().exportedFiles().get("frameSequence");
+        List<String> frameSequenceLines = Files.readAllLines(frameSequence);
+        List<String> exportedHashes = frameSequencePixelHashes(frameSequenceLines);
+        WriterJobEvent startEvent = firstEvent(events, WriterJobStatus.STARTING_PLAYBACK);
+        WriterJobEvent progressEvent = firstEvent(events, WriterJobStatus.PLAYBACK_PROGRESS);
+
+        assertAll(
+                () -> assertEquals("debug-low-density", result.effectiveConfig().app().profile()),
+                () -> assertEquals("imageSequence", result.effectiveConfig().export().mode()),
+                () -> assertEquals(UNPACED_TEST_FPS, result.effectiveConfig().playback().fps()),
+                () -> assertTrue(result.effectiveConfig().playback().fullscreen()),
+                () -> assertTrue(result.dryRun()),
+                () -> assertEquals(result.renderedFrameHashes().size(), result.playbackResult().sourceFrameCount()),
+                () -> assertEquals(
+                        result.renderedFrameHashes().size() * (result.effectiveConfig().playback().holdFrames() + 1L),
+                        result.playbackResult().displayedPresentationCount()
+                ),
+                () -> assertEquals(result.renderedFrameHashes().size() + 1, result.exportArtifacts().exportedFiles().size()),
+                () -> assertTrue(result.exportArtifacts().exportDirectory().endsWith(
+                        Path.of(FIXED_SESSION_ID_TEXT, "imageSequence")
+                )),
+                () -> assertTrue(frameSequenceLines.contains("sessionId=" + FIXED_SESSION_ID_TEXT)),
+                () -> assertTrue(frameSequenceLines.contains("finalSessionDigest=" + result.finalSessionDigest())),
+                () -> assertTrue(frameSequenceLines.contains("frameCount=" + result.renderedFrameHashes().size())),
+                () -> assertEquals(result.renderedFrameHashes(), exportedHashes),
+                () -> assertTrue(startEvent.message().contains(
+                        "Starting dry-run capture-ready sender playback profile=debug-low-density"
+                )),
+                () -> assertTrue(startEvent.message().contains("fps=" + UNPACED_TEST_FPS)),
+                () -> assertTrue(startEvent.message().contains("fullscreen=true")),
+                () -> assertTrue(startEvent.message().contains("sourceFrames=" + result.renderedFrameHashes().size())),
+                () -> assertTrue(startEvent.message().contains(
+                        "presentations=" + result.playbackResult().displayedPresentationCount()
+                )),
+                () -> assertTrue(startEvent.message().contains("exactFrameExport=imageSequence")),
+                () -> assertTrue(progressEvent.message().contains("frameIndex=")),
+                () -> assertTrue(progressEvent.message().contains("hold=1/2")),
+                () -> assertNull(failure.get())
+        );
+    }
+
+    @Test
     @DisplayName("Unreadable inputs fail before packaging begins")
     void unreadableInputRootFailsBeforePackagingStarts() {
         WriterApplicationService service = service(tempDir.resolve("diagnostics"));
@@ -446,6 +502,22 @@ class WriterApplicationServiceTest {
         return new WriterRunRequest(exportFocusedOverrides(inputRoot, true, "imageSequence"), true);
     }
 
+    private WriterRunRequest captureReadyDryRunExportRequest(Path inputRoot) {
+        return new WriterRunRequest(
+                new RuntimeConfigPatch(
+                        new RuntimeConfigPatch.AppPatch("debug-low-density", null, null),
+                        new RuntimeConfigPatch.InputPatch(List.of(new RuntimeConfig.InputRootConfig(inputRoot.toString(), null))),
+                        null,
+                        null,
+                        null,
+                        new RuntimeConfigPatch.PlaybackPatch(UNPACED_TEST_FPS, null, null, null, null),
+                        new RuntimeConfigPatch.ExportPatch(Boolean.TRUE, "imageSequence"),
+                        null
+                ),
+                true
+        );
+    }
+
     private RuntimeConfigPatch exportFocusedOverrides(Path inputRoot, Boolean exportEnabled, String exportMode) {
         return new RuntimeConfigPatch(
                 null,
@@ -459,6 +531,20 @@ class WriterApplicationServiceTest {
                         : new RuntimeConfigPatch.ExportPatch(exportEnabled, exportMode),
                 null
         );
+    }
+
+    private WriterJobEvent firstEvent(List<WriterJobEvent> events, WriterJobStatus status) {
+        return events.stream()
+                .filter(event -> event.status() == status)
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("Missing writer event " + status));
+    }
+
+    private List<String> frameSequencePixelHashes(List<String> frameSequenceLines) {
+        return frameSequenceLines.stream()
+                .filter(line -> line.startsWith("frame="))
+                .map(line -> line.split("\t", -1)[2])
+                .toList();
     }
 
     private RuntimeConfigPatch cliOverrides(Path inputRoot, int chunkBytes, int fps, boolean fullscreen) {

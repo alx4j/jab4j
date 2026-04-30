@@ -55,8 +55,9 @@ class WriterCliTest {
             exitCode = cli.run(
                     new String[] {
                             "--input", inputRoot.toString(),
+                            "--profile", "debug-low-density",
                             "--chunk-bytes", "32",
-                            "--fps", "4",
+                            "--fps", "10000",
                             "--dry-run",
                             "--export-frames"
                     },
@@ -69,13 +70,21 @@ class WriterCliTest {
 
             assertAll(
                     () -> assertEquals(0, exitCode),
+                    () -> assertTrue(stdoutText.contains(
+                            "STARTING_PLAYBACK Starting dry-run capture-ready sender playback profile=debug-low-density"
+                    )),
+                    () -> assertTrue(stdoutText.contains("exactFrameExport=imageSequence")),
                     () -> assertTrue(stdoutText.contains("COMPLETED")),
                     () -> assertTrue(stdoutText.contains("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")),
+                    () -> assertTrue(stdoutText.contains("profile=debug-low-density")),
+                    () -> assertTrue(stdoutText.contains("fps=10000")),
+                    () -> assertTrue(stdoutText.contains("fullscreen=true")),
                     () -> assertTrue(stdoutText.contains("finalSessionDigest=")),
                     () -> assertTrue(stdoutText.contains("exportDirectory=")),
                     () -> assertEquals("", stderrText),
                     () -> assertTrue(logCapture.contains(Level.INFO, "Writer CLI starting dryRun=true")),
                     () -> assertTrue(logCapture.contains(Level.INFO, "inputRoots=[" + inputRoot + "]")),
+                    () -> assertTrue(logCapture.contains(Level.INFO, "profileOverride=debug-low-density")),
                     () -> assertTrue(logCapture.contains(Level.INFO, "exportEnabled=true")),
                     () -> assertTrue(logCapture.contains(Level.INFO, "Writer CLI completed sessionId=" + FIXED_SESSION_ID))
             );
@@ -103,6 +112,7 @@ class WriterCliTest {
             assertAll(
                     () -> assertEquals(2, exitCode),
                     () -> assertTrue(stderr.toString(StandardCharsets.UTF_8).contains("Invalid value for --grid: bad")),
+                    () -> assertTrue(stderr.toString(StandardCharsets.UTF_8).contains("Capture-ready sender example")),
                     () -> assertTrue(logCapture.contains(Level.WARN, "Writer CLI usage error message=Invalid value for --grid: bad"))
             );
         }

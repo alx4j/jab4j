@@ -14,7 +14,7 @@ import com.alx4j.jab4j.writer.app.WriterRunRequest;
 import com.alx4j.jab4j.writer.app.WriterRunResult;
 
 /**
- * Command-line entry point for the milestone-one writer runtime.
+ * Command-line entry point for the local writer and capture-ready sender runtime.
  */
 public final class WriterCli {
 
@@ -58,20 +58,26 @@ public final class WriterCli {
             logStart(request);
             WriterRunResult result = writerApplicationService.run(request, new PrintingObserver(stdout));
             LOGGER.info(
-                    "Writer CLI completed sessionId={} frames={} finalSessionDigest={} dryRun={} diagnosticsDirectory={} exportDirectory={}",
+                    "Writer CLI completed sessionId={} profile={} frames={} finalSessionDigest={} dryRun={} fps={} fullscreen={} diagnosticsDirectory={} exportDirectory={}",
                     result.sessionId(),
+                    result.effectiveConfig().app().profile(),
                     result.renderedFrameHashes().size(),
                     result.finalSessionDigest(),
                     result.dryRun(),
+                    result.effectiveConfig().playback().fps(),
+                    result.effectiveConfig().playback().fullscreen(),
                     result.artifacts().artifactDirectory(),
                     result.exportArtifacts().exportDirectory()
             );
             stdout.printf(
-                    "COMPLETED sessionId=%s frames=%d finalSessionDigest=%s dryRun=%s exportDirectory=%s%n",
+                    "COMPLETED sessionId=%s profile=%s frames=%d finalSessionDigest=%s dryRun=%s fps=%d fullscreen=%s exportDirectory=%s%n",
                     result.sessionId(),
+                    result.effectiveConfig().app().profile(),
                     result.renderedFrameHashes().size(),
                     result.finalSessionDigest(),
                     result.dryRun(),
+                    result.effectiveConfig().playback().fps(),
+                    result.effectiveConfig().playback().fullscreen(),
                     result.exportArtifacts().exportDirectory()
             );
             return EXIT_SUCCESS;
@@ -102,8 +108,12 @@ public final class WriterCli {
     }
 
     private static String usage() {
-        return "Usage: jab4j-cli --input <path> [--input <path> ...] [--profile <id>] [--grid <rows>x<cols>]"
-                + " [--fps <value>] [--chunk-bytes <value>] [--fullscreen] [--dry-run] [--export-frames]";
+        return String.join(System.lineSeparator(),
+                "Usage: jab4j-cli --input <path> [--input <path> ...] [--profile <id>] [--grid <rows>x<cols>]"
+                        + " [--fps <value>] [--chunk-bytes <value>] [--fullscreen] [--dry-run] [--export-frames]",
+                "Capture-ready sender example: jab4j-cli --input <payload-root> --profile debug-low-density --export-frames",
+                "Use --dry-run for headless validation without display playback."
+        );
     }
 
     private void logStart(WriterRunRequest request) {
