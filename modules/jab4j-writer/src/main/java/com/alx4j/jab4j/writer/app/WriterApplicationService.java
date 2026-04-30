@@ -600,7 +600,7 @@ public final class WriterApplicationService {
     ) {
         emit(observer, new WriterJobEvent(
                 WriterJobStatus.STARTING_PLAYBACK,
-                dryRun ? "Starting dry-run playback" : "Starting playback",
+                playbackStartMessage(effectiveConfig, dryRun, preparedFrames),
                 null,
                 null
         ));
@@ -614,7 +614,14 @@ public final class WriterApplicationService {
                         public void onProgress(PlaybackProgress progress) {
                             emit(observer, new WriterJobEvent(
                                     WriterJobStatus.PLAYBACK_PROGRESS,
-                                    "Presented " + progress.frameType() + " frame",
+                                    "Presented "
+                                            + progress.frameType()
+                                            + " frame frameIndex="
+                                            + progress.sourceFrameIndex()
+                                            + " hold="
+                                            + (progress.holdIteration() + 1)
+                                            + "/"
+                                            + progress.holdIterationsPerFrame(),
                                     progress.presentationIndex() + 1,
                                     progress.totalPresentations()
                             ));
@@ -629,6 +636,23 @@ public final class WriterApplicationService {
                     exception
             ));
         }
+    }
+
+    private String playbackStartMessage(RuntimeConfig effectiveConfig, boolean dryRun, List<RenderedFrame> preparedFrames) {
+        RuntimeConfig.PlaybackConfig playback = effectiveConfig.playback();
+        int holdIterationsPerFrame = Math.max(1, playback.holdFrames() + 1);
+        long totalPresentations = Math.multiplyExact((long) preparedFrames.size(), holdIterationsPerFrame);
+        String exportMode = effectiveConfig.export().enabled() ? effectiveConfig.export().mode() : "none";
+        String prefix = dryRun
+                ? "Starting dry-run capture-ready sender playback"
+                : "Starting capture-ready sender playback";
+        return prefix
+                + " profile=" + effectiveConfig.app().profile()
+                + " fps=" + playback.fps()
+                + " fullscreen=" + playback.fullscreen()
+                + " sourceFrames=" + preparedFrames.size()
+                + " presentations=" + totalPresentations
+                + " exactFrameExport=" + exportMode;
     }
 
     private ExportArtifacts exportFrames(

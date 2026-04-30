@@ -2,6 +2,7 @@ package com.alx4j.jab4j.cli;
 
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -40,6 +41,23 @@ class WriterCliParserTest {
                 () -> assertEquals(5, request.cliOverrides().playback().fps()),
                 () -> assertTrue(request.cliOverrides().playback().fullscreen()),
                 () -> assertEquals(64, request.cliOverrides().transport().chunkBytes())
+        );
+    }
+
+    @Test
+    @DisplayName("Capture-ready sender command uses display playback with exact frame export")
+    void parsesCaptureReadySenderCommand() {
+        WriterRunRequest request = parser.parse(new String[] {
+                "--input", INPUT_ROOT_A,
+                "--profile", "debug-low-density",
+                "--export-frames"
+        });
+
+        assertAll(
+                () -> assertFalse(request.dryRun()),
+                () -> assertEquals("debug-low-density", request.cliOverrides().app().profile()),
+                () -> assertTrue(request.cliOverrides().export().enabled()),
+                () -> assertEquals("imageSequence", request.cliOverrides().export().mode())
         );
     }
 
