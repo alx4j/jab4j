@@ -17,6 +17,8 @@ import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.UUID;
@@ -58,6 +60,7 @@ import com.alx4j.jab4j.transfer.TransportSessionPlanner;
 import com.alx4j.jab4j.writer.app.WriterApplicationService;
 import com.alx4j.jab4j.writer.app.WriterJobObserver;
 import com.alx4j.jab4j.writer.app.WriterRunRequest;
+import com.alx4j.jab4j.writer.app.WriterRunResult;
 import com.alx4j.jab4j.writer.config.RuntimeConfig;
 import com.alx4j.jab4j.writer.config.RuntimeConfigPatch;
 
@@ -70,6 +73,14 @@ class ReaderCliTest {
     private static final ProtocolVersion FIXED_PROTOCOL_VERSION = new ProtocolVersion("1.0", 1);
     private static final String FIXED_DIGEST = "digest-123";
     private static final int RESTORE_FIXTURE_CHUNK_BYTES = 256;
+    private static final String REFERENCE_BASELINE_ID = "reference-mixed-payload-001";
+    private static final String REFERENCE_BASELINE_LABEL = "exact-png-reference";
+    private static final String REFERENCE_BASELINE_PROFILE = "debug-low-density";
+    private static final String REPRESENTATIVE_PAYLOAD_ALIAS = "payload";
+    private static final long REPRESENTATIVE_PAYLOAD_MAX_BYTES = 1024L;
+    private static final int EXACT_PNG_BASELINE_CHUNK_BYTES = 128;
+    private static final int EXACT_PNG_BASELINE_MAX_FRAME_COUNT = 32;
+    private static final long EXACT_PNG_BASELINE_MAX_FRAME_BYTES = 10L * 1024L * 1024L;
     private static final LayoutProfile DEFAULT_PROFILE = new LayoutProfile(
             "desktop-1080p-safe",
             2,
@@ -198,6 +209,86 @@ class ReaderCliTest {
                         Files.readAllBytes(output.resolve("root-001/docs/alpha.txt"))
                 ),
                 () -> assertEquals(0, Files.size(output.resolve("root-001/empty.bin")))
+        );
+    }
+
+    @Test
+    @DisplayName("Exact PNG baseline restores the representative mixed payload")
+    void exactPngBaselineRestoresRepresentativeMixedPayload() {
+        Path sourceRoot = representativePayload("representative-payload");
+        long sourcePayloadBytes = totalRegularFileBytes(sourceRoot);
+        WriterRunResult writerResult = referenceBaselineWriterExport(sourceRoot);
+        Path output = tempDir.resolve("exact-png-restore");
+        ReaderCli cli = new ReaderCli();
+        ByteArrayOutputStream stdout = new ByteArrayOutputStream();
+        ByteArrayOutputStream stderr = new ByteArrayOutputStream();
+
+        int exitCode = cli.run(
+                new String[] {"--input", writerResult.exportArtifacts().exportDirectory().toString(), "--output", output.toString()},
+                new PrintStream(stdout, true, StandardCharsets.UTF_8),
+                new PrintStream(stderr, true, StandardCharsets.UTF_8)
+        );
+
+        String stdoutText = stdout.toString(StandardCharsets.UTF_8);
+        assertEquals(0, exitCode, () -> stderr.toString(StandardCharsets.UTF_8));
+        BaselineMetadata metadata = baselineMetadata(sourceRoot, writerResult, output);
+
+        assertAll(
+                () -> assertTrue(sourcePayloadBytes <= REPRESENTATIVE_PAYLOAD_MAX_BYTES),
+                () -> assertTrue(stdoutText.contains("RESTORED ")),
+                () -> assertTrue(stdoutText.contains("sessionId=" + FIXED_SESSION_ID)),
+                () -> assertTrue(stdoutText.contains("frames=" + metadata.frameCount())),
+                () -> assertTrue(stdoutText.contains("restoredFiles=3")),
+                () -> assertTrue(stdoutText.contains("restoredDirectories=1")),
+                () -> assertTrue(stdoutText.contains("totalRestoredBytes=" + sourcePayloadBytes)),
+                () -> assertEquals("", stderr.toString(StandardCharsets.UTF_8)),
+                () -> assertEquals(REFERENCE_BASELINE_ID, metadata.baselineId()),
+                () -> assertEquals(REFERENCE_BASELINE_LABEL, metadata.referenceLabel()),
+                () -> assertEquals(REFERENCE_BASELINE_PROFILE, metadata.selectedProfile()),
+                () -> assertEquals(writerResult.reproducibilityMetadata().writerBuildId(), metadata.writerBuildId()),
+                () -> assertEquals(writerResult.finalSessionDigest(), metadata.finalSessionDigest()),
+                () -> assertEquals(
+                        expectedPayloadManifest(sourceRoot, REPRESENTATIVE_PAYLOAD_ALIAS),
+                        metadata.sourcePayloadManifest()
+                ),
+                () -> assertEquals(metadata.sourcePayloadManifest(), metadata.expectedRestoreManifest()),
+                () -> assertTrue(metadata.sourcePayloadManifest().contains(
+                        new BaselineManifestEntry(
+                                "payload/notes.txt",
+                                "FILE",
+                                size(sourceRoot.resolve("notes.txt")),
+                                sha256(sourceRoot.resolve("notes.txt"))
+                        )
+                )),
+                () -> assertTrue(metadata.sourcePayloadManifest().contains(
+                        new BaselineManifestEntry("payload/nested", "DIRECTORY", 0L, "-")
+                )),
+                () -> assertTrue(metadata.sourcePayloadManifest().contains(
+                        new BaselineManifestEntry(
+                                "payload/nested/sample-256.bin",
+                                "FILE",
+                                256L,
+                                sha256(sourceRoot.resolve("nested/sample-256.bin"))
+                        )
+                )),
+                () -> assertTrue(metadata.sourcePayloadManifest().contains(
+                        new BaselineManifestEntry(
+                                "payload/empty.dat",
+                                "FILE",
+                                0L,
+                                sha256(sourceRoot.resolve("empty.dat"))
+                        )
+                )),
+                () -> assertEquals(writerResult.renderedFrameHashes().size(), metadata.frameCount()),
+                () -> assertTrue(metadata.frameCount() <= EXACT_PNG_BASELINE_MAX_FRAME_COUNT),
+                () -> assertTrue(metadata.totalExactFrameBytes() <= EXACT_PNG_BASELINE_MAX_FRAME_BYTES),
+                () -> assertTrue(metadata.frameSequenceSha256().matches("[0-9a-f]{64}")),
+                () -> assertTrue(metadata.exactFrameManifest().stream()
+                        .allMatch(frame -> frame.width() == 1280 && frame.height() == 720)),
+                () -> assertEquals(
+                        writerResult.renderedFrameHashes(),
+                        frameSequencePixelHashes(writerResult.exportArtifacts().exportDirectory())
+                )
         );
     }
 
@@ -336,9 +427,157 @@ class ReaderCliTest {
                         "Usage: jab4j-reader-cli --input <imageSequence-or-session-directory> --output <restore-directory>"
                 )),
                 () -> assertTrue(stderrText.contains("Input: current writer imageSequence PNG export directory")),
-                () -> assertTrue(stderrText.contains("frame-sequence.txt is an MVP writer-export validation helper")),
-                () -> assertTrue(stderrText.contains("Unsupported in this MVP: iPhone, camera, video, upload, or SaaS capture."))
+                () -> assertTrue(stderrText.contains("frame-sequence.txt is a writer-export validation helper")),
+                () -> assertTrue(stderrText.contains(
+                        "Unsupported by this local restore command: iPhone, camera, video, upload, or SaaS capture."
+                ))
         );
+    }
+
+    private WriterRunResult referenceBaselineWriterExport(Path sourceRoot) {
+        WriterApplicationService writer = new WriterApplicationService(
+                () -> FIXED_CREATED_AT,
+                () -> FIXED_SESSION_ID,
+                tempDir.resolve("reference-baseline-diagnostics"),
+                tempDir.resolve("reference-baseline-exports")
+        );
+        return writer.run(new WriterRunRequest(referenceBaselineOverrides(sourceRoot), true), WriterJobObserver.noOp());
+    }
+
+    private RuntimeConfigPatch referenceBaselineOverrides(Path sourceRoot) {
+        return new RuntimeConfigPatch(
+                new RuntimeConfigPatch.AppPatch(
+                        REFERENCE_BASELINE_PROFILE,
+                        null,
+                        new RuntimeConfigPatch.ResourceLimitsPatch(
+                                8,
+                                REPRESENTATIVE_PAYLOAD_MAX_BYTES,
+                                4096,
+                                EXACT_PNG_BASELINE_MAX_FRAME_COUNT,
+                                EXACT_PNG_BASELINE_MAX_FRAME_COUNT
+                        )
+                ),
+                new RuntimeConfigPatch.InputPatch(List.of(
+                        new RuntimeConfig.InputRootConfig(sourceRoot.toString(), REPRESENTATIVE_PAYLOAD_ALIAS)
+                )),
+                null,
+                null,
+                new RuntimeConfigPatch.TransportPatch(null, EXACT_PNG_BASELINE_CHUNK_BYTES, null, null, null, null, null),
+                new RuntimeConfigPatch.PlaybackPatch(10_000, 0, 0, 0, false),
+                new RuntimeConfigPatch.ExportPatch(Boolean.TRUE, "imageSequence"),
+                new RuntimeConfigPatch.DiagnosticsPatch(Boolean.FALSE, Boolean.TRUE, Boolean.TRUE)
+        );
+    }
+
+    private Path representativePayload(String directoryName) {
+        Path root = tempDir.resolve(directoryName);
+        createDirectories(root.resolve("nested"));
+        writeString(root.resolve("notes.txt"), """
+                Exact writer-export PNG restore reference baseline.
+                Camera video remains experimental and is not decoded by this automated fixture.
+                """);
+        byte[] bytes = new byte[256];
+        for (int index = 0; index < bytes.length; index++) {
+            bytes[index] = (byte) index;
+        }
+        writeBytes(root.resolve("nested/sample-256.bin"), bytes);
+        writeBytes(root.resolve("empty.dat"), new byte[0]);
+        return root;
+    }
+
+    private BaselineMetadata baselineMetadata(Path sourceRoot, WriterRunResult writerResult, Path restoreOutput) {
+        Path imageSequence = writerResult.exportArtifacts().exportDirectory();
+        List<BaselineFrameEntry> exactFrameManifest = exactFrameManifest(imageSequence);
+        return new BaselineMetadata(
+                REFERENCE_BASELINE_ID,
+                REFERENCE_BASELINE_LABEL,
+                writerResult.reproducibilityMetadata().selectedProfile(),
+                writerResult.reproducibilityMetadata().writerBuildId(),
+                writerResult.finalSessionDigest(),
+                expectedPayloadManifest(sourceRoot, REPRESENTATIVE_PAYLOAD_ALIAS),
+                sha256(imageSequence.resolve("frame-sequence.txt")),
+                exactFrameManifest,
+                restoreManifest(restoreOutput),
+                exactFrameManifest.stream().mapToLong(BaselineFrameEntry::size).sum()
+        );
+    }
+
+    private List<BaselineManifestEntry> expectedPayloadManifest(Path sourceRoot, String alias) {
+        List<BaselineManifestEntry> entries = new ArrayList<>();
+        entries.add(new BaselineManifestEntry(alias, "DIRECTORY", 0L, "-"));
+        try (Stream<Path> paths = Files.walk(sourceRoot)) {
+            paths.filter(path -> !path.equals(sourceRoot))
+                    .sorted(Comparator.comparing(path -> sourceRoot.relativize(path).toString()))
+                    .map(path -> payloadManifestEntry(sourceRoot, alias, path))
+                    .forEach(entries::add);
+        } catch (IOException exception) {
+            throw new IllegalStateException("Failed to inspect source payload " + sourceRoot, exception);
+        }
+        return List.copyOf(entries);
+    }
+
+    private List<BaselineManifestEntry> restoreManifest(Path restoreOutput) {
+        try (Stream<Path> paths = Files.walk(restoreOutput)) {
+            return paths.filter(path -> !path.equals(restoreOutput))
+                    .sorted(Comparator.comparing(path -> restoreOutput.relativize(path).toString()))
+                    .map(path -> manifestEntry(restoreOutput.relativize(path).toString(), path))
+                    .toList();
+        } catch (IOException exception) {
+            throw new IllegalStateException("Failed to inspect restored payload " + restoreOutput, exception);
+        }
+    }
+
+    private BaselineManifestEntry payloadManifestEntry(Path sourceRoot, String alias, Path path) {
+        String relativePath = sourceRoot.relativize(path).toString();
+        return manifestEntry(alias + "/" + relativePath, path);
+    }
+
+    private BaselineManifestEntry manifestEntry(String relativePath, Path path) {
+        String normalizedRelativePath = relativePath.replace('\\', '/');
+        if (Files.isDirectory(path)) {
+            return new BaselineManifestEntry(normalizedRelativePath, "DIRECTORY", 0L, "-");
+        }
+        return new BaselineManifestEntry(normalizedRelativePath, "FILE", size(path), sha256(path));
+    }
+
+    private List<BaselineFrameEntry> exactFrameManifest(Path imageSequence) {
+        try (Stream<Path> paths = Files.list(imageSequence)) {
+            return paths.filter(path -> path.getFileName().toString().endsWith(".png"))
+                    .sorted(Comparator.comparing(path -> path.getFileName().toString()))
+                    .map(this::baselineFrameEntry)
+                    .toList();
+        } catch (IOException exception) {
+            throw new IllegalStateException("Failed to inspect exact frame sequence " + imageSequence, exception);
+        }
+    }
+
+    private List<String> frameSequencePixelHashes(Path imageSequence) {
+        try (Stream<String> lines = Files.lines(imageSequence.resolve("frame-sequence.txt"), StandardCharsets.UTF_8)) {
+            return lines.filter(line -> line.startsWith("frame="))
+                    .map(line -> line.split("\t"))
+                    .map(parts -> parts[2])
+                    .toList();
+        } catch (IOException exception) {
+            throw new IllegalStateException("Failed to read frame sequence metadata " + imageSequence, exception);
+        }
+    }
+
+    private BaselineFrameEntry baselineFrameEntry(Path path) {
+        try {
+            BufferedImage image = ImageIO.read(path.toFile());
+            if (image == null) {
+                throw new IllegalStateException("Failed to read exact frame dimensions " + path);
+            }
+            return new BaselineFrameEntry(
+                    path.getFileName().toString(),
+                    image.getWidth(),
+                    image.getHeight(),
+                    size(path),
+                    sha256(path)
+            );
+        } catch (IOException exception) {
+            throw new IllegalStateException("Failed to read exact frame " + path, exception);
+        }
     }
 
     private RestoreFixture writeRestorableImageSequence(String parentName) {
@@ -471,11 +710,32 @@ class ReaderCliTest {
         return path.toAbsolutePath().normalize();
     }
 
+    private long totalRegularFileBytes(Path root) {
+        try (Stream<Path> paths = Files.walk(root)) {
+            return paths.filter(Files::isRegularFile)
+                    .mapToLong(this::size)
+                    .sum();
+        } catch (IOException exception) {
+            throw new IllegalStateException("Failed to inspect test payload " + root, exception);
+        }
+    }
+
     private long size(Path path) {
         try {
             return Files.size(path);
         } catch (IOException exception) {
             throw new IllegalStateException("Failed to inspect test file " + path, exception);
+        }
+    }
+
+    private String sha256(Path path) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            return HexFormat.of().formatHex(digest.digest(Files.readAllBytes(path)));
+        } catch (IOException exception) {
+            throw new IllegalStateException("Failed to hash test file " + path, exception);
+        } catch (NoSuchAlgorithmException exception) {
+            throw new IllegalStateException("SHA-256 is not available", exception);
         }
     }
 
@@ -524,5 +784,35 @@ class ReaderCliTest {
             int decodedTileCount,
             long restoredBytes
     ) {
+    }
+
+    private record BaselineMetadata(
+            String baselineId,
+            String referenceLabel,
+            String selectedProfile,
+            String writerBuildId,
+            String finalSessionDigest,
+            List<BaselineManifestEntry> sourcePayloadManifest,
+            String frameSequenceSha256,
+            List<BaselineFrameEntry> exactFrameManifest,
+            List<BaselineManifestEntry> expectedRestoreManifest,
+            long totalExactFrameBytes
+    ) {
+
+        private BaselineMetadata {
+            sourcePayloadManifest = List.copyOf(sourcePayloadManifest);
+            exactFrameManifest = List.copyOf(exactFrameManifest);
+            expectedRestoreManifest = List.copyOf(expectedRestoreManifest);
+        }
+
+        private int frameCount() {
+            return exactFrameManifest.size();
+        }
+    }
+
+    private record BaselineManifestEntry(String path, String type, long size, String sha256) {
+    }
+
+    private record BaselineFrameEntry(String fileName, int width, int height, long size, String sha256) {
     }
 }
