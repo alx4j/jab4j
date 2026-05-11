@@ -22,7 +22,23 @@ class ReaderCliParserTest {
         });
 
         assertAll(
-                () -> assertEquals(Path.of("/tmp/export/imageSequence"), options.inputPath()),
+                () -> assertEquals(Path.of("/tmp/export/imageSequence"), options.inputPath().orElseThrow()),
+                () -> assertEquals(java.util.Optional.empty(), options.captureInputPath()),
+                () -> assertEquals(Path.of("/tmp/restore"), options.outputPath())
+        );
+    }
+
+    @Test
+    @DisplayName("The capture input flag parses into capture mode")
+    void parsesCaptureInputPath() {
+        ReaderCliOptions options = parser.parse(new String[] {
+                "--capture-input", "/tmp/capture-frames",
+                "--output", "/tmp/restore"
+        });
+
+        assertAll(
+                () -> assertEquals(java.util.Optional.empty(), options.inputPath()),
+                () -> assertEquals(Path.of("/tmp/capture-frames"), options.captureInputPath().orElseThrow()),
                 () -> assertEquals(Path.of("/tmp/restore"), options.outputPath())
         );
     }
@@ -36,13 +52,14 @@ class ReaderCliParserTest {
         });
 
         assertAll(
-                () -> assertEquals(Path.of("/tmp/export/imageSequence"), options.inputPath()),
+                () -> assertEquals(Path.of("/tmp/export/imageSequence"), options.inputPath().orElseThrow()),
+                () -> assertEquals(java.util.Optional.empty(), options.captureInputPath()),
                 () -> assertEquals(Path.of("/tmp/restore"), options.outputPath())
         );
     }
 
     @Test
-    @DisplayName("Exactly one input path is required")
+    @DisplayName("Exactly one reader input path is required")
     void requiresExactlyOneInputPath() {
         ReaderCliException missing = assertThrows(
                 ReaderCliException.class,
@@ -56,9 +73,29 @@ class ReaderCliParserTest {
                         "--output", "/tmp/out"
                 })
         );
+        ReaderCliException duplicateCapture = assertThrows(
+                ReaderCliException.class,
+                () -> parser.parse(new String[] {
+                        "--capture-input", "/tmp/a",
+                        "--capture-input", "/tmp/b",
+                        "--output", "/tmp/out"
+                })
+        );
+        ReaderCliException mutuallyExclusive = assertThrows(
+                ReaderCliException.class,
+                () -> parser.parse(new String[] {
+                        "--input", "/tmp/exact",
+                        "--capture-input", "/tmp/capture",
+                        "--output", "/tmp/out"
+                })
+        );
 
-        assertEquals("One --input path is required", missing.getMessage());
-        assertEquals("Only one --input path is supported", duplicate.getMessage());
+        assertAll(
+                () -> assertEquals("One input path is required: use --input or --capture-input", missing.getMessage()),
+                () -> assertEquals("Only one --input path is supported", duplicate.getMessage()),
+                () -> assertEquals("Only one --capture-input path is supported", duplicateCapture.getMessage()),
+                () -> assertEquals("--input and --capture-input are mutually exclusive", mutuallyExclusive.getMessage())
+        );
     }
 
     @Test
@@ -67,6 +104,10 @@ class ReaderCliParserTest {
         ReaderCliException missing = assertThrows(
                 ReaderCliException.class,
                 () -> parser.parse(new String[] {"--input", "/tmp/export"})
+        );
+        ReaderCliException missingCaptureOutput = assertThrows(
+                ReaderCliException.class,
+                () -> parser.parse(new String[] {"--capture-input", "/tmp/capture"})
         );
         ReaderCliException duplicate = assertThrows(
                 ReaderCliException.class,
@@ -77,8 +118,11 @@ class ReaderCliParserTest {
                 })
         );
 
-        assertEquals("One --output path is required", missing.getMessage());
-        assertEquals("Only one --output path is supported", duplicate.getMessage());
+        assertAll(
+                () -> assertEquals("One --output path is required", missing.getMessage()),
+                () -> assertEquals("One --output path is required", missingCaptureOutput.getMessage()),
+                () -> assertEquals("Only one --output path is supported", duplicate.getMessage())
+        );
     }
 
     @Test

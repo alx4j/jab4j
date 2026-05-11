@@ -24,10 +24,14 @@ public final class EffectiveConfigSerializer {
     public String serialize(RuntimeConfig config) {
         Objects.requireNonNull(config, "config must not be null");
         try {
-            return JSON_MAPPER.writerWithDefaultPrettyPrinter().writeValueAsString(toMap(config));
+            return normalizeLineEndings(JSON_MAPPER.writerWithDefaultPrettyPrinter().writeValueAsString(toMap(config)));
         } catch (JsonProcessingException exception) {
             throw new ConfigValidationException("Failed to serialize effective runtime config");
         }
+    }
+
+    private String normalizeLineEndings(String json) {
+        return json.replace("\r\n", "\n").replace('\r', '\n');
     }
 
     private Map<String, Object> toMap(RuntimeConfig config) {

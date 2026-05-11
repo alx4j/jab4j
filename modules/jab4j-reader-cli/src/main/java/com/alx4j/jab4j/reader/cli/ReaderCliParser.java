@@ -4,12 +4,12 @@ import java.nio.file.Path;
 import java.util.Objects;
 
 /**
- * Parses reader CLI arguments into the current writer-export input path and restore output path.
+ * Parses reader CLI arguments into either the current writer-export path or the capture receiver path.
  */
 final class ReaderCliParser {
 
     /**
-     * Parses exactly one input path and one output path from CLI arguments.
+     * Parses exactly one reader input mode and one output path from CLI arguments.
      *
      * @param args raw CLI arguments
      * @return parsed reader CLI options
@@ -18,6 +18,7 @@ final class ReaderCliParser {
         Objects.requireNonNull(args, "args must not be null");
 
         Path input = null;
+        Path captureInput = null;
         Path output = null;
         for (int index = 0; index < args.length; index++) {
             String argument = args[index];
@@ -27,6 +28,12 @@ final class ReaderCliParser {
                         throw new ReaderCliException("Only one --input path is supported");
                     }
                     input = Path.of(requireValue(args, ++index, argument));
+                }
+                case "--capture-input" -> {
+                    if (captureInput != null) {
+                        throw new ReaderCliException("Only one --capture-input path is supported");
+                    }
+                    captureInput = Path.of(requireValue(args, ++index, argument));
                 }
                 case "--output" -> {
                     if (output != null) {
@@ -38,13 +45,18 @@ final class ReaderCliParser {
             }
         }
 
-        if (input == null) {
-            throw new ReaderCliException("One --input path is required");
+        if (input != null && captureInput != null) {
+            throw new ReaderCliException("--input and --capture-input are mutually exclusive");
+        }
+        if (input == null && captureInput == null) {
+            throw new ReaderCliException("One input path is required: use --input or --capture-input");
         }
         if (output == null) {
             throw new ReaderCliException("One --output path is required");
         }
-        return new ReaderCliOptions(input, output);
+        return input != null
+                ? ReaderCliOptions.baseline(input, output)
+                : ReaderCliOptions.capture(captureInput, output);
     }
 
     private String requireValue(String[] args, int index, String argumentName) {
