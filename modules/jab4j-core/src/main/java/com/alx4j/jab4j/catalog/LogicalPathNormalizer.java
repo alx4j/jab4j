@@ -13,7 +13,7 @@ final class LogicalPathNormalizer {
 
         Path normalized = relativePath.normalize();
         if (normalized.isAbsolute()) {
-            throw new PackagingException("Logical paths must remain relative: " + relativePath);
+            throw new PackagingException("Logical paths must remain relative: " + displayPath(relativePath));
         }
         if (normalized.getNameCount() == 0) {
             throw new PackagingException("Logical paths must not be empty");
@@ -23,7 +23,7 @@ final class LogicalPathNormalizer {
         for (Path segment : normalized) {
             String token = segment.toString();
             if (token.isBlank() || ".".equals(token) || "..".equals(token)) {
-                throw new PackagingException("Illegal normalized logical path: " + relativePath);
+                throw new PackagingException("Illegal normalized logical path: " + displayPath(relativePath));
             }
             if (builder.length() > 0) {
                 builder.append('/');
@@ -33,8 +33,12 @@ final class LogicalPathNormalizer {
 
         String logicalPath = builder.toString();
         if (logicalPath.startsWith("../") || logicalPath.equals("..")) {
-            throw new PackagingException("Logical paths must not escape their declared root: " + relativePath);
+            throw new PackagingException("Logical paths must not escape their declared root: " + displayPath(relativePath));
         }
         return logicalPath;
+    }
+
+    private static String displayPath(Path path) {
+        return path.toString().replace('\\', '/');
     }
 }

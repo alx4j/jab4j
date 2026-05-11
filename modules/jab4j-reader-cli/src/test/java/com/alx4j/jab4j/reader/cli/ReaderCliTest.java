@@ -21,6 +21,7 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.stream.Stream;
 import javax.imageio.ImageIO;
@@ -57,6 +58,12 @@ import com.alx4j.jab4j.tile.TileCodecs;
 import com.alx4j.jab4j.transfer.TilePayloadEnvelopeCodec;
 import com.alx4j.jab4j.transfer.TransportSessionPlan;
 import com.alx4j.jab4j.transfer.TransportSessionPlanner;
+import com.alx4j.jab4j.reader.app.ReaderApplicationService;
+import com.alx4j.jab4j.reader.capture.CaptureDiagnosticCode;
+import com.alx4j.jab4j.reader.capture.CaptureFrameDiagnostic;
+import com.alx4j.jab4j.reader.capture.CaptureReceiverRequest;
+import com.alx4j.jab4j.reader.capture.CaptureReceiverResult;
+import com.alx4j.jab4j.reader.capture.CaptureReceiverSummary;
 import com.alx4j.jab4j.writer.app.WriterApplicationService;
 import com.alx4j.jab4j.writer.app.WriterJobObserver;
 import com.alx4j.jab4j.writer.app.WriterRunRequest;
@@ -406,6 +413,62 @@ class ReaderCliTest {
     }
 
     @Test
+    @DisplayName("Capture input invokes the capture receiver and prints stable diagnostics")
+    void captureInputInvokesCaptureReceiverAndPrintsStableDiagnostics() {
+        Path captureInput = tempDir.resolve("capture-frames");
+        Path output = tempDir.resolve("capture-restore");
+        List<CaptureReceiverRequest> requests = new ArrayList<>();
+        ReaderCli cli = new ReaderCli(
+                new ReaderApplicationService(),
+                request -> {
+                    requests.add(request);
+                    return CaptureReceiverResult.incomplete(
+                            new CaptureReceiverSummary(3, 2, 1, 1, 0, 0, 4, 0),
+                            List.of(CaptureFrameDiagnostic.forSource(
+                                    CaptureDiagnosticCode.MISSING_REQUIRED_CONTENT,
+                                    "frame-0002.png",
+                                    2,
+                                    "Required capture frame content is missing"
+                            )),
+                            "Capture input is missing required content"
+                    );
+                },
+                new ReaderCliParser()
+        );
+        ByteArrayOutputStream stdout = new ByteArrayOutputStream();
+        ByteArrayOutputStream stderr = new ByteArrayOutputStream();
+
+        int exitCode = cli.run(
+                new String[] {"--capture-input", captureInput.toString(), "--output", output.toString()},
+                new PrintStream(stdout, true, StandardCharsets.UTF_8),
+                new PrintStream(stderr, true, StandardCharsets.UTF_8)
+        );
+
+        String stderrText = stderr.toString(StandardCharsets.UTF_8);
+        assertAll(
+                () -> assertEquals(1, exitCode),
+                () -> assertEquals("", stdout.toString(StandardCharsets.UTF_8)),
+                () -> assertEquals(1, requests.size()),
+                () -> assertTrue(requests.get(0).restoreRequested()),
+                () -> assertEquals(List.of(normalized(captureInput)), requests.get(0).inputSources()),
+                () -> assertEquals(Optional.of(normalized(output)), requests.get(0).outputDirectory()),
+                () -> assertTrue(stderrText.contains("CAPTURE_INCOMPLETE ")),
+                () -> assertTrue(stderrText.contains("captureInput=" + normalized(captureInput))),
+                () -> assertTrue(stderrText.contains("outputDirectory=" + normalized(output))),
+                () -> assertTrue(stderrText.contains("submittedFrames=3")),
+                () -> assertTrue(stderrText.contains("readableFrames=2")),
+                () -> assertTrue(stderrText.contains("acceptedCandidates=1")),
+                () -> assertTrue(stderrText.contains("rejectedFrames=1")),
+                () -> assertTrue(stderrText.contains("decodedTiles=4")),
+                () -> assertTrue(stderrText.contains("restoredFiles=0")),
+                () -> assertTrue(stderrText.contains("message=Capture input is missing required content")),
+                () -> assertTrue(stderrText.contains(
+                        "CAPTURE_DIAGNOSTIC code=MISSING_REQUIRED_CONTENT sourceId=frame-0002.png callerOrder=2"
+                ))
+        );
+    }
+
+    @Test
     @DisplayName("Usage errors return a usage exit code")
     void usageErrorsReturnUsageExitCode() {
         ReaderCli cli = new ReaderCli();
@@ -426,10 +489,14 @@ class ReaderCliTest {
                 () -> assertTrue(stderrText.contains(
                         "Usage: jab4j-reader-cli --input <imageSequence-or-session-directory> --output <restore-directory>"
                 )),
+                () -> assertTrue(stderrText.contains(
+                        "jab4j-reader-cli --capture-input <frames-directory> --output <restore-directory>"
+                )),
                 () -> assertTrue(stderrText.contains("Input: current writer imageSequence PNG export directory")),
+                () -> assertTrue(stderrText.contains("Capture input: extracted PNG frame directory")),
                 () -> assertTrue(stderrText.contains("frame-sequence.txt is a writer-export validation helper")),
                 () -> assertTrue(stderrText.contains(
-                        "Unsupported by this local restore command: iPhone, camera, video, upload, or SaaS capture."
+                        "Unsupported: direct .mov/.mp4 video, HEIC, live camera, mobile app, upload, or SaaS capture."
                 ))
         );
     }

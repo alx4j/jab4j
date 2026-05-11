@@ -1,0 +1,9 @@
+scenario_id	input_shape	expected_receiver_outcome	restore_attempt	expected_primary_diagnostic	notes
+CR-MVP2-EXACT-PNG-BASELINE	writer imageSequence export with frame-sequence.txt	exact_png_baseline_accepted	yes	none	Existing reader path must remain unchanged.
+CR-MVP2-CLEAN-EXTRACTED-PNG	capture folder of clean PNG frames without frame-sequence.txt	eligible_then_restored	yes	none	Positive generated capture-derived frame folder.
+CR-MVP2-MISSING-FRAME-CONTENT	capture folder with one required frame or decoded content item missing	incomplete_capture	no	missing_required_content	Receiver should report incomplete capture rather than success.
+CR-MVP2-DUPLICATE-EQUIVALENT-FRAME	capture folder with a byte-equivalent duplicate frame	eligible_with_duplicate_diagnostic	yes	duplicate_equivalent_frame	Receiver should collapse redundant equivalent content.
+CR-MVP2-UNRELATED-IMAGE	valid supported-size PNG that is not a JAB frame	rejected	no	no_candidate_barcode_content	Unrelated images must not be treated as recoverable frames.
+CR-MVP2-UNREADABLE-IMAGE	file named as PNG but not decodable	rejected	no	unreadable_image	Unreadable image input should be diagnostic data, not an uncaught failure.
+CR-MVP2-UNSUPPORTED-DIMENSIONS	valid PNG outside supported rendered dimensions	rejected	no	unsupported_dimensions	Dimension support stays explicit and corpus-backed.
+CR-MVP2-CORRUPTED-TILE-CONTENT	rendered frame with corrupted tile envelope bytes	rejected_or_incomplete	no	corrupted_tile_content	Barcode-looking content must still validate decoded payload integrity.
