@@ -3,6 +3,7 @@ package com.alx4j.jab4j.reader.capture.media.fixture;
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -16,6 +17,8 @@ import javax.imageio.ImageIO;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import com.alx4j.jab4j.reader.capture.media.CaptureMediaDiagnosticCode;
+import com.alx4j.jab4j.reader.capture.media.CaptureMediaDiagnosticSeverity;
 import com.alx4j.jab4j.reader.capture.media.CaptureMediaReceiverRequest;
 import com.alx4j.jab4j.reader.capture.media.CaptureMediaReceiverResult;
 import com.alx4j.jab4j.reader.capture.media.CaptureMediaReceiverService;
@@ -126,6 +129,58 @@ class CaptureMediaCorpusFixturesTest {
                         Files.readAllBytes(outputDirectory.resolve("payload").resolve("docs").resolve("message.txt"))
                 ),
                 () -> assertEquals(0, Files.size(outputDirectory.resolve("payload").resolve("empty.bin")))
+        );
+    }
+
+    @Test
+    @DisplayName("Generated duplicate extracted frames evaluate eligible with duplicate diagnostics")
+    void generatedDuplicateExtractedFramesEvaluateEligibleWithDuplicateDiagnostics() throws Exception {
+        GeneratedCaptureMediaFixture duplicate = CaptureMediaCorpusFixtures.duplicateFrames(tempDir);
+
+        CaptureMediaReceiverResult result = new CaptureMediaReceiverService().evaluate(
+                CaptureMediaReceiverRequest.evaluateExtractedFrameFolders(List.of(duplicate.mediaDirectory()))
+        );
+
+        assertAll(
+                () -> assertEquals(CaptureMediaReceiverStatus.ELIGIBLE, result.status()),
+                () -> assertTrue(result.eligibleForRestore()),
+                () -> assertEquals(duplicate.mediaFiles().size(), result.summary().submittedMediaCount()),
+                () -> assertEquals(duplicate.mediaFiles().size(), result.summary().readableMediaCount()),
+                () -> assertEquals(duplicate.expectedUniqueFrameCount(), result.summary().acceptedCandidateCount()),
+                () -> assertEquals(duplicate.expectedUniqueFrameCount(), result.summary().recoveredUniqueFrameCount()),
+                () -> assertEquals(1, result.summary().duplicateMediaFrameCount()),
+                () -> assertTrue(result.summary().decodedTileCount() > 0),
+                () -> assertTrue(result.diagnostics().stream().anyMatch(diagnostic ->
+                        diagnostic.code() == CaptureMediaDiagnosticCode.DUPLICATE_MEDIA_FRAME
+                                && diagnostic.severity() == CaptureMediaDiagnosticSeverity.WARNING
+                                && !diagnostic.blocking()))
+        );
+    }
+
+    @Test
+    @DisplayName("Generated missing media frames are incomplete and do not publish restore output")
+    void generatedMissingMediaFramesAreIncompleteAndDoNotPublishRestoreOutput() throws Exception {
+        GeneratedCaptureMediaFixture missing = CaptureMediaCorpusFixtures.missingUniqueFrames(tempDir);
+        Path outputDirectory = tempDir.resolve("restore-missing-media");
+
+        CaptureMediaReceiverResult result = new CaptureMediaReceiverService().restore(
+                CaptureMediaReceiverRequest.restoreExtractedFrameFolders(List.of(missing.mediaDirectory()), outputDirectory)
+        );
+
+        assertAll(
+                () -> assertEquals(CaptureMediaReceiverStatus.INCOMPLETE, result.status()),
+                () -> assertTrue(result.failed()),
+                () -> assertFalse(result.restored()),
+                () -> assertEquals(0, result.summary().restoredFileCount()),
+                () -> assertEquals(missing.mediaFiles().size(), result.summary().submittedMediaCount()),
+                () -> assertEquals(missing.mediaFiles().size(), result.summary().readableMediaCount()),
+                () -> assertEquals(missing.expectedUniqueFrameCount() - 1, result.summary().acceptedCandidateCount()),
+                () -> assertEquals(missing.expectedUniqueFrameCount() - 1, result.summary().recoveredUniqueFrameCount()),
+                () -> assertTrue(result.diagnostics().stream().anyMatch(diagnostic ->
+                        diagnostic.code() == CaptureMediaDiagnosticCode.MISSING_UNIQUE_FRAME
+                                && diagnostic.blocking())),
+                () -> assertTrue(result.restoreResult().isEmpty()),
+                () -> assertFalse(Files.exists(outputDirectory.resolve("payload")))
         );
     }
 
