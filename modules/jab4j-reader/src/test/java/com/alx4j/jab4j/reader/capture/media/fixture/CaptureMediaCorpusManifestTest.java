@@ -70,6 +70,9 @@ class CaptureMediaCorpusManifestTest {
                 () -> assertColumn(rows, CaptureMediaCorpusFixtures.CORRUPTED_UNREADABLE_IMAGE, "expected_diagnostics", "unreadable_media"),
                 () -> assertColumn(rows, CaptureMediaCorpusFixtures.EXTERNAL_IPHONE_STILLS, "asset_availability", "external_private"),
                 () -> assertColumn(rows, CaptureMediaCorpusFixtures.EXTRACTED_VIDEO_FRAMES, "source_kind", "extracted_video_frame_folder"),
+                () -> assertColumn(rows, CaptureMediaCorpusFixtures.EXTRACTED_VIDEO_QUALITY_MIX, "expected_status", "eligible_with_warning"),
+                () -> assertColumn(rows, CaptureMediaCorpusFixtures.EXTRACTED_VIDEO_QUALITY_MIX, "expected_diagnostics",
+                        "duplicate_media_frame;color_or_compression_shift;glare_or_overexposure;blur"),
                 () -> assertColumn(rows, CaptureMediaCorpusFixtures.FUTURE_DIRECT_VIDEO, "format", "MOV_OR_MP4"),
                 () -> assertColumn(rows, CaptureMediaCorpusFixtures.FUTURE_DIRECT_VIDEO, "expected_diagnostics", "unsupported_container_or_codec")
         );
