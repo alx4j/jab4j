@@ -17,6 +17,7 @@ import javax.imageio.ImageIO;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import com.alx4j.jab4j.reader.capture.media.CaptureMediaDiagnostic;
 import com.alx4j.jab4j.reader.capture.media.CaptureMediaDiagnosticCode;
 import com.alx4j.jab4j.reader.capture.media.CaptureMediaDiagnosticSeverity;
 import com.alx4j.jab4j.reader.capture.media.CaptureMediaReceiverRequest;
@@ -61,20 +62,29 @@ class CaptureMediaCorpusFixturesTest {
         GeneratedCaptureMediaFixture duplicate = CaptureMediaCorpusFixtures.duplicateFrames(tempDir);
         GeneratedCaptureMediaFixture missing = CaptureMediaCorpusFixtures.missingUniqueFrames(tempDir);
         GeneratedCaptureMediaFixture extracted = CaptureMediaCorpusFixtures.extractedVideoFrames(tempDir);
+        GeneratedCaptureMediaFixture qualityMix = CaptureMediaCorpusFixtures.extractedVideoFramesWithQualityMix(tempDir);
 
         assertAll(
                 () -> assertEquals(CaptureMediaCorpusFixtures.DUPLICATE_FRAMES, duplicate.scenarioId()),
                 () -> assertEquals(CaptureMediaCorpusFixtures.MISSING_UNIQUE_FRAMES, missing.scenarioId()),
                 () -> assertEquals(CaptureMediaCorpusFixtures.EXTRACTED_VIDEO_FRAMES, extracted.scenarioId()),
+                () -> assertEquals(CaptureMediaCorpusFixtures.EXTRACTED_VIDEO_QUALITY_MIX, qualityMix.scenarioId()),
                 () -> assertEquals(duplicate.expectedUniqueFrameCount() + 1, duplicate.mediaFiles().size()),
                 () -> assertEquals(missing.expectedUniqueFrameCount() - 1, missing.mediaFiles().size()),
                 () -> assertEquals(extracted.expectedUniqueFrameCount(), extracted.mediaFiles().size()),
+                () -> assertEquals(qualityMix.expectedUniqueFrameCount() + 3, qualityMix.mediaFiles().size()),
                 () -> assertArrayEquals(
                         Files.readAllBytes(duplicate.mediaFiles().get(0)),
                         Files.readAllBytes(duplicate.mediaFiles().get(duplicate.mediaFiles().size() - 1))
                 ),
                 () -> assertTrue(extracted.mediaFiles().stream()
                         .allMatch(path -> path.getFileName().toString().startsWith("extracted-video-frame-"))),
+                () -> assertTrue(qualityMix.mediaFiles().stream()
+                        .anyMatch(path -> path.getFileName().toString().contains("compression-shift"))),
+                () -> assertTrue(qualityMix.mediaFiles().stream()
+                        .anyMatch(path -> path.getFileName().toString().contains("overexposed"))),
+                () -> assertTrue(qualityMix.mediaFiles().stream()
+                        .anyMatch(path -> path.getFileName().toString().contains("blurred"))),
                 () -> assertNotNull(ImageIO.read(extracted.mediaFiles().get(0).toFile()))
         );
     }
@@ -158,6 +168,43 @@ class CaptureMediaCorpusFixturesTest {
     }
 
     @Test
+    @DisplayName("Generated extracted video quality mix uses recoverable frames and reports rejected sources")
+    void generatedExtractedVideoQualityMixUsesRecoverableFramesAndReportsRejectedSources() throws Exception {
+        GeneratedCaptureMediaFixture fixture = CaptureMediaCorpusFixtures.extractedVideoFramesWithQualityMix(tempDir);
+
+        CaptureMediaReceiverResult result = new CaptureMediaReceiverService().evaluate(
+                CaptureMediaReceiverRequest.evaluateExtractedFrameFolders(List.of(fixture.mediaDirectory()))
+        );
+
+        assertAll(
+                () -> assertEquals(CaptureMediaReceiverStatus.ELIGIBLE, result.status()),
+                () -> assertTrue(result.eligibleForRestore()),
+                () -> assertEquals(fixture.mediaFiles().size(), result.summary().submittedMediaCount()),
+                () -> assertEquals(fixture.mediaFiles().size(), result.summary().readableMediaCount()),
+                () -> assertEquals(fixture.expectedUniqueFrameCount(), result.summary().acceptedCandidateCount()),
+                () -> assertEquals(fixture.expectedUniqueFrameCount(), result.summary().recoveredUniqueFrameCount()),
+                () -> assertEquals(1, result.summary().duplicateMediaFrameCount()),
+                () -> assertTrue(result.summary().rejectedCandidateCount() >= 1),
+                () -> assertTrue(result.summary().decodedTileCount() > 0),
+                () -> assertTrue(result.diagnostics().stream().noneMatch(diagnostic -> diagnostic.blocking())),
+                () -> assertTrue(result.diagnostics().stream().anyMatch(diagnostic ->
+                        diagnostic.code() == CaptureMediaDiagnosticCode.COLOR_OR_COMPRESSION_SHIFT
+                                && diagnostic.severity() == CaptureMediaDiagnosticSeverity.WARNING
+                                && !diagnostic.blocking())),
+                () -> assertTrue(result.diagnostics().stream().anyMatch(diagnostic ->
+                        diagnostic.code() == CaptureMediaDiagnosticCode.GLARE_OR_OVEREXPOSURE
+                                && diagnostic.severity() == CaptureMediaDiagnosticSeverity.WARNING
+                                && !diagnostic.blocking()
+                                && diagnostic.sourceId().orElseThrow().contains("overexposed"))),
+                () -> assertTrue(result.diagnostics().stream().anyMatch(diagnostic ->
+                        diagnostic.code() == CaptureMediaDiagnosticCode.BLUR
+                                && diagnostic.severity() == CaptureMediaDiagnosticSeverity.WARNING
+                                && !diagnostic.blocking()
+                                && diagnostic.sourceId().orElseThrow().contains("blurred")))
+        );
+    }
+
+    @Test
     @DisplayName("Generated missing media frames are incomplete and do not publish restore output")
     void generatedMissingMediaFramesAreIncompleteAndDoNotPublishRestoreOutput() throws Exception {
         GeneratedCaptureMediaFixture missing = CaptureMediaCorpusFixtures.missingUniqueFrames(tempDir);
@@ -181,6 +228,41 @@ class CaptureMediaCorpusFixturesTest {
                                 && diagnostic.blocking())),
                 () -> assertTrue(result.restoreResult().isEmpty()),
                 () -> assertFalse(Files.exists(outputDirectory.resolve("payload")))
+        );
+    }
+
+    @Test
+    @DisplayName("Generated quality-mix extracted frames stay eligible when enough unique frames remain")
+    void generatedQualityMixExtractedFramesStayEligibleWhenEnoughUniqueFramesRemain() throws Exception {
+        GeneratedCaptureMediaFixture qualityMix = CaptureMediaCorpusFixtures.extractedVideoFramesWithQualityMix(tempDir);
+
+        CaptureMediaReceiverResult result = new CaptureMediaReceiverService().evaluate(
+                CaptureMediaReceiverRequest.evaluateExtractedFrameFolders(List.of(qualityMix.mediaDirectory()))
+        );
+
+        assertAll(
+                () -> assertEquals(CaptureMediaReceiverStatus.ELIGIBLE, result.status()),
+                () -> assertTrue(result.eligibleForRestore()),
+                () -> assertEquals(qualityMix.mediaFiles().size(), result.summary().submittedMediaCount()),
+                () -> assertEquals(qualityMix.mediaFiles().size(), result.summary().readableMediaCount()),
+                () -> assertEquals(qualityMix.expectedUniqueFrameCount(), result.summary().acceptedCandidateCount()),
+                () -> assertEquals(qualityMix.expectedUniqueFrameCount(), result.summary().recoveredUniqueFrameCount()),
+                () -> assertTrue(result.summary().duplicateMediaFrameCount() >= 1),
+                () -> assertTrue(result.summary().rejectedCandidateCount() >= 2),
+                () -> assertTrue(result.summary().decodedTileCount() > 0),
+                () -> assertTrue(result.diagnostics().stream().noneMatch(CaptureMediaDiagnostic::blocking)),
+                () -> assertTrue(result.diagnostics().stream().anyMatch(diagnostic ->
+                        diagnostic.code() == CaptureMediaDiagnosticCode.DUPLICATE_MEDIA_FRAME
+                                && diagnostic.severity() == CaptureMediaDiagnosticSeverity.WARNING)),
+                () -> assertTrue(result.diagnostics().stream().anyMatch(diagnostic ->
+                        diagnostic.code() == CaptureMediaDiagnosticCode.COLOR_OR_COMPRESSION_SHIFT
+                                && diagnostic.severity() == CaptureMediaDiagnosticSeverity.WARNING)),
+                () -> assertTrue(result.diagnostics().stream().anyMatch(diagnostic ->
+                        diagnostic.code() == CaptureMediaDiagnosticCode.GLARE_OR_OVEREXPOSURE
+                                && diagnostic.severity() == CaptureMediaDiagnosticSeverity.WARNING)),
+                () -> assertTrue(result.diagnostics().stream().anyMatch(diagnostic ->
+                        diagnostic.code() == CaptureMediaDiagnosticCode.BLUR
+                                && diagnostic.severity() == CaptureMediaDiagnosticSeverity.WARNING))
         );
     }
 

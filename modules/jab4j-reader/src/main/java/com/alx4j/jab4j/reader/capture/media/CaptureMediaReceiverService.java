@@ -150,19 +150,19 @@ public final class CaptureMediaReceiverService {
         MediaIntakeResult intakeResult = mediaInputIntake.read(request);
         List<CaptureMediaDiagnostic> diagnostics = new ArrayList<>(intakeResult.diagnostics());
         List<NormalizedCaptureFrame> normalizedFrames = normalizeReadableFrames(intakeResult, diagnostics);
-        CaptureMediaSummary intakeSummary = mediaSummary(intakeResult, normalizedFrames, diagnostics, 0, 0, 0, 0);
+        CaptureMediaSummary intakeSummary = mediaSummary(intakeResult, normalizedFrames, diagnostics, 0, 0, 0, 0, 0);
 
-        if (diagnostics.stream().anyMatch(CaptureMediaDiagnostic::blocking)) {
-            return failedFromMediaDiagnostics(intakeSummary, diagnostics);
-        }
         if (normalizedFrames.isEmpty()) {
+            if (diagnostics.stream().anyMatch(CaptureMediaDiagnostic::blocking)) {
+                return failedFromMediaDiagnostics(intakeSummary, diagnostics);
+            }
             diagnostics.add(CaptureMediaDiagnostic.forMediaSet(
                     CaptureMediaDiagnosticCode.MISSING_UNIQUE_FRAME,
                     CaptureMediaDiagnosticSeverity.ERROR,
                     "Capture media input does not contain any normalized frame candidates"
             ));
             return CaptureMediaReceiverResult.incomplete(
-                    mediaSummary(intakeResult, normalizedFrames, diagnostics, 0, 0, 0, 0),
+                    mediaSummary(intakeResult, normalizedFrames, diagnostics, 0, 0, 0, 0, 0),
                     diagnostics,
                     "Capture media input is missing required unique frame content"
             );
@@ -186,6 +186,7 @@ public final class CaptureMediaReceiverService {
                 diagnostics,
                 assemblyResult.acceptedCandidateCount(),
                 assemblyResult.duplicateFrameCount(),
+                decodeResult.rejectedCandidateCount(),
                 assemblyResult.decodedTileCount(),
                 0
         );
@@ -204,9 +205,6 @@ public final class CaptureMediaReceiverService {
                     "Capture media input is missing required unique frame content"
             );
         }
-        if (diagnostics.stream().anyMatch(CaptureMediaDiagnostic::blocking)) {
-            return failedFromMediaDiagnostics(summary, diagnostics);
-        }
         if (assemblyResult.content().isEmpty()) {
             diagnostics.add(CaptureMediaDiagnostic.forMediaSet(
                     CaptureMediaDiagnosticCode.MISSING_UNIQUE_FRAME,
@@ -220,6 +218,7 @@ public final class CaptureMediaReceiverService {
                             diagnostics,
                             assemblyResult.acceptedCandidateCount(),
                             assemblyResult.duplicateFrameCount(),
+                            decodeResult.rejectedCandidateCount(),
                             assemblyResult.decodedTileCount(),
                             0
                     ),
@@ -227,18 +226,33 @@ public final class CaptureMediaReceiverService {
                     "Capture media input is missing required unique frame content"
             );
         }
+        List<CaptureMediaDiagnostic> successfulDiagnostics =
+                diagnosticsForCompleteContent(request.sourceKind(), diagnostics);
+        CaptureMediaSummary successfulSummary = mediaSummary(
+                intakeResult,
+                normalizedFrames,
+                successfulDiagnostics,
+                assemblyResult.acceptedCandidateCount(),
+                assemblyResult.duplicateFrameCount(),
+                decodeResult.rejectedCandidateCount(),
+                assemblyResult.decodedTileCount(),
+                0
+        );
+        if (successfulDiagnostics.stream().anyMatch(CaptureMediaDiagnostic::blocking)) {
+            return failedFromMediaDiagnostics(successfulSummary, successfulDiagnostics);
+        }
         if (!restoreRequested) {
             return CaptureMediaReceiverResult.eligible(
-                    summary,
-                    diagnostics,
+                    successfulSummary,
+                    successfulDiagnostics,
                     "Capture media input is eligible for restore"
             );
         }
         return restoreDecodedContent(
                 assemblyResult.content().orElseThrow(),
                 request.outputDirectory().orElseThrow(),
-                summary,
-                diagnostics
+                successfulSummary,
+                successfulDiagnostics
         );
     }
 
@@ -417,10 +431,16 @@ public final class CaptureMediaReceiverService {
             List<CaptureMediaDiagnostic> diagnostics,
             int acceptedCandidateCount,
             int duplicateFrameCount,
+            int decodeRejectedCandidateCount,
             int decodedTileCount,
             long restoredFileCount
     ) {
-        int rejectedCandidateCount = rejectedCandidateCount(intakeResult, normalizedFrames, diagnostics);
+        int rejectedCandidateCount = rejectedCandidateCount(
+                intakeResult,
+                normalizedFrames,
+                diagnostics,
+                decodeRejectedCandidateCount
+        );
         return new CaptureMediaSummary(
                 intakeResult.submittedSourceCount(),
                 intakeResult.readableFrames().size(),
@@ -437,7 +457,8 @@ public final class CaptureMediaReceiverService {
     private int rejectedCandidateCount(
             MediaIntakeResult intakeResult,
             List<NormalizedCaptureFrame> normalizedFrames,
-            List<CaptureMediaDiagnostic> diagnostics
+            List<CaptureMediaDiagnostic> diagnostics,
+            int decodeRejectedCandidateCount
     ) {
         int rejectedByNormalization = Math.max(0, intakeResult.readableFrames().size() - normalizedFrames.size());
         int rejectedByDiagnostics = (int) diagnostics.stream()
@@ -448,8 +469,50 @@ public final class CaptureMediaReceiverService {
         int unsupportedUnreadableSources = Math.max(0, intakeResult.submittedSourceCount() - intakeResult.readableFrames().size());
         return Math.min(
                 intakeResult.submittedSourceCount(),
-                Math.max(Math.max(rejectedByNormalization, rejectedByDiagnostics), unsupportedUnreadableSources)
+                Math.max(
+                        Math.max(Math.max(rejectedByNormalization, rejectedByDiagnostics), unsupportedUnreadableSources),
+                        decodeRejectedCandidateCount
+                )
         );
+    }
+
+    private List<CaptureMediaDiagnostic> diagnosticsForCompleteContent(
+            CaptureMediaSourceKind sourceKind,
+            List<CaptureMediaDiagnostic> diagnostics
+    ) {
+        if (sourceKind != CaptureMediaSourceKind.EXTRACTED_FRAME_FOLDER) {
+            return List.copyOf(diagnostics);
+        }
+        return diagnostics.stream()
+                .map(this::asRecoverableExtractedFrameDiagnostic)
+                .toList();
+    }
+
+    private CaptureMediaDiagnostic asRecoverableExtractedFrameDiagnostic(CaptureMediaDiagnostic diagnostic) {
+        if (!diagnostic.blocking()
+                || !diagnostic.sourceScoped()
+                || !recoverableExtractedFrameRejection(diagnostic.code())) {
+            return diagnostic;
+        }
+        return new CaptureMediaDiagnostic(
+                diagnostic.code(),
+                CaptureMediaDiagnosticSeverity.WARNING,
+                false,
+                diagnostic.sourceKind(),
+                diagnostic.sourceId(),
+                diagnostic.callerOrder(),
+                diagnostic.timestampMillis(),
+                diagnostic.frameNumber(),
+                diagnostic.metrics(),
+                diagnostic.message()
+        );
+    }
+
+    private boolean recoverableExtractedFrameRejection(CaptureMediaDiagnosticCode code) {
+        return code.qualityIssue()
+                || code.unsupportedMedia()
+                || code == CaptureMediaDiagnosticCode.UNREADABLE_MEDIA
+                || code == CaptureMediaDiagnosticCode.AMBIGUOUS_SESSIONS;
     }
 
     private CaptureMediaSummary withRestoredFileCount(CaptureMediaSummary summary, long restoredFileCount) {
