@@ -1,55 +1,90 @@
 package com.alx4j.jab4j.reader.capture.media;
 
-import java.awt.image.BufferedImage;
-import java.io.IOException;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.function.Function;
-import javax.imageio.ImageIO;
 import com.alx4j.jab4j.reader.capture.CaptureDiagnosticCode;
 import com.alx4j.jab4j.reader.capture.CaptureFrameDiagnostic;
 import com.alx4j.jab4j.reader.capture.CaptureReceiverRequest;
 import com.alx4j.jab4j.reader.capture.CaptureReceiverResult;
-import com.alx4j.jab4j.reader.capture.CaptureReceiverService;
-import com.alx4j.jab4j.reader.capture.CaptureReceiverStatus;
-import com.alx4j.jab4j.reader.capture.CaptureReceiverSummary;
+import com.alx4j.jab4j.reader.capture.decode.CaptureAssemblyResult;
+import com.alx4j.jab4j.reader.capture.decode.CaptureFrameSetAssembler;
+import com.alx4j.jab4j.reader.capture.decode.CaptureSessionContent;
+import com.alx4j.jab4j.reader.capture.media.decode.CaptureMediaFrameDecodeResult;
+import com.alx4j.jab4j.reader.capture.media.decode.CaptureMediaFrameDecoder;
 import com.alx4j.jab4j.reader.capture.media.input.CaptureMediaInputIntake;
 import com.alx4j.jab4j.reader.capture.media.input.MediaIntakeResult;
 import com.alx4j.jab4j.reader.capture.media.normalize.CaptureMediaFrameNormalizer;
 import com.alx4j.jab4j.reader.capture.media.normalize.MediaNormalizationResult;
 import com.alx4j.jab4j.reader.capture.media.normalize.NormalizedCaptureFrame;
 import com.alx4j.jab4j.reader.capture.media.quality.CaptureMediaQualityMetrics;
+import com.alx4j.jab4j.reader.restore.ReaderRestoreRequest;
+import com.alx4j.jab4j.reader.restore.ReaderRestoreResult;
+import com.alx4j.jab4j.reader.restore.ReaderRestoreService;
+import com.alx4j.jab4j.reader.restore.ReaderRestoreStatus;
 
 /**
  * Public receiver facade for evaluating or restoring MVP-3 capture media.
  *
- * <p>This slice is intentionally conservative. It accepts PNG sources that already match supported rendered frame
- * dimensions or contain a clean generated axis-aligned rendered-frame inset, then delegates normalized candidates to
- * the existing clean capture receiver. It reports stable diagnostics for HEIC/HEIF, direct video containers,
- * unreadable media, and arbitrary photos that cannot yet be normalized.</p>
+ * <p>The receiver reads supported PNG media, normalizes accepted candidates, decodes normalized frames with the
+ * media-owned tolerant sampler, assembles decoded frame identities, and invokes the source-neutral reader restore
+ * service only after decoded content is complete and internally consistent.</p>
  */
 public final class CaptureMediaReceiverService {
 
     private final CaptureMediaInputIntake mediaInputIntake;
     private final CaptureMediaFrameNormalizer frameNormalizer;
-    private final Function<CaptureReceiverRequest, CaptureReceiverResult> cleanCaptureReceiver;
+    private final CaptureMediaFrameDecoder mediaFrameDecoder;
+    private final CaptureFrameSetAssembler frameSetAssembler;
+    private final ReaderRestoreService readerRestoreService;
 
     /**
-     * Creates a media receiver using default PNG intake, conservative normalization, and clean capture restore.
+     * Creates a media receiver using default PNG intake, normalization, media decode, assembly, and restore services.
      */
     public CaptureMediaReceiverService() {
         this(
                 new CaptureMediaInputIntake(),
                 new CaptureMediaFrameNormalizer(),
-                new CaptureReceiverService()::receive
+                new CaptureMediaFrameDecoder(),
+                new CaptureFrameSetAssembler(),
+                new ReaderRestoreService()
         );
+    }
+
+    /**
+     * Creates a media receiver with legacy clean-capture receiver compatibility.
+     *
+     * <p>The media receiver now owns normalized-frame decode and restore orchestration directly. The clean receiver
+     * argument is still validated so existing focused tests or callers using this constructor keep their contract.</p>
+     *
+     * @param mediaInputIntake media source intake
+     * @param frameNormalizer conservative frame normalizer
+     * @param cleanCaptureReceiver legacy clean PNG capture receiver
+     */
+    public CaptureMediaReceiverService(
+            CaptureMediaInputIntake mediaInputIntake,
+            CaptureMediaFrameNormalizer frameNormalizer,
+            Function<CaptureReceiverRequest, CaptureReceiverResult> cleanCaptureReceiver
+    ) {
+        this(
+                mediaInputIntake,
+                frameNormalizer,
+                requireLegacyReceiver(cleanCaptureReceiver),
+                new CaptureFrameSetAssembler(),
+                new ReaderRestoreService()
+        );
+    }
+
+    private static CaptureMediaFrameDecoder requireLegacyReceiver(
+            Function<CaptureReceiverRequest, CaptureReceiverResult> cleanCaptureReceiver
+    ) {
+        Objects.requireNonNull(cleanCaptureReceiver, "cleanCaptureReceiver must not be null");
+        return new CaptureMediaFrameDecoder();
     }
 
     /**
@@ -57,16 +92,22 @@ public final class CaptureMediaReceiverService {
      *
      * @param mediaInputIntake media source intake
      * @param frameNormalizer conservative frame normalizer
-     * @param cleanCaptureReceiver existing clean PNG capture receiver
+     * @param mediaFrameDecoder normalized media frame decoder
+     * @param frameSetAssembler decoded frame-set assembler
+     * @param readerRestoreService source-neutral restore service
      */
     public CaptureMediaReceiverService(
             CaptureMediaInputIntake mediaInputIntake,
             CaptureMediaFrameNormalizer frameNormalizer,
-            Function<CaptureReceiverRequest, CaptureReceiverResult> cleanCaptureReceiver
+            CaptureMediaFrameDecoder mediaFrameDecoder,
+            CaptureFrameSetAssembler frameSetAssembler,
+            ReaderRestoreService readerRestoreService
     ) {
         this.mediaInputIntake = Objects.requireNonNull(mediaInputIntake, "mediaInputIntake must not be null");
         this.frameNormalizer = Objects.requireNonNull(frameNormalizer, "frameNormalizer must not be null");
-        this.cleanCaptureReceiver = Objects.requireNonNull(cleanCaptureReceiver, "cleanCaptureReceiver must not be null");
+        this.mediaFrameDecoder = Objects.requireNonNull(mediaFrameDecoder, "mediaFrameDecoder must not be null");
+        this.frameSetAssembler = Objects.requireNonNull(frameSetAssembler, "frameSetAssembler must not be null");
+        this.readerRestoreService = Objects.requireNonNull(readerRestoreService, "readerRestoreService must not be null");
     }
 
     /**
@@ -91,7 +132,7 @@ public final class CaptureMediaReceiverService {
     }
 
     /**
-     * Evaluates media input and invokes clean capture restore when the normalized set is complete enough.
+     * Evaluates media input and invokes reader restore when decoded content is complete enough.
      *
      * @param request media receiver request with output directory
      * @return restored, incomplete, rejected, or restore-failed media receiver result
@@ -109,10 +150,10 @@ public final class CaptureMediaReceiverService {
         MediaIntakeResult intakeResult = mediaInputIntake.read(request);
         List<CaptureMediaDiagnostic> diagnostics = new ArrayList<>(intakeResult.diagnostics());
         List<NormalizedCaptureFrame> normalizedFrames = normalizeReadableFrames(intakeResult, diagnostics);
-        CaptureMediaSummary mediaSummary = mediaSummary(intakeResult, normalizedFrames, 0, 0);
+        CaptureMediaSummary intakeSummary = mediaSummary(intakeResult, normalizedFrames, diagnostics, 0, 0, 0, 0);
 
         if (diagnostics.stream().anyMatch(CaptureMediaDiagnostic::blocking)) {
-            return failedFromMediaDiagnostics(mediaSummary, diagnostics);
+            return failedFromMediaDiagnostics(intakeSummary, diagnostics);
         }
         if (normalizedFrames.isEmpty()) {
             diagnostics.add(CaptureMediaDiagnostic.forMediaSet(
@@ -121,40 +162,84 @@ public final class CaptureMediaReceiverService {
                     "Capture media input does not contain any normalized frame candidates"
             ));
             return CaptureMediaReceiverResult.incomplete(
-                    mediaSummary,
+                    mediaSummary(intakeResult, normalizedFrames, diagnostics, 0, 0, 0, 0),
                     diagnostics,
                     "Capture media input is missing required unique frame content"
             );
         }
-
-        CaptureReceiverRequest cleanCaptureRequest;
-        NormalizedCaptureSources normalizedSources;
-        try {
-            normalizedSources = writeNormalizedSources(normalizedFrames);
-        } catch (IOException exception) {
+        CaptureMediaFrameDecodeResult decodeResult = mediaFrameDecoder.decode(normalizedFrames);
+        diagnostics.addAll(decodeResult.diagnostics());
+        if (decodeResult.decodedFrames().isEmpty()
+                && diagnostics.stream().noneMatch(CaptureMediaDiagnostic::blocking)) {
             diagnostics.add(CaptureMediaDiagnostic.forMediaSet(
-                    CaptureMediaDiagnosticCode.UNREADABLE_MEDIA,
+                    CaptureMediaDiagnosticCode.MISSING_UNIQUE_FRAME,
                     CaptureMediaDiagnosticSeverity.ERROR,
-                    "Normalized capture media frames could not be staged for decode"
+                    "No capture media frame content was decoded"
             ));
+        }
+
+        CaptureAssemblyResult assemblyResult = frameSetAssembler.assemble(decodeResult.decodedFrames());
+        diagnostics.addAll(mapAssemblyDiagnostics(request.sourceKind(), assemblyResult.diagnostics(), normalizedFrames));
+        CaptureMediaSummary summary = mediaSummary(
+                intakeResult,
+                normalizedFrames,
+                diagnostics,
+                assemblyResult.acceptedCandidateCount(),
+                assemblyResult.duplicateFrameCount(),
+                assemblyResult.decodedTileCount(),
+                0
+        );
+
+        if (assemblyResult.rejected()) {
             return CaptureMediaReceiverResult.rejected(
-                    mediaSummary,
+                    summary,
                     diagnostics,
-                    "Capture media input could not be normalized for decode"
+                    "Capture media input contains inconsistent decoded content"
             );
         }
-        try {
-            cleanCaptureRequest = restoreRequested
-                    ? CaptureReceiverRequest.restore(normalizedSources.files(), request.outputDirectory().orElseThrow())
-                    : CaptureReceiverRequest.evaluateOnly(normalizedSources.files());
-            CaptureReceiverResult captureResult = cleanCaptureReceiver.apply(cleanCaptureRequest);
-            return fromCleanCaptureResult(request.sourceKind(), Objects.requireNonNull(
-                    captureResult,
-                    "clean capture receiver result must not be null"
-            ), normalizedSources.framesByCleanSourceId());
-        } finally {
-            deleteNormalizedSources(normalizedSources.directory());
+        if (assemblyResult.incomplete()) {
+            return CaptureMediaReceiverResult.incomplete(
+                    summary,
+                    diagnostics,
+                    "Capture media input is missing required unique frame content"
+            );
         }
+        if (diagnostics.stream().anyMatch(CaptureMediaDiagnostic::blocking)) {
+            return failedFromMediaDiagnostics(summary, diagnostics);
+        }
+        if (assemblyResult.content().isEmpty()) {
+            diagnostics.add(CaptureMediaDiagnostic.forMediaSet(
+                    CaptureMediaDiagnosticCode.MISSING_UNIQUE_FRAME,
+                    CaptureMediaDiagnosticSeverity.ERROR,
+                    "Decoded capture media content is not complete enough for restore"
+            ));
+            return CaptureMediaReceiverResult.incomplete(
+                    mediaSummary(
+                            intakeResult,
+                            normalizedFrames,
+                            diagnostics,
+                            assemblyResult.acceptedCandidateCount(),
+                            assemblyResult.duplicateFrameCount(),
+                            assemblyResult.decodedTileCount(),
+                            0
+                    ),
+                    diagnostics,
+                    "Capture media input is missing required unique frame content"
+            );
+        }
+        if (!restoreRequested) {
+            return CaptureMediaReceiverResult.eligible(
+                    summary,
+                    diagnostics,
+                    "Capture media input is eligible for restore"
+            );
+        }
+        return restoreDecodedContent(
+                assemblyResult.content().orElseThrow(),
+                request.outputDirectory().orElseThrow(),
+                summary,
+                diagnostics
+        );
     }
 
     private List<NormalizedCaptureFrame> normalizeReadableFrames(
@@ -168,6 +253,65 @@ public final class CaptureMediaReceiverService {
             diagnostics.addAll(normalizationResult.diagnostics());
         });
         return List.copyOf(normalizedFrames);
+    }
+
+    private CaptureMediaReceiverResult restoreDecodedContent(
+            CaptureSessionContent content,
+            Path outputDirectory,
+            CaptureMediaSummary summary,
+            List<CaptureMediaDiagnostic> diagnostics
+    ) {
+        List<CaptureMediaDiagnostic> combinedDiagnostics = new ArrayList<>(diagnostics);
+        try {
+            ReaderRestoreResult restoreResult = readerRestoreService.restore(new ReaderRestoreRequest(
+                    content.sessionId(),
+                    content.finalSessionDigest(),
+                    content.decodedContent(),
+                    outputDirectory
+            ));
+            if (restoreResult.restored()) {
+                return CaptureMediaReceiverResult.restored(
+                        withRestoredFileCount(summary, restoreResult.restoredFileCount()),
+                        combinedDiagnostics,
+                        restoreResult
+                );
+            }
+            if (restoreResult.status() == ReaderRestoreStatus.INCOMPLETE_CONTENT) {
+                combinedDiagnostics.add(CaptureMediaDiagnostic.forMediaSet(
+                        CaptureMediaDiagnosticCode.MISSING_UNIQUE_FRAME,
+                        CaptureMediaDiagnosticSeverity.ERROR,
+                        restoreResult.message()
+                ));
+                return CaptureMediaReceiverResult.incomplete(
+                        summary,
+                        combinedDiagnostics,
+                        "Capture media input is missing required restore content"
+                );
+            }
+            combinedDiagnostics.add(CaptureMediaDiagnostic.forMediaSet(
+                    CaptureMediaDiagnosticCode.RESTORE_FAILURE,
+                    CaptureMediaDiagnosticSeverity.ERROR,
+                    restoreResult.message()
+            ));
+            return CaptureMediaReceiverResult.restoreFailed(
+                    summary,
+                    combinedDiagnostics,
+                    Optional.of(restoreResult),
+                    "Capture media input qualified, but restore did not complete"
+            );
+        } catch (RuntimeException exception) {
+            combinedDiagnostics.add(CaptureMediaDiagnostic.forMediaSet(
+                    CaptureMediaDiagnosticCode.RESTORE_FAILURE,
+                    CaptureMediaDiagnosticSeverity.ERROR,
+                    "Capture media restore failed before reader restore completed"
+            ));
+            return CaptureMediaReceiverResult.restoreFailed(
+                    summary,
+                    combinedDiagnostics,
+                    Optional.empty(),
+                    "Capture media input qualified, but restore did not complete"
+            );
+        }
     }
 
     private CaptureMediaReceiverResult failedFromMediaDiagnostics(
@@ -202,58 +346,43 @@ public final class CaptureMediaReceiverService {
         return "Capture media input cannot be used by the receiver";
     }
 
-    private CaptureMediaReceiverResult fromCleanCaptureResult(
+    private List<CaptureMediaDiagnostic> mapAssemblyDiagnostics(
             CaptureMediaSourceKind sourceKind,
-            CaptureReceiverResult captureResult,
-            Map<String, NormalizedCaptureFrame> framesByCleanSourceId
+            List<CaptureFrameDiagnostic> diagnostics,
+            List<NormalizedCaptureFrame> normalizedFrames
     ) {
-        CaptureMediaSummary summary = fromCaptureSummary(captureResult.summary());
-        List<CaptureMediaDiagnostic> diagnostics = captureResult.diagnostics().stream()
-                .map(diagnostic -> mapCaptureDiagnostic(sourceKind, diagnostic, captureResult.status(), framesByCleanSourceId))
+        Map<MediaSourceContext, NormalizedCaptureFrame> framesBySourceContext = framesBySourceContext(normalizedFrames);
+        return diagnostics.stream()
+                .map(diagnostic -> mapAssemblyDiagnostic(sourceKind, diagnostic, framesBySourceContext))
                 .toList();
-
-        return switch (captureResult.status()) {
-            case RESTORED -> CaptureMediaReceiverResult.restored(
-                    summary,
-                    diagnostics,
-                    captureResult.restoreResult().orElseThrow()
-            );
-            case ELIGIBLE -> CaptureMediaReceiverResult.eligible(summary, diagnostics, captureResult.message());
-            case INCOMPLETE -> CaptureMediaReceiverResult.incomplete(summary, diagnostics, captureResult.message());
-            case REJECTED -> CaptureMediaReceiverResult.rejected(summary, diagnostics, captureResult.message());
-            case RESTORE_FAILED -> CaptureMediaReceiverResult.restoreFailed(
-                    summary,
-                    diagnostics,
-                    captureResult.restoreResult(),
-                    captureResult.message()
-            );
-        };
     }
 
-    private CaptureMediaDiagnostic mapCaptureDiagnostic(
+    private CaptureMediaDiagnostic mapAssemblyDiagnostic(
             CaptureMediaSourceKind sourceKind,
             CaptureFrameDiagnostic diagnostic,
-            CaptureReceiverStatus captureStatus,
-            Map<String, NormalizedCaptureFrame> framesByCleanSourceId
+            Map<MediaSourceContext, NormalizedCaptureFrame> framesBySourceContext
     ) {
-        CaptureMediaDiagnosticSeverity severity = severityFor(diagnostic.code(), captureStatus);
+        CaptureMediaDiagnosticSeverity severity = severityFor(diagnostic.code());
         Optional<NormalizedCaptureFrame> normalizedFrame = diagnostic.sourceId()
-                .map(framesByCleanSourceId::get);
+                .flatMap(sourceId -> diagnostic.callerOrder()
+                        .map(callerOrder -> new MediaSourceContext(sourceId, callerOrder))
+                        .map(framesBySourceContext::get));
         Optional<String> sourceId = normalizedFrame
                 .map(NormalizedCaptureFrame::sourceId)
                 .or(() -> diagnostic.sourceId());
         Optional<Integer> callerOrder = normalizedFrame
                 .map(NormalizedCaptureFrame::callerOrder)
                 .or(() -> diagnostic.callerOrder());
+        boolean sourceScoped = diagnostic.frameScoped();
         return new CaptureMediaDiagnostic(
                 mapDiagnosticCode(diagnostic.code()),
                 severity,
                 severity.blocksRestore(),
-                diagnostic.frameScoped()
+                sourceScoped
                         ? Optional.of(normalizedFrame.map(NormalizedCaptureFrame::sourceKind).orElse(sourceKind))
                         : Optional.empty(),
-                diagnostic.frameScoped() ? sourceId : Optional.empty(),
-                diagnostic.frameScoped() ? callerOrder : Optional.empty(),
+                sourceScoped ? sourceId : Optional.empty(),
+                sourceScoped ? callerOrder : Optional.empty(),
                 Optional.empty(),
                 Optional.empty(),
                 normalizedFrame.map(this::qualityMetricMap).orElse(Map.of()),
@@ -261,16 +390,10 @@ public final class CaptureMediaReceiverService {
         );
     }
 
-    private CaptureMediaDiagnosticSeverity severityFor(
-            CaptureDiagnosticCode code,
-            CaptureReceiverStatus captureStatus
-    ) {
-        if (code == CaptureDiagnosticCode.DUPLICATE_EQUIVALENT_FRAME) {
-            return CaptureMediaDiagnosticSeverity.WARNING;
-        }
-        return captureStatus.terminalFailure()
-                ? CaptureMediaDiagnosticSeverity.ERROR
-                : CaptureMediaDiagnosticSeverity.WARNING;
+    private CaptureMediaDiagnosticSeverity severityFor(CaptureDiagnosticCode code) {
+        return code == CaptureDiagnosticCode.DUPLICATE_EQUIVALENT_FRAME
+                ? CaptureMediaDiagnosticSeverity.WARNING
+                : CaptureMediaDiagnosticSeverity.ERROR;
     }
 
     private CaptureMediaDiagnosticCode mapDiagnosticCode(CaptureDiagnosticCode code) {
@@ -291,94 +414,66 @@ public final class CaptureMediaReceiverService {
     private CaptureMediaSummary mediaSummary(
             MediaIntakeResult intakeResult,
             List<NormalizedCaptureFrame> normalizedFrames,
+            List<CaptureMediaDiagnostic> diagnostics,
+            int acceptedCandidateCount,
+            int duplicateFrameCount,
             int decodedTileCount,
             long restoredFileCount
     ) {
-        int acceptedCandidateCount = normalizedFrames.size();
-        int rejectedCandidateCount = Math.min(
-                intakeResult.submittedSourceCount(),
-                Math.max(0, intakeResult.submittedSourceCount() - acceptedCandidateCount)
-        );
+        int rejectedCandidateCount = rejectedCandidateCount(intakeResult, normalizedFrames, diagnostics);
         return new CaptureMediaSummary(
                 intakeResult.submittedSourceCount(),
                 intakeResult.readableFrames().size(),
                 acceptedCandidateCount,
                 rejectedCandidateCount,
                 0,
-                0,
+                duplicateFrameCount,
                 acceptedCandidateCount,
                 decodedTileCount,
                 restoredFileCount
         );
     }
 
-    private CaptureMediaSummary fromCaptureSummary(CaptureReceiverSummary summary) {
+    private int rejectedCandidateCount(
+            MediaIntakeResult intakeResult,
+            List<NormalizedCaptureFrame> normalizedFrames,
+            List<CaptureMediaDiagnostic> diagnostics
+    ) {
+        int rejectedByNormalization = Math.max(0, intakeResult.readableFrames().size() - normalizedFrames.size());
+        int rejectedByDiagnostics = (int) diagnostics.stream()
+                .filter(CaptureMediaDiagnostic::sourceScoped)
+                .filter(CaptureMediaDiagnostic::blocking)
+                .filter(diagnostic -> !diagnostic.code().duplicate())
+                .count();
+        int unsupportedUnreadableSources = Math.max(0, intakeResult.submittedSourceCount() - intakeResult.readableFrames().size());
+        return Math.min(
+                intakeResult.submittedSourceCount(),
+                Math.max(Math.max(rejectedByNormalization, rejectedByDiagnostics), unsupportedUnreadableSources)
+        );
+    }
+
+    private CaptureMediaSummary withRestoredFileCount(CaptureMediaSummary summary, long restoredFileCount) {
         return new CaptureMediaSummary(
-                summary.submittedFrameCount(),
-                summary.readableFrameCount(),
+                summary.submittedMediaCount(),
+                summary.readableMediaCount(),
                 summary.acceptedCandidateCount(),
-                summary.rejectedFrameCount(),
-                summary.uncertainFrameCount(),
-                summary.duplicateFrameCount(),
-                summary.acceptedCandidateCount(),
+                summary.rejectedCandidateCount(),
+                summary.uncertainCandidateCount(),
+                summary.duplicateMediaFrameCount(),
+                summary.recoveredUniqueFrameCount(),
                 summary.decodedTileCount(),
-                summary.restoredFileCount()
+                restoredFileCount
         );
     }
 
-    private NormalizedCaptureSources writeNormalizedSources(List<NormalizedCaptureFrame> normalizedFrames) throws IOException {
-        Path directory = Files.createTempDirectory("jab4j-capture-media-normalized-");
-        try {
-            List<Path> files = new ArrayList<>(normalizedFrames.size());
-            Map<String, NormalizedCaptureFrame> framesByCleanSourceId = new LinkedHashMap<>();
-            for (int index = 0; index < normalizedFrames.size(); index++) {
-                NormalizedCaptureFrame frame = normalizedFrames.get(index);
-                Path path = directory.resolve("normalized-frame-%04d.png".formatted(index))
-                        .toAbsolutePath()
-                        .normalize();
-                writeNormalizedPng(frame, path);
-                files.add(path);
-                framesByCleanSourceId.put(path.toString(), frame);
-            }
-            return new NormalizedCaptureSources(directory, List.copyOf(files), Map.copyOf(framesByCleanSourceId));
-        } catch (IOException | RuntimeException exception) {
-            deleteNormalizedSources(directory);
-            throw exception;
+    private Map<MediaSourceContext, NormalizedCaptureFrame> framesBySourceContext(
+            List<NormalizedCaptureFrame> normalizedFrames
+    ) {
+        Map<MediaSourceContext, NormalizedCaptureFrame> frames = new LinkedHashMap<>();
+        for (NormalizedCaptureFrame frame : normalizedFrames) {
+            frames.put(new MediaSourceContext(frame.sourceId(), frame.callerOrder()), frame);
         }
-    }
-
-    private void writeNormalizedPng(NormalizedCaptureFrame frame, Path path) throws IOException {
-        BufferedImage image = new BufferedImage(
-                frame.normalizedWidthPixels(),
-                frame.normalizedHeightPixels(),
-                BufferedImage.TYPE_INT_ARGB
-        );
-        image.setRGB(
-                0,
-                0,
-                frame.normalizedWidthPixels(),
-                frame.normalizedHeightPixels(),
-                frame.copyArgbPixels(),
-                0,
-                frame.normalizedWidthPixels()
-        );
-        if (!ImageIO.write(image, "png", path.toFile())) {
-            throw new IOException("No PNG ImageIO writer is available");
-        }
-    }
-
-    private void deleteNormalizedSources(Path directory) {
-        try (var stream = Files.walk(directory)) {
-            stream.sorted(Comparator.reverseOrder()).forEach(path -> {
-                try {
-                    Files.deleteIfExists(path);
-                } catch (IOException exception) {
-                    // Temporary normalized sources are best-effort cleanup after synchronous decode.
-                }
-            });
-        } catch (IOException exception) {
-            // Temporary normalized sources are best-effort cleanup after synchronous decode.
-        }
+        return Map.copyOf(frames);
     }
 
     private Map<String, Double> qualityMetricMap(NormalizedCaptureFrame frame) {
@@ -404,10 +499,6 @@ public final class CaptureMediaReceiverService {
         }
     }
 
-    private record NormalizedCaptureSources(
-            Path directory,
-            List<Path> files,
-            Map<String, NormalizedCaptureFrame> framesByCleanSourceId
-    ) {
+    private record MediaSourceContext(String sourceId, int callerOrder) {
     }
 }
