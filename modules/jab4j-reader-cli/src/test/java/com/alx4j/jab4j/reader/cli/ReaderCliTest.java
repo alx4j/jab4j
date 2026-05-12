@@ -469,6 +469,99 @@ class ReaderCliTest {
     }
 
     @Test
+    @DisplayName("Capture media direct video returns stable unsupported diagnostics when no media service is present")
+    void captureMediaDirectVideoReturnsStableUnsupportedDiagnosticsWithoutService() {
+        Path captureMediaInput = tempDir.resolve("phone-capture.mov");
+        ReaderCli cli = new ReaderCli();
+        ByteArrayOutputStream stdout = new ByteArrayOutputStream();
+        ByteArrayOutputStream stderr = new ByteArrayOutputStream();
+
+        int exitCode = cli.run(
+                new String[] {"--capture-media-input", captureMediaInput.toString()},
+                new PrintStream(stdout, true, StandardCharsets.UTF_8),
+                new PrintStream(stderr, true, StandardCharsets.UTF_8)
+        );
+
+        String stderrText = stderr.toString(StandardCharsets.UTF_8);
+        assertAll(
+                () -> assertEquals(1, exitCode),
+                () -> assertEquals("", stdout.toString(StandardCharsets.UTF_8)),
+                () -> assertTrue(stderrText.contains("CAPTURE_MEDIA_UNSUPPORTED ")),
+                () -> assertTrue(stderrText.contains("captureMediaInput=" + normalized(captureMediaInput))),
+                () -> assertTrue(stderrText.contains("restoreRequested=false")),
+                () -> assertTrue(stderrText.contains("outputDirectory=-")),
+                () -> assertTrue(stderrText.contains("submittedMedia=1")),
+                () -> assertTrue(stderrText.contains("readableMedia=0")),
+                () -> assertTrue(stderrText.contains("rejectedCandidates=1")),
+                () -> assertTrue(stderrText.contains("restoredFiles=0")),
+                () -> assertTrue(stderrText.contains("message=Direct .mov/.mp4 capture media input is unsupported")),
+                () -> assertTrue(stderrText.contains(
+                        "CAPTURE_MEDIA_DIAGNOSTIC code=UNSUPPORTED_CONTAINER severity=ERROR blocking=true sourceKind=VIDEO sourceId=phone-capture.mov"
+                )),
+                () -> assertTrue(stderrText.contains("no adapter is configured"))
+        );
+    }
+
+    @Test
+    @DisplayName("Capture media direct video preserves restore-requested output in unsupported diagnostics")
+    void captureMediaDirectVideoPreservesRestoreRequestedOutputInUnsupportedDiagnostics() {
+        Path captureMediaInput = tempDir.resolve("phone-capture.mp4");
+        Path output = tempDir.resolve("media-restore");
+        ReaderCli cli = new ReaderCli();
+        ByteArrayOutputStream stdout = new ByteArrayOutputStream();
+        ByteArrayOutputStream stderr = new ByteArrayOutputStream();
+
+        int exitCode = cli.run(
+                new String[] {
+                        "--capture-media-input", captureMediaInput.toString(),
+                        "--output", output.toString()
+                },
+                new PrintStream(stdout, true, StandardCharsets.UTF_8),
+                new PrintStream(stderr, true, StandardCharsets.UTF_8)
+        );
+
+        String stderrText = stderr.toString(StandardCharsets.UTF_8);
+        assertAll(
+                () -> assertEquals(1, exitCode),
+                () -> assertEquals("", stdout.toString(StandardCharsets.UTF_8)),
+                () -> assertTrue(stderrText.contains("CAPTURE_MEDIA_UNSUPPORTED ")),
+                () -> assertTrue(stderrText.contains("captureMediaInput=" + normalized(captureMediaInput))),
+                () -> assertTrue(stderrText.contains("restoreRequested=true")),
+                () -> assertTrue(stderrText.contains("outputDirectory=" + normalized(output))),
+                () -> assertTrue(stderrText.contains(
+                        "CAPTURE_MEDIA_DIAGNOSTIC code=UNSUPPORTED_CONTAINER severity=ERROR blocking=true sourceKind=VIDEO sourceId=phone-capture.mp4"
+                ))
+        );
+    }
+
+    @Test
+    @DisplayName("Capture media HEIC returns stable unsupported image diagnostics")
+    void captureMediaHeicReturnsStableUnsupportedImageDiagnostics() {
+        Path captureMediaInput = tempDir.resolve("phone-photo.heic");
+        ReaderCli cli = new ReaderCli();
+        ByteArrayOutputStream stdout = new ByteArrayOutputStream();
+        ByteArrayOutputStream stderr = new ByteArrayOutputStream();
+
+        int exitCode = cli.run(
+                new String[] {"--capture-media-input", captureMediaInput.toString()},
+                new PrintStream(stdout, true, StandardCharsets.UTF_8),
+                new PrintStream(stderr, true, StandardCharsets.UTF_8)
+        );
+
+        String stderrText = stderr.toString(StandardCharsets.UTF_8);
+        assertAll(
+                () -> assertEquals(1, exitCode),
+                () -> assertEquals("", stdout.toString(StandardCharsets.UTF_8)),
+                () -> assertTrue(stderrText.contains("CAPTURE_MEDIA_UNSUPPORTED ")),
+                () -> assertTrue(stderrText.contains("captureMediaInput=" + normalized(captureMediaInput))),
+                () -> assertTrue(stderrText.contains(
+                        "CAPTURE_MEDIA_DIAGNOSTIC code=UNSUPPORTED_IMAGE_FORMAT severity=ERROR blocking=true sourceKind=STILL_IMAGE sourceId=phone-photo.heic"
+                )),
+                () -> assertTrue(stderrText.contains("HEIC/HEIF capture media input is unsupported"))
+        );
+    }
+
+    @Test
     @DisplayName("Usage errors return a usage exit code")
     void usageErrorsReturnUsageExitCode() {
         ReaderCli cli = new ReaderCli();
@@ -492,11 +585,15 @@ class ReaderCliTest {
                 () -> assertTrue(stderrText.contains(
                         "jab4j-reader-cli --capture-input <frames-directory> --output <restore-directory>"
                 )),
+                () -> assertTrue(stderrText.contains(
+                        "jab4j-reader-cli --capture-media-input <media-path> [--output <restore-directory>]"
+                )),
                 () -> assertTrue(stderrText.contains("Input: current writer imageSequence PNG export directory")),
                 () -> assertTrue(stderrText.contains("Capture input: extracted PNG frame directory")),
+                () -> assertTrue(stderrText.contains("Capture media input: MVP-3 still image")),
                 () -> assertTrue(stderrText.contains("frame-sequence.txt is a writer-export validation helper")),
                 () -> assertTrue(stderrText.contains(
-                        "Unsupported: direct .mov/.mp4 video, HEIC, live camera, mobile app, upload, or SaaS capture."
+                        "Unsupported in the first media slice: full real photo recovery, HEIC, direct .mov/.mp4 decoding"
                 ))
         );
     }
