@@ -1,7 +1,9 @@
 package com.alx4j.jab4j.reader.capture.media.input;
 
 import static org.junit.jupiter.api.Assertions.assertAll;
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.awt.image.BufferedImage;
@@ -11,6 +13,7 @@ import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicReference;
 import javax.imageio.ImageIO;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -19,6 +22,10 @@ import com.alx4j.jab4j.reader.capture.media.CaptureMediaDiagnostic;
 import com.alx4j.jab4j.reader.capture.media.CaptureMediaDiagnosticCode;
 import com.alx4j.jab4j.reader.capture.media.CaptureMediaReceiverRequest;
 import com.alx4j.jab4j.reader.capture.media.CaptureMediaSourceKind;
+import com.alx4j.jab4j.reader.capture.media.video.CaptureMediaVideoFrame;
+import com.alx4j.jab4j.reader.capture.media.video.CaptureMediaVideoFrameReadRequest;
+import com.alx4j.jab4j.reader.capture.media.video.CaptureMediaVideoFrameReadResult;
+import com.alx4j.jab4j.reader.capture.media.video.CaptureMediaVideoLimits;
 
 @DisplayName("Capture media still-image intake")
 class CaptureMediaInputIntakeTest {
@@ -113,6 +120,79 @@ class CaptureMediaInputIntakeTest {
     }
 
     @Test
+    @DisplayName("Configured direct-video adapter yields ordered media input frames")
+    void configuredDirectVideoAdapterYieldsOrderedMediaInputFrames() throws Exception {
+        Path video = tempDir.resolve("capture.mp4");
+        Files.writeString(video, "adapter-owned video fixture");
+        CaptureMediaVideoLimits limits = new CaptureMediaVideoLimits(1024L, 1000L, 2, 2, 10L, 2, 100L);
+        AtomicReference<CaptureMediaVideoFrameReadRequest> adapterRequest = new AtomicReference<>();
+        CaptureMediaInputIntake configuredIntake = new CaptureMediaInputIntake(request -> {
+            adapterRequest.set(request);
+            return CaptureMediaVideoFrameReadResult.fromFrames(List.of(
+                    videoFrame("capture.mp4#frame-0", 0, 0L, 0L, 0xFF000000),
+                    videoFrame("capture.mp4#frame-3", 1, 100L, 3L, 0xFFFFFFFF)
+            ), List.of());
+        }, limits);
+
+        MediaIntakeResult result = configuredIntake.read(CaptureMediaReceiverRequest.evaluateVideoFiles(List.of(video)));
+
+        assertAll(
+                () -> assertEquals(2, result.submittedSourceCount()),
+                () -> assertEquals(2, result.readableFrames().size()),
+                () -> assertTrue(result.diagnostics().isEmpty()),
+                () -> assertEquals(video.toAbsolutePath().normalize(), adapterRequest.get().sourceFile()),
+                () -> assertEquals(0, adapterRequest.get().callerOrder()),
+                () -> assertEquals(limits, adapterRequest.get().limits()),
+                () -> assertEquals(List.of(0, 1), result.readableFrames().stream()
+                        .map(MediaInputFrame::callerOrder)
+                        .toList()),
+                () -> assertEquals(List.of("capture.mp4#frame-0", "capture.mp4#frame-3"), result.readableFrames()
+                        .stream()
+                        .map(MediaInputFrame::sourceId)
+                        .toList()),
+                () -> assertEquals(CaptureMediaSourceKind.VIDEO_FILE, result.readableFrames().get(0).sourceKind()),
+                () -> assertEquals("argb", result.readableFrames().get(0).formatName()),
+                () -> assertEquals(0L, result.readableFrames().get(0).timestampMillis().orElseThrow()),
+                () -> assertEquals(3L, result.readableFrames().get(1).frameNumber().orElseThrow()),
+                () -> assertEquals(0xFFFFFFFF, result.readableFrames().get(1).argbPixelAt(0, 0))
+        );
+    }
+
+    @Test
+    @DisplayName("Media input frame releases full-frame pixels while preserving source metadata")
+    void mediaInputFrameReleasesFullFramePixelsWhilePreservingSourceMetadata() {
+        MediaInputFrame frame = new MediaInputFrame(
+                "capture.png",
+                CaptureMediaSourceKind.STILL_IMAGE_FILE,
+                2,
+                2,
+                2,
+                "png",
+                "pixel-hash",
+                new int[] {
+                        0xFF000000, 0xFFFFFFFF,
+                        0xFFFF0000, 0xFF00FF00
+                }
+        );
+        int[] copiedRow = new int[3];
+
+        frame.copyArgbRow(1, 0, copiedRow, 1, 2);
+        frame.releaseArgbPixels();
+        frame.releaseArgbPixels();
+
+        assertAll(
+                () -> assertArrayEquals(new int[] { 0, 0xFFFF0000, 0xFF00FF00 }, copiedRow),
+                () -> assertEquals("capture.png", frame.sourceId()),
+                () -> assertEquals(2, frame.callerOrder()),
+                () -> assertEquals("pixel-hash", frame.pixelSha256()),
+                () -> assertThrows(IllegalStateException.class, () -> frame.argbPixelAt(0, 0)),
+                () -> assertThrows(IllegalStateException.class, frame::copyArgbPixels),
+                () -> assertThrows(IllegalStateException.class,
+                        () -> frame.copyArgbRow(0, 0, new int[1], 0, 1))
+        );
+    }
+
+    @Test
     @DisplayName("Invalid PNG and empty folder produce blocking diagnostics")
     void invalidPngAndEmptyFolderProduceBlockingDiagnostics() throws Exception {
         Path invalidPng = tempDir.resolve("invalid.png");
@@ -140,6 +220,25 @@ class CaptureMediaInputIntakeTest {
         BufferedImage image = new BufferedImage(width, height, BufferedImage.TYPE_INT_ARGB);
         image.setRGB(0, 0, width, height, pixels, 0, width);
         ImageIO.write(image, "png", output.toFile());
+    }
+
+    private CaptureMediaVideoFrame videoFrame(
+            String sourceId,
+            int callerOrder,
+            long timestampMillis,
+            long frameNumber,
+            int pixel
+    ) {
+        return new CaptureMediaVideoFrame(
+                sourceId,
+                callerOrder,
+                timestampMillis,
+                frameNumber,
+                1,
+                1,
+                "argb",
+                new int[] { pixel }
+        );
     }
 
     private String sha256Hex(int[] pixels) throws Exception {

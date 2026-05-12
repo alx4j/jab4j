@@ -2,7 +2,6 @@ package com.alx4j.jab4j.reader.capture.media.input;
 
 import java.awt.image.BufferedImage;
 import java.io.IOException;
-import java.nio.ByteBuffer;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.MessageDigest;
@@ -23,11 +22,47 @@ import com.alx4j.jab4j.reader.capture.media.CaptureMediaDiagnosticCode;
 import com.alx4j.jab4j.reader.capture.media.CaptureMediaDiagnosticSeverity;
 import com.alx4j.jab4j.reader.capture.media.CaptureMediaReceiverRequest;
 import com.alx4j.jab4j.reader.capture.media.CaptureMediaSourceKind;
+import com.alx4j.jab4j.reader.capture.media.video.CaptureMediaVideoFrame;
+import com.alx4j.jab4j.reader.capture.media.video.CaptureMediaVideoFrameReadRequest;
+import com.alx4j.jab4j.reader.capture.media.video.CaptureMediaVideoFrameReadResult;
+import com.alx4j.jab4j.reader.capture.media.video.CaptureMediaVideoFrameSourceAdapter;
+import com.alx4j.jab4j.reader.capture.media.video.CaptureMediaVideoLimits;
 
 /**
- * Discovers still-image media sources and decodes deterministic PNG frames through ImageIO.
+ * Discovers still-image media sources and adapts optional direct-video sources into deterministic frame inputs.
  */
 public final class CaptureMediaInputIntake {
+
+    private final CaptureMediaVideoFrameSourceAdapter videoFrameSourceAdapter;
+    private final CaptureMediaVideoLimits videoLimits;
+
+    /**
+     * Creates media intake with ImageIO still-image support and the first configured direct-video adapter, if any.
+     */
+    public CaptureMediaInputIntake() {
+        this(
+                CaptureMediaVideoFrameSourceAdapter.loadFirstAvailable()
+                        .orElseGet(CaptureMediaVideoFrameSourceAdapter::unsupported),
+                CaptureMediaVideoLimits.conservativeDefaults()
+        );
+    }
+
+    /**
+     * Creates media intake with an explicit direct-video adapter boundary.
+     *
+     * @param videoFrameSourceAdapter optional direct-video frame-source adapter
+     * @param videoLimits direct-video extraction limits supplied to the adapter
+     */
+    public CaptureMediaInputIntake(
+            CaptureMediaVideoFrameSourceAdapter videoFrameSourceAdapter,
+            CaptureMediaVideoLimits videoLimits
+    ) {
+        this.videoFrameSourceAdapter = Objects.requireNonNull(
+                videoFrameSourceAdapter,
+                "videoFrameSourceAdapter must not be null"
+        );
+        this.videoLimits = Objects.requireNonNull(videoLimits, "videoLimits must not be null");
+    }
 
     /**
      * Discovers and decodes one still-image file or one folder of still-image files.
@@ -79,6 +114,10 @@ public final class CaptureMediaInputIntake {
 
         List<CaptureMediaDiagnostic> diagnostics = new ArrayList<>();
         List<Path> sourceFiles = discoverSourceFiles(sourceKind, inputSources, diagnostics);
+        if (sourceKind.video()) {
+            return readVideoSources(sourceFiles, diagnostics);
+        }
+
         List<MediaInputFrame> frames = new ArrayList<>();
         for (int order = 0; order < sourceFiles.size(); order++) {
             Path sourceFile = sourceFiles.get(order);
@@ -118,19 +157,23 @@ public final class CaptureMediaInputIntake {
                     ));
                     continue;
                 }
-                int width = image.getWidth();
-                int height = image.getHeight();
-                int[] pixels = image.getRGB(0, 0, width, height, null, 0, width);
-                frames.add(new MediaInputFrame(
-                        sourceId,
-                        sourceKind,
-                        order,
-                        width,
-                        height,
-                        imageFormatName(sourceFile).orElse(classification.formatName()),
-                        sha256Hex(toArgbBytes(pixels)),
-                        pixels
-                ));
+                try {
+                    int width = image.getWidth();
+                    int height = image.getHeight();
+                    int[] pixels = image.getRGB(0, 0, width, height, null, 0, width);
+                    frames.add(new MediaInputFrame(
+                            sourceId,
+                            sourceKind,
+                            order,
+                            width,
+                            height,
+                            imageFormatName(sourceFile).orElse(classification.formatName()),
+                            sha256Hex(pixels),
+                            pixels
+                    ));
+                } finally {
+                    image.flush();
+                }
             } catch (IOException exception) {
                 diagnostics.add(errorForSource(
                         CaptureMediaDiagnosticCode.UNREADABLE_MEDIA,
@@ -142,6 +185,37 @@ public final class CaptureMediaInputIntake {
             }
         }
         return new MediaIntakeResult(sourceFiles.size(), frames, diagnostics);
+    }
+
+    private MediaIntakeResult readVideoSources(
+            List<Path> sourceFiles,
+            List<CaptureMediaDiagnostic> diagnostics
+    ) {
+        List<MediaInputFrame> frames = new ArrayList<>();
+        int frameOrder = 0;
+        for (int order = 0; order < sourceFiles.size(); order++) {
+            Path sourceFile = sourceFiles.get(order);
+            CaptureMediaVideoFrameReadResult videoResult = videoFrameSourceAdapter.read(
+                    new CaptureMediaVideoFrameReadRequest(sourceFile, order, videoLimits)
+            );
+            diagnostics.addAll(videoResult.diagnostics());
+            for (CaptureMediaVideoFrame videoFrame : videoResult.frames()) {
+                int[] pixels = videoFrame.copyArgbPixels();
+                frames.add(new MediaInputFrame(
+                        videoFrame.sourceId(),
+                        CaptureMediaSourceKind.VIDEO_FILE,
+                        frameOrder++,
+                        videoFrame.widthPixels(),
+                        videoFrame.heightPixels(),
+                        videoFrame.pixelFormat(),
+                        sha256Hex(pixels),
+                        Optional.of(videoFrame.timestampMillis()),
+                        Optional.of(videoFrame.frameNumber()),
+                        pixels
+                ));
+            }
+        }
+        return new MediaIntakeResult(Math.max(sourceFiles.size(), frames.size()), frames, diagnostics);
     }
 
     private List<Path> discoverSourceFiles(
@@ -194,12 +268,6 @@ public final class CaptureMediaInputIntake {
 
     private SourceClassification classify(CaptureMediaSourceKind sourceKind, Path sourceFile) {
         String extension = extension(sourceFile).toLowerCase(Locale.ROOT);
-        if (sourceKind.video()) {
-            return SourceClassification.unsupported(
-                    CaptureMediaDiagnosticCode.UNSUPPORTED_CONTAINER,
-                    "Direct .mov/.mp4 capture media input is unsupported; no adapter is configured"
-            );
-        }
         return switch (extension) {
             case "png" -> SourceClassification.supported("png");
             case "heic", "heif" -> SourceClassification.unsupported(
@@ -244,18 +312,16 @@ public final class CaptureMediaInputIntake {
         }
     }
 
-    private byte[] toArgbBytes(int[] pixels) {
-        ByteBuffer buffer = ByteBuffer.allocate(pixels.length * Integer.BYTES);
-        for (int pixel : pixels) {
-            buffer.putInt(pixel);
-        }
-        return buffer.array();
-    }
-
-    private String sha256Hex(byte[] value) {
+    private String sha256Hex(int[] pixels) {
         try {
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            return HexFormat.of().formatHex(digest.digest(value));
+            for (int pixel : pixels) {
+                digest.update((byte) (pixel >>> 24));
+                digest.update((byte) (pixel >>> 16));
+                digest.update((byte) (pixel >>> 8));
+                digest.update((byte) pixel);
+            }
+            return HexFormat.of().formatHex(digest.digest());
         } catch (NoSuchAlgorithmException exception) {
             throw new IllegalStateException("SHA-256 is not available", exception);
         }

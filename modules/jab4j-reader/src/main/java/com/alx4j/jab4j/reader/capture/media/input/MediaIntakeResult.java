@@ -5,10 +5,10 @@ import java.util.Objects;
 import com.alx4j.jab4j.reader.capture.media.CaptureMediaDiagnostic;
 
 /**
- * Result of deterministic still-image media discovery and PNG intake.
+ * Result of deterministic media discovery and frame intake.
  *
- * @param submittedSourceCount number of regular file sources considered by intake
- * @param readableFrames decoded PNG still-image frames
+ * @param submittedSourceCount number of media sources considered by intake
+ * @param readableFrames decoded still-image frames or adapter-yielded video frames
  * @param diagnostics stable diagnostics for unsupported, unreadable, or empty sources
  */
 public record MediaIntakeResult(
@@ -20,7 +20,7 @@ public record MediaIntakeResult(
     /**
      * Creates a validated immutable intake result.
      *
-     * @param submittedSourceCount number of considered regular file sources
+     * @param submittedSourceCount number of considered media sources
      * @param readableFrames decoded frames
      * @param diagnostics intake diagnostics
      */
@@ -35,9 +35,6 @@ public record MediaIntakeResult(
         }
         if (diagnostics.stream().anyMatch(Objects::isNull)) {
             throw new IllegalArgumentException("diagnostics must not contain null values");
-        }
-        if (readableFrames.size() > submittedSourceCount) {
-            throw new IllegalArgumentException("readable frame count must not exceed submitted source count");
         }
     }
 }
