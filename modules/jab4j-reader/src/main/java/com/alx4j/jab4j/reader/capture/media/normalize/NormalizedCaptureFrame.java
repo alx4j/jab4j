@@ -187,6 +187,47 @@ public final class NormalizedCaptureFrame {
     }
 
     /**
+     * Creates a normalized frame from perspective-corrected ARGB pixels.
+     *
+     * @param frame decoded media input frame
+     * @param layoutProfile matched rendered layout profile
+     * @param frameCorners detected source-space quadrilateral corners
+     * @param frameCoverageRatio detected quadrilateral area divided by source image area
+     * @param skewScore normalized perspective skew estimate
+     * @param correctedArgbPixels row-major perspective-corrected ARGB pixels
+     * @return normalized perspective-corrected frame with source context retained
+     */
+    public static NormalizedCaptureFrame fromPerspectiveCorrectedFrame(
+            MediaInputFrame frame,
+            LayoutProfile layoutProfile,
+            FrameCorners frameCorners,
+            double frameCoverageRatio,
+            double skewScore,
+            int[] correctedArgbPixels
+    ) {
+        Objects.requireNonNull(frame, "frame must not be null");
+        Objects.requireNonNull(layoutProfile, "layoutProfile must not be null");
+        Objects.requireNonNull(frameCorners, "frameCorners must not be null");
+        int normalizedWidth = layoutProfile.frameWidthPx();
+        int normalizedHeight = layoutProfile.frameHeightPx();
+        return new NormalizedCaptureFrame(
+                frame.sourceId(),
+                frame.sourceKind(),
+                frame.callerOrder(),
+                frame.widthPixels(),
+                frame.heightPixels(),
+                normalizedWidth,
+                normalizedHeight,
+                frame.formatName(),
+                frame.pixelSha256(),
+                layoutProfile.profileId(),
+                frameCorners,
+                CaptureMediaQualityMetrics.perspectiveCorrected(frameCoverageRatio, skewScore),
+                correctedArgbPixels
+        );
+    }
+
+    /**
      * Returns the caller-visible source identifier.
      *
      * @return source identifier

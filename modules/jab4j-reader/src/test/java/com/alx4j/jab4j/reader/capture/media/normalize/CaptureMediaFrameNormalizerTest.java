@@ -255,6 +255,65 @@ class CaptureMediaFrameNormalizerTest {
     }
 
     @Test
+    @DisplayName("Generated moderate perspective skew is resampled into a supported layout")
+    void generatedModeratePerspectiveSkewIsResampledIntoSupportedLayout() {
+        int canvasWidth = 1600;
+        int canvasHeight = 900;
+        FrameCorners expectedCorners = new FrameCorners(150, 80, 1370, 110, 1280, 790, 230, 760);
+        int[] renderedFrame = renderedDebugFramePixels();
+        int[] canvas = perspectiveProject(renderedFrame, canvasWidth, canvasHeight, expectedCorners);
+        MediaInputFrame inputFrame = mediaFrame("moderate-perspective.png", canvasWidth, canvasHeight, canvas);
+
+        MediaNormalizationResult result = normalizer.normalize(inputFrame);
+
+        NormalizedCaptureFrame normalized = result.frame().orElseThrow();
+        CaptureMediaQualityMetrics metrics = normalized.qualityMetrics();
+        assertAll(
+                () -> assertTrue(result.accepted()),
+                () -> assertTrue(result.diagnostics().isEmpty()),
+                () -> assertEquals(DEBUG_FRAME_WIDTH, normalized.normalizedWidthPixels()),
+                () -> assertEquals(DEBUG_FRAME_HEIGHT, normalized.normalizedHeightPixels()),
+                () -> assertEquals("debug-low-density", normalized.layoutProfileId()),
+                () -> assertCornersNear(expectedCorners, normalized.frameCorners(), 6.0d),
+                () -> assertTrue(metrics.frameCoverageRatio() > 0.20d),
+                () -> assertTrue(metrics.skewScore() > 0.0d),
+                () -> assertTrue(metrics.skewScore() <= 0.35d),
+                () -> assertEquals(WHITE, normalized.argbPixelAt(OUTER_MARGIN + (TOP_SYNC_BAND / 2), OUTER_MARGIN + 8)),
+                () -> assertEquals(BLACK, normalized.argbPixelAt(OUTER_MARGIN + (TOP_SYNC_BAND / 2), OUTER_MARGIN + 24)),
+                () -> assertEquals(BLACK, normalized.argbPixelAt(
+                        GRID_ORIGIN_Y + (TILE_SLOT_HEIGHT / 2),
+                        GRID_ORIGIN_X + (TILE_SLOT_WIDTH / 2)
+                )),
+                () -> assertEquals(WHITE, normalized.argbPixelAt(
+                        GRID_ORIGIN_Y + (TILE_SLOT_HEIGHT / 2),
+                        GRID_ORIGIN_X + TILE_SLOT_WIDTH + (TILE_GAP / 2)
+                ))
+        );
+    }
+
+    @Test
+    @DisplayName("Generated severe perspective skew is rejected with perspective-too-severe diagnostics")
+    void generatedSeverePerspectiveSkewIsRejectedWithPerspectiveTooSevereDiagnostics() {
+        int canvasWidth = 1600;
+        int canvasHeight = 900;
+        FrameCorners severeCorners = new FrameCorners(450, 70, 1130, 110, 1440, 800, 120, 760);
+        int[] renderedFrame = renderedDebugFramePixels();
+        int[] canvas = perspectiveProject(renderedFrame, canvasWidth, canvasHeight, severeCorners);
+        MediaInputFrame inputFrame = mediaFrame("severe-perspective.png", canvasWidth, canvasHeight, canvas);
+
+        MediaNormalizationResult result = normalizer.normalize(inputFrame);
+
+        CaptureMediaDiagnostic diagnostic = result.diagnostics().get(0);
+        assertAll(
+                () -> assertFalse(result.accepted()),
+                () -> assertTrue(result.frame().isEmpty()),
+                () -> assertEquals(1, result.diagnostics().size()),
+                () -> assertEquals(CaptureMediaDiagnosticCode.PERSPECTIVE_TOO_SEVERE, diagnostic.code()),
+                () -> assertTrue(diagnostic.blocking())
+        );
+    }
+
+    @Test
     @DisplayName("Unsupported dimensions are rejected without arbitrary photo recovery")
     void unsupportedDimensionsAreRejectedWithoutArbitraryPhotoRecovery() {
         MediaInputFrame inputFrame = new MediaInputFrame(
@@ -378,6 +437,40 @@ class CaptureMediaFrameNormalizerTest {
         return canvas;
     }
 
+    private int[] perspectiveProject(
+            int[] renderedFrame,
+            int canvasWidth,
+            int canvasHeight,
+            FrameCorners corners
+    ) {
+        int[] canvas = blankCanvas(canvasWidth, canvasHeight);
+        PerspectiveTransform canvasToFrame = PerspectiveTransform.fromUnitSquareTo(corners).inverse();
+        int left = clamp((int) Math.floor(minX(corners)), 0, canvasWidth - 1);
+        int right = clamp((int) Math.ceil(maxX(corners)), 0, canvasWidth - 1);
+        int top = clamp((int) Math.floor(minY(corners)), 0, canvasHeight - 1);
+        int bottom = clamp((int) Math.ceil(maxY(corners)), 0, canvasHeight - 1);
+        for (int row = top; row <= bottom; row++) {
+            for (int col = left; col <= right; col++) {
+                PerspectiveTransform.PerspectivePoint source = canvasToFrame.map(col, row);
+                if (source.x() < 0.0d || source.x() > 1.0d || source.y() < 0.0d || source.y() > 1.0d) {
+                    continue;
+                }
+                int sourceX = clamp(
+                        (int) Math.round(source.x() * (DEBUG_FRAME_WIDTH - 1)),
+                        0,
+                        DEBUG_FRAME_WIDTH - 1
+                );
+                int sourceY = clamp(
+                        (int) Math.round(source.y() * (DEBUG_FRAME_HEIGHT - 1)),
+                        0,
+                        DEBUG_FRAME_HEIGHT - 1
+                );
+                canvas[(row * canvasWidth) + col] = renderedFrame[(sourceY * DEBUG_FRAME_WIDTH) + sourceX];
+            }
+        }
+        return canvas;
+    }
+
     private int[] blankCanvas(int canvasWidth, int canvasHeight) {
         int[] canvas = new int[canvasWidth * canvasHeight];
         Arrays.fill(canvas, PHOTO_BACKGROUND);
@@ -400,5 +493,50 @@ class CaptureMediaFrameNormalizerTest {
             int destinationOffset = (destinationRow * canvasWidth) + destinationCol;
             System.arraycopy(renderedFrame, sourceOffset, canvas, destinationOffset, copyWidth);
         }
+    }
+
+    private void assertCornersNear(FrameCorners expected, FrameCorners actual, double tolerance) {
+        assertAll(
+                () -> assertEquals(expected.topLeftX(), actual.topLeftX(), tolerance),
+                () -> assertEquals(expected.topLeftY(), actual.topLeftY(), tolerance),
+                () -> assertEquals(expected.topRightX(), actual.topRightX(), tolerance),
+                () -> assertEquals(expected.topRightY(), actual.topRightY(), tolerance),
+                () -> assertEquals(expected.bottomRightX(), actual.bottomRightX(), tolerance),
+                () -> assertEquals(expected.bottomRightY(), actual.bottomRightY(), tolerance),
+                () -> assertEquals(expected.bottomLeftX(), actual.bottomLeftX(), tolerance),
+                () -> assertEquals(expected.bottomLeftY(), actual.bottomLeftY(), tolerance)
+        );
+    }
+
+    private double minX(FrameCorners corners) {
+        return Math.min(
+                Math.min(corners.topLeftX(), corners.topRightX()),
+                Math.min(corners.bottomRightX(), corners.bottomLeftX())
+        );
+    }
+
+    private double maxX(FrameCorners corners) {
+        return Math.max(
+                Math.max(corners.topLeftX(), corners.topRightX()),
+                Math.max(corners.bottomRightX(), corners.bottomLeftX())
+        );
+    }
+
+    private double minY(FrameCorners corners) {
+        return Math.min(
+                Math.min(corners.topLeftY(), corners.topRightY()),
+                Math.min(corners.bottomRightY(), corners.bottomLeftY())
+        );
+    }
+
+    private double maxY(FrameCorners corners) {
+        return Math.max(
+                Math.max(corners.topLeftY(), corners.topRightY()),
+                Math.max(corners.bottomRightY(), corners.bottomLeftY())
+        );
+    }
+
+    private int clamp(int value, int min, int max) {
+        return Math.max(min, Math.min(max, value));
     }
 }
