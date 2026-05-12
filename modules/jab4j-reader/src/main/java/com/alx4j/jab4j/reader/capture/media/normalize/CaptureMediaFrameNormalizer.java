@@ -2,6 +2,7 @@ package com.alx4j.jab4j.reader.capture.media.normalize;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import com.alx4j.jab4j.api.model.LayoutProfile;
@@ -35,7 +36,11 @@ public final class CaptureMediaFrameNormalizer {
     };
     private static final double MIN_GENERATED_FRAME_COVERAGE_RATIO = 0.20d;
     private static final double MAX_GENERATED_PERSPECTIVE_SKEW_SCORE = 0.35d;
+    private static final double MIN_SYNC_BAND_CONTRAST_SCORE = 0.30d;
+    private static final double MAX_GLARE_NEAR_WHITE_RATIO = 0.96d;
+    private static final int GLARE_SAMPLE_STRIDE_PX = 4;
     private static final int MIN_PARTIAL_SYNC_SAMPLES = 4;
+    private static final double MAX_RGB_DISTANCE = Math.sqrt(3.0d * 255.0d * 255.0d);
 
     private final CaptureRenderedLayoutCatalog layoutCatalog;
     private final FixedLayoutPlanner layoutPlanner;
@@ -76,8 +81,15 @@ public final class CaptureMediaFrameNormalizer {
     public MediaNormalizationResult normalize(MediaInputFrame frame) {
         Objects.requireNonNull(frame, "frame must not be null");
         return layoutCatalog.resolve(frame.widthPixels(), frame.heightPixels())
-                .map(profile -> accepted(frame, profile))
+                .map(profile -> normalizeExactRenderedDimensions(frame, profile))
                 .orElseGet(() -> normalizeAxisAlignedInset(frame));
+    }
+
+    private MediaNormalizationResult normalizeExactRenderedDimensions(MediaInputFrame frame, LayoutProfile profile) {
+        Optional<CaptureMediaDiagnostic> qualityDiagnostic = severeQualityDiagnostic(frame, profile);
+        return qualityDiagnostic
+                .map(MediaNormalizationResult::rejected)
+                .orElseGet(() -> accepted(frame, profile));
     }
 
     private MediaNormalizationResult accepted(MediaInputFrame frame, LayoutProfile profile) {
@@ -97,14 +109,149 @@ public final class CaptureMediaFrameNormalizer {
             CaptureMediaDiagnosticCode code,
             String message
     ) {
-        return MediaNormalizationResult.rejected(CaptureMediaDiagnostic.forSource(
+        return rejected(frame, code, Map.of(), message);
+    }
+
+    private MediaNormalizationResult rejected(
+            MediaInputFrame frame,
+            CaptureMediaDiagnosticCode code,
+            Map<String, Double> metrics,
+            String message
+    ) {
+        return MediaNormalizationResult.rejected(new CaptureMediaDiagnostic(
                 code,
                 CaptureMediaDiagnosticSeverity.ERROR,
-                frame.sourceKind(),
-                frame.sourceId(),
-                frame.callerOrder(),
+                true,
+                Optional.of(frame.sourceKind()),
+                Optional.of(frame.sourceId()),
+                Optional.of(frame.callerOrder()),
+                Optional.empty(),
+                Optional.empty(),
+                metrics,
                 message
         ));
+    }
+
+    private Optional<CaptureMediaDiagnostic> severeQualityDiagnostic(MediaInputFrame frame, LayoutProfile profile) {
+        double glareScore = glareScore(frame);
+        if (glareScore > MAX_GLARE_NEAR_WHITE_RATIO) {
+            return Optional.of(qualityDiagnostic(
+                    frame,
+                    CaptureMediaDiagnosticCode.GLARE_OR_OVEREXPOSURE,
+                    Map.of("glareScore", glareScore),
+                    "Capture media frame is overexposed enough that tile contrast is unreliable"
+            ));
+        }
+
+        double blurScore = blurScore(frame, profile);
+        if (blurScore > 1.0d - MIN_SYNC_BAND_CONTRAST_SCORE) {
+            return Optional.of(qualityDiagnostic(
+                    frame,
+                    CaptureMediaDiagnosticCode.BLUR,
+                    Map.of("blurScore", blurScore),
+                    "Capture media frame sync-band contrast is below the supported blur threshold"
+            ));
+        }
+        return Optional.empty();
+    }
+
+    private CaptureMediaDiagnostic qualityDiagnostic(
+            MediaInputFrame frame,
+            CaptureMediaDiagnosticCode code,
+            Map<String, Double> metrics,
+            String message
+    ) {
+        return new CaptureMediaDiagnostic(
+                code,
+                CaptureMediaDiagnosticSeverity.ERROR,
+                true,
+                Optional.of(frame.sourceKind()),
+                Optional.of(frame.sourceId()),
+                Optional.of(frame.callerOrder()),
+                Optional.empty(),
+                Optional.empty(),
+                metrics,
+                message
+        );
+    }
+
+    private double glareScore(MediaInputFrame frame) {
+        int sampledPixels = 0;
+        int nearWhitePixels = 0;
+        for (int row = 0; row < frame.heightPixels(); row += GLARE_SAMPLE_STRIDE_PX) {
+            for (int col = 0; col < frame.widthPixels(); col += GLARE_SAMPLE_STRIDE_PX) {
+                sampledPixels++;
+                if (nearWhite(frame.argbPixelAt(row, col))) {
+                    nearWhitePixels++;
+                }
+            }
+        }
+        return sampledPixels == 0 ? 0.0d : (double) nearWhitePixels / sampledPixels;
+    }
+
+    private boolean nearWhite(int argb) {
+        return red(argb) >= 245 && green(argb) >= 245 && blue(argb) >= 245;
+    }
+
+    private double blurScore(MediaInputFrame frame, LayoutProfile profile) {
+        FixedLayoutPlan layoutPlan = layoutPlanner.plan(profile);
+        int cellWidth = syncCellWidth(layoutPlan);
+        int row = profile.outerMarginPx() + (profile.topSyncBandPx() / 2);
+        int startX = profile.outerMarginPx() + (cellWidth / 2);
+        int endX = profile.frameWidthPx() - profile.outerMarginPx();
+        if (row < 0 || row >= frame.heightPixels() || startX >= endX) {
+            return 1.0d;
+        }
+
+        int previous = frame.argbPixelAt(row, startX);
+        int minimumLuminance = luminance(previous);
+        int maximumLuminance = minimumLuminance;
+        double totalContrast = 0.0d;
+        int transitionCount = 0;
+        for (int x = startX + cellWidth; x < endX; x += cellWidth) {
+            int current = frame.argbPixelAt(row, x);
+            int luminance = luminance(current);
+            minimumLuminance = Math.min(minimumLuminance, luminance);
+            maximumLuminance = Math.max(maximumLuminance, luminance);
+            totalContrast += rgbDistance(previous, current) / MAX_RGB_DISTANCE;
+            previous = current;
+            transitionCount++;
+        }
+        if (transitionCount == 0) {
+            return 1.0d;
+        }
+        if (maximumLuminance - minimumLuminance < 40) {
+            return 0.0d;
+        }
+        double averageContrast = totalContrast / transitionCount;
+        return 1.0d - Math.min(1.0d, averageContrast);
+    }
+
+    private double rgbDistance(int firstArgb, int secondArgb) {
+        int redDelta = red(firstArgb) - red(secondArgb);
+        int greenDelta = green(firstArgb) - green(secondArgb);
+        int blueDelta = blue(firstArgb) - blue(secondArgb);
+        return Math.sqrt(
+                (redDelta * redDelta)
+                        + (greenDelta * greenDelta)
+                        + (blueDelta * blueDelta)
+        );
+    }
+
+    private int red(int argb) {
+        return (argb >>> 16) & 0xFF;
+    }
+
+    private int green(int argb) {
+        return (argb >>> 8) & 0xFF;
+    }
+
+    private int blue(int argb) {
+        return argb & 0xFF;
+    }
+
+    private int luminance(int argb) {
+        return (int) Math.round((0.2126d * red(argb)) + (0.7152d * green(argb)) + (0.0722d * blue(argb)));
     }
 
     private MediaNormalizationResult normalizeAxisAlignedInset(MediaInputFrame frame) {

@@ -58,6 +58,7 @@ final class CaptureMediaCorpusFixtures {
     static final String CORRUPTED_UNREADABLE_IMAGE = "CM-MVP3-CORRUPTED-UNREADABLE-IMAGE";
     static final String EXTERNAL_IPHONE_STILLS = "CM-MVP3-EXTERNAL-IPHONE-STILLS";
     static final String EXTRACTED_VIDEO_FRAMES = "CM-MVP3-EXTRACTED-VIDEO-FRAMES";
+    static final String EXTRACTED_VIDEO_QUALITY_MIX = "CM-MVP3-EXTRACTED-VIDEO-QUALITY-MIX";
     static final String FUTURE_DIRECT_VIDEO = "CM-MVP3-FUTURE-DIRECT-VIDEO";
 
     private static final SessionId FIXED_SESSION_ID =
@@ -263,6 +264,43 @@ final class CaptureMediaCorpusFixtures {
     }
 
     /**
+     * Generates extracted video-frame PNGs with enough clean unique frames plus recoverable and rejected quality frames.
+     *
+     * @param workspace parent directory for temporary scenario files
+     * @return generated media fixture
+     * @throws IOException if fixture files cannot be written
+     */
+    static GeneratedCaptureMediaFixture extractedVideoFramesWithQualityMix(Path workspace) throws IOException {
+        GeneratedFrameSet frameSet = generateFrameSet(workspace, EXTRACTED_VIDEO_QUALITY_MIX);
+        Path mediaDirectory = Files.createDirectories(frameSet.scenarioDirectory().resolve("media"));
+        List<Path> files = new ArrayList<>(writeRenderedFrames(
+                mediaDirectory,
+                frameSet.renderedFrames(),
+                "extracted-video-frame"
+        ));
+
+        Path shifted = mediaDirectory.resolve("extracted-video-frame-9000-compression-shift.png");
+        writePng(shifted, colorShiftedImage(frameSet.renderedFrames().get(0), 18));
+        files.add(shifted);
+
+        Path overexposed = mediaDirectory.resolve("extracted-video-frame-9001-overexposed.png");
+        writePng(overexposed, overexposedImage(frameSet.renderedFrames().get(0)));
+        files.add(overexposed);
+
+        Path blurred = mediaDirectory.resolve("extracted-video-frame-9002-blurred.png");
+        writePng(blurred, blurredImage(frameSet.renderedFrames().get(0)));
+        files.add(blurred);
+
+        return new GeneratedCaptureMediaFixture(
+                EXTRACTED_VIDEO_QUALITY_MIX,
+                frameSet.scenarioDirectory(),
+                mediaDirectory,
+                files,
+                frameSet.renderedFrames().size()
+        );
+    }
+
+    /**
      * Generates tiny `.mov` and `.mp4` placeholders for future direct-video diagnostics.
      *
      * @param workspace parent directory for temporary scenario files
@@ -304,6 +342,7 @@ final class CaptureMediaCorpusFixtures {
                 CORRUPTED_UNREADABLE_IMAGE,
                 EXTERNAL_IPHONE_STILLS,
                 EXTRACTED_VIDEO_FRAMES,
+                EXTRACTED_VIDEO_QUALITY_MIX,
                 FUTURE_DIRECT_VIDEO
         )));
     }
@@ -410,6 +449,58 @@ final class CaptureMediaCorpusFixtures {
             graphics.fillRect(120, 284, 360, 36);
         } finally {
             graphics.dispose();
+        }
+        return image;
+    }
+
+    private static BufferedImage colorShiftedImage(RenderedFrame frame, int colorShift) {
+        BufferedImage image = toImage(frame);
+        for (int y = 0; y < image.getHeight(); y++) {
+            for (int x = 0; x < image.getWidth(); x++) {
+                image.setRGB(x, y, shiftPaletteColor(image.getRGB(x, y), colorShift));
+            }
+        }
+        return image;
+    }
+
+    private static int shiftPaletteColor(int argb, int colorShift) {
+        int red = shiftedChannel((argb >>> 16) & 0xFF, colorShift);
+        int green = shiftedChannel((argb >>> 8) & 0xFF, colorShift);
+        int blue = shiftedChannel(argb & 0xFF, colorShift);
+        return 0xFF000000 | (red << 16) | (green << 8) | blue;
+    }
+
+    private static int shiftedChannel(int value, int colorShift) {
+        return value < 128
+                ? Math.min(255, value + colorShift)
+                : Math.max(0, value - colorShift);
+    }
+
+    private static BufferedImage overexposedImage(RenderedFrame frame) {
+        BufferedImage image = new BufferedImage(frame.widthPixels(), frame.heightPixels(), BufferedImage.TYPE_INT_ARGB);
+        Graphics2D graphics = image.createGraphics();
+        try {
+            graphics.setColor(Color.WHITE);
+            graphics.fillRect(0, 0, image.getWidth(), image.getHeight());
+        } finally {
+            graphics.dispose();
+        }
+        return image;
+    }
+
+    private static BufferedImage blurredImage(RenderedFrame frame) {
+        BufferedImage image = toImage(frame);
+        FixedLayoutPlan layoutPlan = LAYOUT_PLANNER.plan(CAPTURE_LAYOUT);
+        int cellWidth = Math.max(8, layoutPlan.separatorThicknessPx() * 2);
+        int left = CAPTURE_LAYOUT.outerMarginPx();
+        int top = CAPTURE_LAYOUT.outerMarginPx();
+        int rightExclusive = CAPTURE_LAYOUT.frameWidthPx() - CAPTURE_LAYOUT.outerMarginPx();
+        int bottomExclusive = top + CAPTURE_LAYOUT.topSyncBandPx();
+        for (int row = top; row < bottomExclusive; row++) {
+            for (int col = left; col < rightExclusive; col++) {
+                int segmentIndex = (col - left) / cellWidth;
+                image.setRGB(col, row, segmentIndex % 2 == 0 ? 0xFF969696 : 0xFF5A5A5A);
+            }
         }
         return image;
     }
