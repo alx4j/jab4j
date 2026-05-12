@@ -6,7 +6,7 @@
 
   <groupId>com.alx4j</groupId>
   <artifactId>jab4j-parent</artifactId>
-  <version>0.4.3-SNAPSHOT</version>
+  <version>0.4.3</version>
   <packaging>pom</packaging>
 
   <name>jab4j-parent</name>
