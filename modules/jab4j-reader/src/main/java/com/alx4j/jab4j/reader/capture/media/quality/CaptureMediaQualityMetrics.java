@@ -70,6 +70,24 @@ public record CaptureMediaQualityMetrics(
     }
 
     /**
+     * Creates metrics for a perspective-corrected crop from a larger source image.
+     *
+     * @param frameCoverageRatio detected quadrilateral area divided by source image area
+     * @param skewScore normalized perspective skew estimate
+     * @return metrics with measured coverage and skew, plus placeholders for unmeasured values
+     */
+    public static CaptureMediaQualityMetrics perspectiveCorrected(double frameCoverageRatio, double skewScore) {
+        return new CaptureMediaQualityMetrics(
+                frameCoverageRatio,
+                skewScore,
+                NOT_MEASURED,
+                NOT_MEASURED,
+                NOT_MEASURED,
+                NOT_MEASURED
+        );
+    }
+
+    /**
      * Creates metrics where no quality dimension has been measured.
      *
      * @return all-placeholder metrics
