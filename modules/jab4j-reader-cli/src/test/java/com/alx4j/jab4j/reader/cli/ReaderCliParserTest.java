@@ -24,7 +24,8 @@ class ReaderCliParserTest {
         assertAll(
                 () -> assertEquals(Path.of("/tmp/export/imageSequence"), options.inputPath().orElseThrow()),
                 () -> assertEquals(java.util.Optional.empty(), options.captureInputPath()),
-                () -> assertEquals(Path.of("/tmp/restore"), options.outputPath())
+                () -> assertEquals(java.util.Optional.empty(), options.captureMediaInputPath()),
+                () -> assertEquals(Path.of("/tmp/restore"), options.outputPath().orElseThrow())
         );
     }
 
@@ -39,7 +40,39 @@ class ReaderCliParserTest {
         assertAll(
                 () -> assertEquals(java.util.Optional.empty(), options.inputPath()),
                 () -> assertEquals(Path.of("/tmp/capture-frames"), options.captureInputPath().orElseThrow()),
-                () -> assertEquals(Path.of("/tmp/restore"), options.outputPath())
+                () -> assertEquals(java.util.Optional.empty(), options.captureMediaInputPath()),
+                () -> assertEquals(Path.of("/tmp/restore"), options.outputPath().orElseThrow())
+        );
+    }
+
+    @Test
+    @DisplayName("The capture media flag parses into media evaluate-only mode")
+    void parsesCaptureMediaInputPathWithoutOutput() {
+        ReaderCliOptions options = parser.parse(new String[] {
+                "--capture-media-input", "/tmp/media/capture.mov"
+        });
+
+        assertAll(
+                () -> assertEquals(java.util.Optional.empty(), options.inputPath()),
+                () -> assertEquals(java.util.Optional.empty(), options.captureInputPath()),
+                () -> assertEquals(Path.of("/tmp/media/capture.mov"), options.captureMediaInputPath().orElseThrow()),
+                () -> assertEquals(java.util.Optional.empty(), options.outputPath())
+        );
+    }
+
+    @Test
+    @DisplayName("The capture media flag parses into media restore-requested mode with output")
+    void parsesCaptureMediaInputPathWithOutput() {
+        ReaderCliOptions options = parser.parse(new String[] {
+                "--capture-media-input", "/tmp/media/frame.png",
+                "--output", "/tmp/restore"
+        });
+
+        assertAll(
+                () -> assertEquals(java.util.Optional.empty(), options.inputPath()),
+                () -> assertEquals(java.util.Optional.empty(), options.captureInputPath()),
+                () -> assertEquals(Path.of("/tmp/media/frame.png"), options.captureMediaInputPath().orElseThrow()),
+                () -> assertEquals(Path.of("/tmp/restore"), options.outputPath().orElseThrow())
         );
     }
 
@@ -54,7 +87,8 @@ class ReaderCliParserTest {
         assertAll(
                 () -> assertEquals(Path.of("/tmp/export/imageSequence"), options.inputPath().orElseThrow()),
                 () -> assertEquals(java.util.Optional.empty(), options.captureInputPath()),
-                () -> assertEquals(Path.of("/tmp/restore"), options.outputPath())
+                () -> assertEquals(java.util.Optional.empty(), options.captureMediaInputPath()),
+                () -> assertEquals(Path.of("/tmp/restore"), options.outputPath().orElseThrow())
         );
     }
 
@@ -81,6 +115,13 @@ class ReaderCliParserTest {
                         "--output", "/tmp/out"
                 })
         );
+        ReaderCliException duplicateCaptureMedia = assertThrows(
+                ReaderCliException.class,
+                () -> parser.parse(new String[] {
+                        "--capture-media-input", "/tmp/a",
+                        "--capture-media-input", "/tmp/b"
+                })
+        );
         ReaderCliException mutuallyExclusive = assertThrows(
                 ReaderCliException.class,
                 () -> parser.parse(new String[] {
@@ -89,12 +130,38 @@ class ReaderCliParserTest {
                         "--output", "/tmp/out"
                 })
         );
+        ReaderCliException exactAndMedia = assertThrows(
+                ReaderCliException.class,
+                () -> parser.parse(new String[] {
+                        "--input", "/tmp/exact",
+                        "--capture-media-input", "/tmp/media"
+                })
+        );
+        ReaderCliException captureAndMedia = assertThrows(
+                ReaderCliException.class,
+                () -> parser.parse(new String[] {
+                        "--capture-input", "/tmp/capture",
+                        "--capture-media-input", "/tmp/media"
+                })
+        );
 
         assertAll(
-                () -> assertEquals("One input path is required: use --input or --capture-input", missing.getMessage()),
+                () -> assertEquals(
+                        "One input path is required: use --input, --capture-input, or --capture-media-input",
+                        missing.getMessage()
+                ),
                 () -> assertEquals("Only one --input path is supported", duplicate.getMessage()),
                 () -> assertEquals("Only one --capture-input path is supported", duplicateCapture.getMessage()),
-                () -> assertEquals("--input and --capture-input are mutually exclusive", mutuallyExclusive.getMessage())
+                () -> assertEquals(
+                        "Only one --capture-media-input path is supported",
+                        duplicateCaptureMedia.getMessage()
+                ),
+                () -> assertEquals("--input and --capture-input are mutually exclusive", mutuallyExclusive.getMessage()),
+                () -> assertEquals("--input and --capture-media-input are mutually exclusive", exactAndMedia.getMessage()),
+                () -> assertEquals(
+                        "--capture-input and --capture-media-input are mutually exclusive",
+                        captureAndMedia.getMessage()
+                )
         );
     }
 

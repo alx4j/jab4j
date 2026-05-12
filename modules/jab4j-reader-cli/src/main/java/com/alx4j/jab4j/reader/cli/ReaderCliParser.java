@@ -19,6 +19,7 @@ final class ReaderCliParser {
 
         Path input = null;
         Path captureInput = null;
+        Path captureMediaInput = null;
         Path output = null;
         for (int index = 0; index < args.length; index++) {
             String argument = args[index];
@@ -35,6 +36,12 @@ final class ReaderCliParser {
                     }
                     captureInput = Path.of(requireValue(args, ++index, argument));
                 }
+                case "--capture-media-input" -> {
+                    if (captureMediaInput != null) {
+                        throw new ReaderCliException("Only one --capture-media-input path is supported");
+                    }
+                    captureMediaInput = Path.of(requireValue(args, ++index, argument));
+                }
                 case "--output" -> {
                     if (output != null) {
                         throw new ReaderCliException("Only one --output path is supported");
@@ -45,18 +52,38 @@ final class ReaderCliParser {
             }
         }
 
-        if (input != null && captureInput != null) {
+        int inputModeCount = (input != null ? 1 : 0)
+                + (captureInput != null ? 1 : 0)
+                + (captureMediaInput != null ? 1 : 0);
+        if (inputModeCount > 1 && input != null && captureInput != null && captureMediaInput == null) {
             throw new ReaderCliException("--input and --capture-input are mutually exclusive");
         }
-        if (input == null && captureInput == null) {
-            throw new ReaderCliException("One input path is required: use --input or --capture-input");
+        if (inputModeCount > 1 && input != null && captureMediaInput != null && captureInput == null) {
+            throw new ReaderCliException("--input and --capture-media-input are mutually exclusive");
         }
-        if (output == null) {
+        if (inputModeCount > 1 && captureInput != null && captureMediaInput != null && input == null) {
+            throw new ReaderCliException("--capture-input and --capture-media-input are mutually exclusive");
+        }
+        if (inputModeCount > 1) {
+            throw new ReaderCliException(
+                    "Only one input mode is supported: use --input, --capture-input, or --capture-media-input"
+            );
+        }
+        if (inputModeCount == 0) {
+            throw new ReaderCliException(
+                    "One input path is required: use --input, --capture-input, or --capture-media-input"
+            );
+        }
+        if (captureMediaInput == null && output == null) {
             throw new ReaderCliException("One --output path is required");
         }
-        return input != null
-                ? ReaderCliOptions.baseline(input, output)
-                : ReaderCliOptions.capture(captureInput, output);
+        if (input != null) {
+            return ReaderCliOptions.baseline(input, output);
+        }
+        if (captureInput != null) {
+            return ReaderCliOptions.capture(captureInput, output);
+        }
+        return ReaderCliOptions.captureMedia(captureMediaInput, java.util.Optional.ofNullable(output));
     }
 
     private String requireValue(String[] args, int index, String argumentName) {

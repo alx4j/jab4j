@@ -93,4 +93,13 @@ public final class CaptureRenderedLayoutCatalog {
         }
         return Optional.of(matches.get(0));
     }
+
+    /**
+     * Returns supported rendered layout profiles in deterministic catalog order.
+     *
+     * @return immutable supported profiles
+     */
+    public List<LayoutProfile> profiles() {
+        return profiles;
+    }
 }
