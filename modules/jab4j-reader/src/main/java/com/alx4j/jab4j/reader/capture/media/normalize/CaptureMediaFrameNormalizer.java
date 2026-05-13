@@ -737,13 +737,17 @@ public final class CaptureMediaFrameNormalizer {
         int right = profile.frameWidthPx() - 1;
         int bottom = profile.frameHeightPx() - 1;
         int border = layoutPlan.separatorThicknessPx();
-        return correctedFrame.argbPixelAt(0, 0) == WHITE
-                && correctedFrame.argbPixelAt(0, right) == WHITE
-                && correctedFrame.argbPixelAt(bottom, 0) == WHITE
-                && correctedFrame.argbPixelAt(bottom, right) == WHITE
-                && correctedFrame.argbPixelAt(border, border) == BLACK
-                && hasExactSyncBandSample(correctedFrame, profile, layoutPlan, 0, 0)
-                && hasExactTileSlotGridSample(correctedFrame, profile, layoutPlan, 0, 0);
+        try {
+            return correctedFrame.argbPixelAt(0, 0) == WHITE
+                    && correctedFrame.argbPixelAt(0, right) == WHITE
+                    && correctedFrame.argbPixelAt(bottom, 0) == WHITE
+                    && correctedFrame.argbPixelAt(bottom, right) == WHITE
+                    && correctedFrame.argbPixelAt(border, border) == BLACK
+                    && hasExactSyncBandSample(correctedFrame, profile, layoutPlan, 0, 0)
+                    && hasExactTileSlotGridSample(correctedFrame, profile, layoutPlan, 0, 0);
+        } finally {
+            correctedFrame.releaseArgbPixels();
+        }
     }
 
     private double quadrilateralArea(FrameCorners corners) {

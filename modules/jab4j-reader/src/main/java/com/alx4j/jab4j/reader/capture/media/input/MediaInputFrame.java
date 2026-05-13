@@ -2,10 +2,11 @@ package com.alx4j.jab4j.reader.capture.media.input;
 
 import java.util.Arrays;
 import java.util.Objects;
+import java.util.Optional;
 import com.alx4j.jab4j.reader.capture.media.CaptureMediaSourceKind;
 
 /**
- * Decoded still-image media frame with source context and immutable row-major ARGB pixels.
+ * Decoded media frame with immutable source context and a releasable row-major ARGB pixel buffer.
  */
 public final class MediaInputFrame {
 
@@ -16,10 +17,12 @@ public final class MediaInputFrame {
     private final int heightPixels;
     private final String formatName;
     private final String pixelSha256;
-    private final int[] argbPixels;
+    private final Optional<Long> timestampMillis;
+    private final Optional<Long> frameNumber;
+    private volatile int[] argbPixels;
 
     /**
-     * Creates an immutable decoded media frame.
+     * Creates a decoded media frame with immutable metadata and a retained ARGB buffer.
      *
      * @param sourceId caller-visible source identifier
      * @param sourceKind media source kind supplied by the caller
@@ -40,6 +43,46 @@ public final class MediaInputFrame {
             String pixelSha256,
             int[] argbPixels
     ) {
+        this(
+                sourceId,
+                sourceKind,
+                callerOrder,
+                widthPixels,
+                heightPixels,
+                formatName,
+                pixelSha256,
+                Optional.empty(),
+                Optional.empty(),
+                argbPixels
+        );
+    }
+
+    /**
+     * Creates a decoded media frame with optional direct-video timing metadata and a retained ARGB buffer.
+     *
+     * @param sourceId caller-visible source identifier
+     * @param sourceKind media source kind supplied by the caller
+     * @param callerOrder deterministic zero-based traversal order
+     * @param widthPixels image width in pixels
+     * @param heightPixels image height in pixels
+     * @param formatName decoded image format name
+     * @param pixelSha256 SHA-256 hash over row-major ARGB integers
+     * @param timestampMillis optional source timestamp in milliseconds
+     * @param frameNumber optional source frame number
+     * @param argbPixels row-major ARGB pixels
+     */
+    public MediaInputFrame(
+            String sourceId,
+            CaptureMediaSourceKind sourceKind,
+            int callerOrder,
+            int widthPixels,
+            int heightPixels,
+            String formatName,
+            String pixelSha256,
+            Optional<Long> timestampMillis,
+            Optional<Long> frameNumber,
+            int[] argbPixels
+    ) {
         if (sourceId == null || sourceId.isBlank()) {
             throw new IllegalArgumentException("sourceId must not be blank");
         }
@@ -56,6 +99,8 @@ public final class MediaInputFrame {
         if (pixelSha256 == null || pixelSha256.isBlank()) {
             throw new IllegalArgumentException("pixelSha256 must not be blank");
         }
+        this.timestampMillis = nonNegativeOptional(timestampMillis, "timestampMillis");
+        this.frameNumber = nonNegativeOptional(frameNumber, "frameNumber");
         Objects.requireNonNull(argbPixels, "argbPixels must not be null");
         if (argbPixels.length != expectedPixelCount(widthPixels, heightPixels)) {
             throw new IllegalArgumentException("argbPixels length must equal widthPixels * heightPixels");
@@ -134,26 +179,87 @@ public final class MediaInputFrame {
     }
 
     /**
+     * Returns the optional source timestamp in milliseconds.
+     *
+     * @return source timestamp, when available
+     */
+    public Optional<Long> timestampMillis() {
+        return timestampMillis;
+    }
+
+    /**
+     * Returns the optional source frame number.
+     *
+     * @return source frame number, when available
+     */
+    public Optional<Long> frameNumber() {
+        return frameNumber;
+    }
+
+    /**
      * Returns one ARGB pixel without exposing the backing buffer.
      *
      * @param row zero-based row
      * @param col zero-based column
      * @return ARGB pixel value
+     * @throws IllegalStateException when the ARGB buffer has already been released
      */
     public int argbPixelAt(int row, int col) {
         if (row < 0 || row >= heightPixels || col < 0 || col >= widthPixels) {
             throw new IndexOutOfBoundsException("pixel coordinates are outside the frame dimensions");
         }
-        return argbPixels[(row * widthPixels) + col];
+        return retainedArgbPixels()[(row * widthPixels) + col];
+    }
+
+    /**
+     * Copies one contiguous row segment into the caller-provided destination buffer.
+     *
+     * @param row zero-based source row
+     * @param col zero-based source column where the segment starts
+     * @param destination destination pixel buffer
+     * @param destinationOffset zero-based destination offset
+     * @param pixelCount number of pixels to copy
+     * @throws IllegalStateException when the ARGB buffer has already been released
+     */
+    public void copyArgbRow(int row, int col, int[] destination, int destinationOffset, int pixelCount) {
+        Objects.requireNonNull(destination, "destination must not be null");
+        if (row < 0 || row >= heightPixels || col < 0 || pixelCount < 0
+                || (long) col + pixelCount > widthPixels) {
+            throw new IndexOutOfBoundsException("pixel row segment is outside the frame dimensions");
+        }
+        if (destinationOffset < 0 || (long) destinationOffset + pixelCount > destination.length) {
+            throw new IndexOutOfBoundsException("destination range is outside the destination buffer");
+        }
+        System.arraycopy(retainedArgbPixels(), (row * widthPixels) + col, destination, destinationOffset, pixelCount);
     }
 
     /**
      * Returns a defensive copy of the row-major ARGB pixels.
      *
      * @return copied ARGB pixels
+     * @throws IllegalStateException when the ARGB buffer has already been released
      */
     public int[] copyArgbPixels() {
-        return Arrays.copyOf(argbPixels, argbPixels.length);
+        int[] retainedPixels = retainedArgbPixels();
+        return Arrays.copyOf(retainedPixels, retainedPixels.length);
+    }
+
+    /**
+     * Releases the retained full-frame ARGB buffer after the media receiver has normalized this frame.
+     *
+     * <p>Source metadata remains available after release, but pixel accessors throw {@link IllegalStateException}.
+     * The operation is idempotent so cleanup can safely run from failure paths.</p>
+     */
+    public void releaseArgbPixels() {
+        argbPixels = null;
+    }
+
+    private int[] retainedArgbPixels() {
+        int[] retainedPixels = argbPixels;
+        if (retainedPixels == null) {
+            throw new IllegalStateException("ARGB pixels have been released");
+        }
+        return retainedPixels;
     }
 
     private static int expectedPixelCount(int widthPixels, int heightPixels) {
@@ -162,5 +268,15 @@ public final class MediaInputFrame {
             throw new IllegalArgumentException("frame dimensions exceed supported pixel count");
         }
         return (int) expectedPixels;
+    }
+
+    private static Optional<Long> nonNegativeOptional(Optional<Long> value, String fieldName) {
+        Objects.requireNonNull(value, fieldName + " must not be null");
+        value.ifPresent(present -> {
+            if (present < 0L) {
+                throw new IllegalArgumentException(fieldName + " must be non-negative when present");
+            }
+        });
+        return value;
     }
 }

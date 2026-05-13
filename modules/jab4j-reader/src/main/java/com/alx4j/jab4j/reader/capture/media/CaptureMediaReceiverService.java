@@ -18,6 +18,7 @@ import com.alx4j.jab4j.reader.capture.decode.CaptureSessionContent;
 import com.alx4j.jab4j.reader.capture.media.decode.CaptureMediaFrameDecodeResult;
 import com.alx4j.jab4j.reader.capture.media.decode.CaptureMediaFrameDecoder;
 import com.alx4j.jab4j.reader.capture.media.input.CaptureMediaInputIntake;
+import com.alx4j.jab4j.reader.capture.media.input.MediaInputFrame;
 import com.alx4j.jab4j.reader.capture.media.input.MediaIntakeResult;
 import com.alx4j.jab4j.reader.capture.media.normalize.CaptureMediaFrameNormalizer;
 import com.alx4j.jab4j.reader.capture.media.normalize.MediaNormalizationResult;
@@ -167,7 +168,12 @@ public final class CaptureMediaReceiverService {
                     "Capture media input is missing required unique frame content"
             );
         }
-        CaptureMediaFrameDecodeResult decodeResult = mediaFrameDecoder.decode(normalizedFrames);
+        CaptureMediaFrameDecodeResult decodeResult;
+        try {
+            decodeResult = mediaFrameDecoder.decode(normalizedFrames);
+        } finally {
+            normalizedFrames.forEach(NormalizedCaptureFrame::releaseArgbPixels);
+        }
         diagnostics.addAll(decodeResult.diagnostics());
         if (decodeResult.decodedFrames().isEmpty()
                 && diagnostics.stream().noneMatch(CaptureMediaDiagnostic::blocking)) {
@@ -261,11 +267,15 @@ public final class CaptureMediaReceiverService {
             List<CaptureMediaDiagnostic> diagnostics
     ) {
         List<NormalizedCaptureFrame> normalizedFrames = new ArrayList<>();
-        intakeResult.readableFrames().forEach(frame -> {
-            MediaNormalizationResult normalizationResult = frameNormalizer.normalize(frame);
-            normalizationResult.frame().ifPresent(normalizedFrames::add);
-            diagnostics.addAll(normalizationResult.diagnostics());
-        });
+        for (MediaInputFrame frame : intakeResult.readableFrames()) {
+            try {
+                MediaNormalizationResult normalizationResult = frameNormalizer.normalize(frame);
+                normalizationResult.frame().ifPresent(normalizedFrames::add);
+                diagnostics.addAll(normalizationResult.diagnostics());
+            } finally {
+                frame.releaseArgbPixels();
+            }
+        }
         return List.copyOf(normalizedFrames);
     }
 
@@ -387,6 +397,10 @@ public final class CaptureMediaReceiverService {
         Optional<Integer> callerOrder = normalizedFrame
                 .map(NormalizedCaptureFrame::callerOrder)
                 .or(() -> diagnostic.callerOrder());
+        Optional<Long> timestampMillis = normalizedFrame
+                .flatMap(NormalizedCaptureFrame::timestampMillis);
+        Optional<Long> frameNumber = normalizedFrame
+                .flatMap(NormalizedCaptureFrame::frameNumber);
         boolean sourceScoped = diagnostic.frameScoped();
         return new CaptureMediaDiagnostic(
                 mapDiagnosticCode(diagnostic.code()),
@@ -397,8 +411,8 @@ public final class CaptureMediaReceiverService {
                         : Optional.empty(),
                 sourceScoped ? sourceId : Optional.empty(),
                 sourceScoped ? callerOrder : Optional.empty(),
-                Optional.empty(),
-                Optional.empty(),
+                sourceScoped ? timestampMillis : Optional.empty(),
+                sourceScoped ? frameNumber : Optional.empty(),
                 normalizedFrame.map(this::qualityMetricMap).orElse(Map.of()),
                 diagnostic.message()
         );

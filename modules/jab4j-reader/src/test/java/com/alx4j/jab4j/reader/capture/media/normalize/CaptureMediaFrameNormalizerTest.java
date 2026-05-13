@@ -3,9 +3,11 @@ package com.alx4j.jab4j.reader.capture.media.normalize;
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.Arrays;
+import java.util.Optional;
 import java.util.stream.Stream;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -55,6 +57,8 @@ class CaptureMediaFrameNormalizerTest {
                 720,
                 "png",
                 "abc123",
+                Optional.of(250L),
+                Optional.of(7L),
                 pixels
         );
         pixels[0] = 0xFFFF0000;
@@ -63,6 +67,7 @@ class CaptureMediaFrameNormalizerTest {
 
         NormalizedCaptureFrame normalized = result.frame().orElseThrow();
         CaptureMediaQualityMetrics metrics = normalized.qualityMetrics();
+        inputFrame.releaseArgbPixels();
         assertAll(
                 () -> assertTrue(result.accepted()),
                 () -> assertTrue(result.diagnostics().isEmpty()),
@@ -75,12 +80,15 @@ class CaptureMediaFrameNormalizerTest {
                 () -> assertEquals(720, normalized.normalizedHeightPixels()),
                 () -> assertEquals("png", normalized.formatName()),
                 () -> assertEquals("abc123", normalized.pixelSha256()),
+                () -> assertEquals(250L, normalized.timestampMillis().orElseThrow()),
+                () -> assertEquals(7L, normalized.frameNumber().orElseThrow()),
                 () -> assertEquals("debug-low-density", normalized.layoutProfileId()),
                 () -> assertEquals(FrameCorners.exactFrame(1280, 720), normalized.frameCorners()),
                 () -> assertEquals(1.0d, metrics.frameCoverageRatio()),
                 () -> assertEquals(0.0d, metrics.skewScore()),
                 () -> assertEquals(CaptureMediaQualityMetrics.NOT_MEASURED, metrics.blurScore()),
-                () -> assertEquals(0xFFFFFFFF, normalized.argbPixelAt(0, 0))
+                () -> assertEquals(0xFFFFFFFF, normalized.argbPixelAt(0, 0)),
+                () -> assertThrows(IllegalStateException.class, () -> inputFrame.argbPixelAt(0, 0))
         );
     }
 
@@ -340,6 +348,43 @@ class CaptureMediaFrameNormalizerTest {
                 () -> assertEquals(CaptureMediaSourceKind.STILL_IMAGE_FILE, diagnostic.sourceKind().orElseThrow()),
                 () -> assertEquals("phone-photo.png", diagnostic.sourceId().orElseThrow()),
                 () -> assertEquals(0, diagnostic.callerOrder().orElseThrow())
+        );
+    }
+
+    @Test
+    @DisplayName("Normalized frame releases pixels while preserving diagnostic metadata")
+    void normalizedFrameReleasesPixelsWhilePreservingDiagnosticMetadata() {
+        NormalizedCaptureFrame frame = new NormalizedCaptureFrame(
+                "capture.png",
+                CaptureMediaSourceKind.STILL_IMAGE_FILE,
+                4,
+                2,
+                2,
+                1,
+                1,
+                "png",
+                "pixel-hash",
+                "debug-low-density",
+                Optional.of(250L),
+                Optional.of(7L),
+                FrameCorners.exactFrame(1, 1),
+                CaptureMediaQualityMetrics.exactRenderedFrame(),
+                new int[] { WHITE }
+        );
+
+        frame.releaseArgbPixels();
+        frame.releaseArgbPixels();
+
+        assertAll(
+                () -> assertEquals("capture.png", frame.sourceId()),
+                () -> assertEquals(4, frame.callerOrder()),
+                () -> assertEquals("pixel-hash", frame.pixelSha256()),
+                () -> assertEquals(250L, frame.timestampMillis().orElseThrow()),
+                () -> assertEquals(7L, frame.frameNumber().orElseThrow()),
+                () -> assertEquals(FrameCorners.exactFrame(1, 1), frame.frameCorners()),
+                () -> assertEquals(1.0d, frame.qualityMetrics().frameCoverageRatio()),
+                () -> assertThrows(IllegalStateException.class, () -> frame.argbPixelAt(0, 0)),
+                () -> assertThrows(IllegalStateException.class, frame::copyArgbPixels)
         );
     }
 
