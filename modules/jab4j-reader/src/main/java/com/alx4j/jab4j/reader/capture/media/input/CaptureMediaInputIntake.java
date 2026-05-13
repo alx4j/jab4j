@@ -68,7 +68,7 @@ public final class CaptureMediaInputIntake {
      * Discovers and decodes one still-image file or one folder of still-image files.
      *
      * @param inputSource input file or directory
-     * @return intake result with decoded PNG frames and stable diagnostics
+     * @return intake result with decoded PNG/JPEG still-image frames and stable diagnostics
      */
     public MediaIntakeResult read(Path inputSource) {
         return read(List.of(Objects.requireNonNull(inputSource, "inputSource must not be null")));
@@ -78,7 +78,7 @@ public final class CaptureMediaInputIntake {
      * Discovers and decodes sources declared by a media receiver request.
      *
      * @param request media receiver request
-     * @return intake result with decoded PNG frames and stable diagnostics
+     * @return intake result with decoded PNG/JPEG still-image frames and stable diagnostics
      */
     public MediaIntakeResult read(CaptureMediaReceiverRequest request) {
         Objects.requireNonNull(request, "request must not be null");
@@ -89,7 +89,7 @@ public final class CaptureMediaInputIntake {
      * Discovers and decodes source files in deterministic input order.
      *
      * @param inputSources input files or directories
-     * @return intake result with decoded PNG frames and stable diagnostics
+     * @return intake result with decoded PNG/JPEG still-image frames and stable diagnostics
      */
     public MediaIntakeResult read(List<Path> inputSources) {
         return read(CaptureMediaSourceKind.STILL_IMAGE_FILE, inputSources);
@@ -100,7 +100,7 @@ public final class CaptureMediaInputIntake {
      *
      * @param sourceKind caller-declared media source kind
      * @param inputSources input files or directories
-     * @return intake result with decoded PNG frames and stable diagnostics
+     * @return intake result with decoded PNG/JPEG still-image frames and stable diagnostics
      */
     public MediaIntakeResult read(CaptureMediaSourceKind sourceKind, List<Path> inputSources) {
         Objects.requireNonNull(sourceKind, "sourceKind must not be null");
@@ -153,7 +153,7 @@ public final class CaptureMediaInputIntake {
                             sourceKind,
                             sourceId,
                             order,
-                            "PNG media source could not be decoded"
+                            "Still-image media source could not be decoded"
                     ));
                     continue;
                 }
@@ -180,7 +180,7 @@ public final class CaptureMediaInputIntake {
                         sourceKind,
                         sourceId,
                         order,
-                        "PNG media source could not be read"
+                        "Still-image media source could not be read"
                 ));
             }
         }
@@ -270,6 +270,7 @@ public final class CaptureMediaInputIntake {
         String extension = extension(sourceFile).toLowerCase(Locale.ROOT);
         return switch (extension) {
             case "png" -> SourceClassification.supported("png");
+            case "jpg", "jpeg" -> SourceClassification.supported("jpeg");
             case "heic", "heif" -> SourceClassification.unsupported(
                     CaptureMediaDiagnosticCode.UNSUPPORTED_IMAGE_FORMAT,
                     "HEIC/HEIF capture media input is unsupported by this ImageIO-only media intake slice"
@@ -280,7 +281,7 @@ public final class CaptureMediaInputIntake {
             );
             default -> SourceClassification.unsupported(
                     CaptureMediaDiagnosticCode.UNSUPPORTED_IMAGE_FORMAT,
-                    "Media intake supports PNG still-image files only"
+                    "Media intake supports PNG and JPEG still-image files only"
             );
         };
     }

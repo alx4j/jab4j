@@ -32,7 +32,7 @@ import com.alx4j.jab4j.reader.restore.ReaderRestoreStatus;
 /**
  * Public receiver facade for evaluating or restoring MVP-3 capture media.
  *
- * <p>The receiver reads supported PNG media, normalizes accepted candidates, decodes normalized frames with the
+ * <p>The receiver reads supported still-image media, normalizes accepted candidates, decodes normalized frames with the
  * media-owned tolerant sampler, assembles decoded frame identities, and invokes the source-neutral reader restore
  * service only after decoded content is complete and internally consistent.</p>
  */
@@ -45,7 +45,8 @@ public final class CaptureMediaReceiverService {
     private final ReaderRestoreService readerRestoreService;
 
     /**
-     * Creates a media receiver using default PNG intake, normalization, media decode, assembly, and restore services.
+     * Creates a media receiver using default still-image intake, normalization, media decode, assembly, and restore
+     * services.
      */
     public CaptureMediaReceiverService() {
         this(

@@ -24,6 +24,10 @@ import com.alx4j.jab4j.reader.capture.media.CaptureMediaReceiverRequest;
 import com.alx4j.jab4j.reader.capture.media.CaptureMediaReceiverResult;
 import com.alx4j.jab4j.reader.capture.media.CaptureMediaReceiverService;
 import com.alx4j.jab4j.reader.capture.media.CaptureMediaReceiverStatus;
+import com.alx4j.jab4j.reader.capture.media.CaptureMediaSourceKind;
+import com.alx4j.jab4j.reader.capture.media.input.MediaInputFrame;
+import com.alx4j.jab4j.reader.capture.media.normalize.CaptureMediaFrameNormalizer;
+import com.alx4j.jab4j.reader.capture.media.normalize.MediaNormalizationResult;
 
 @DisplayName("Capture media corpus fixtures")
 class CaptureMediaCorpusFixturesTest {
@@ -53,6 +57,32 @@ class CaptureMediaCorpusFixturesTest {
                 () -> assertEquals(uncropped.expectedUniqueFrameCount(), uncropped.mediaFiles().size()),
                 () -> assertTrue(uncroppedImage.getWidth() > exactImage.getWidth()),
                 () -> assertTrue(uncroppedImage.getHeight() > exactImage.getHeight())
+        );
+    }
+
+    @Test
+    @DisplayName("Generated camera-like PNG and JPEG monitor fixtures create detectable candidates")
+    void generatedCameraLikePngAndJpegMonitorFixturesCreateDetectableCandidates() throws Exception {
+        GeneratedCaptureMediaFixture png = CaptureMediaCorpusFixtures.generatedCameraLikeMonitorPng(tempDir);
+        GeneratedCaptureMediaFixture jpeg = CaptureMediaCorpusFixtures.generatedCameraLikeMonitorJpeg(tempDir);
+        CaptureMediaFrameNormalizer normalizer = new CaptureMediaFrameNormalizer();
+
+        MediaNormalizationResult normalizedPng = normalizer.normalize(mediaInputFrame(png.mediaFiles().get(0), "png"));
+        MediaNormalizationResult normalizedJpeg = normalizer.normalize(mediaInputFrame(jpeg.mediaFiles().get(0), "jpeg"));
+
+        assertAll(
+                () -> assertEquals(CaptureMediaCorpusFixtures.GENERATED_CAMERA_LIKE_MONITOR_PNG, png.scenarioId()),
+                () -> assertEquals(CaptureMediaCorpusFixtures.GENERATED_CAMERA_LIKE_MONITOR_JPEG, jpeg.scenarioId()),
+                () -> assertTrue(png.mediaFiles().stream()
+                        .allMatch(path -> path.getFileName().toString().endsWith(".png"))),
+                () -> assertTrue(jpeg.mediaFiles().stream()
+                        .allMatch(path -> path.getFileName().toString().endsWith(".jpeg"))),
+                () -> assertNotNull(ImageIO.read(png.mediaFiles().get(0).toFile())),
+                () -> assertNotNull(ImageIO.read(jpeg.mediaFiles().get(0).toFile())),
+                () -> assertTrue(normalizedPng.accepted(), () -> normalizedPng.diagnostics().toString()),
+                () -> assertTrue(normalizedJpeg.accepted(), () -> normalizedJpeg.diagnostics().toString()),
+                () -> assertEquals("debug-low-density", normalizedPng.frame().orElseThrow().layoutProfileId()),
+                () -> assertEquals("debug-low-density", normalizedJpeg.frame().orElseThrow().layoutProfileId())
         );
     }
 
@@ -291,6 +321,22 @@ class CaptureMediaCorpusFixturesTest {
                 () -> assertTrue(video.mediaFiles().stream().anyMatch(path -> path.getFileName().toString().endsWith(".mp4"))),
                 () -> assertEquals(CaptureMediaCorpusFixtures.EXTERNAL_IPHONE_STILLS, external.scenarioId()),
                 () -> assertEquals("external_private", external.assetAvailability())
+        );
+    }
+
+    private MediaInputFrame mediaInputFrame(Path source, String formatName) throws Exception {
+        BufferedImage image = ImageIO.read(source.toFile());
+        int width = image.getWidth();
+        int height = image.getHeight();
+        return new MediaInputFrame(
+                source.toString(),
+                CaptureMediaSourceKind.STILL_IMAGE_FILE,
+                0,
+                width,
+                height,
+                formatName,
+                "source-hash",
+                image.getRGB(0, 0, width, height, null, 0, width)
         );
     }
 }

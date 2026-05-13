@@ -51,6 +51,8 @@ final class CaptureMediaCorpusFixtures {
 
     static final String GENERATED_EXACT_PNG = "CM-MVP3-GENERATED-EXACT-PNG";
     static final String GENERATED_UNCROPPED_INSET = "CM-MVP3-GENERATED-UNCROPPED-INSET";
+    static final String GENERATED_CAMERA_LIKE_MONITOR_PNG = "CM-MVP3-GENERATED-CAMERA-LIKE-MONITOR-PNG";
+    static final String GENERATED_CAMERA_LIKE_MONITOR_JPEG = "CM-MVP3-GENERATED-CAMERA-LIKE-MONITOR-JPEG";
     static final String DUPLICATE_FRAMES = "CM-MVP3-DUPLICATE-FRAMES";
     static final String MISSING_UNIQUE_FRAMES = "CM-MVP3-MISSING-UNIQUE-FRAMES";
     static final String NO_JAB_FRAME = "CM-MVP3-NO-JAB-FRAME";
@@ -129,6 +131,56 @@ final class CaptureMediaCorpusFixtures {
         }
         return new GeneratedCaptureMediaFixture(
                 GENERATED_UNCROPPED_INSET,
+                frameSet.scenarioDirectory(),
+                mediaDirectory,
+                files,
+                frameSet.renderedFrames().size()
+        );
+    }
+
+    /**
+     * Generates shifted camera-like PNG monitor photos that require tolerant JAB frame region detection.
+     *
+     * @param workspace parent directory for temporary scenario files
+     * @return generated media fixture
+     * @throws IOException if fixture files cannot be written
+     */
+    static GeneratedCaptureMediaFixture generatedCameraLikeMonitorPng(Path workspace) throws IOException {
+        GeneratedFrameSet frameSet = generateFrameSet(workspace, GENERATED_CAMERA_LIKE_MONITOR_PNG);
+        Path mediaDirectory = Files.createDirectories(frameSet.scenarioDirectory().resolve("media"));
+        List<Path> files = new ArrayList<>(frameSet.renderedFrames().size());
+        for (int index = 0; index < frameSet.renderedFrames().size(); index++) {
+            Path path = mediaDirectory.resolve("camera-like-monitor-%04d.png".formatted(index));
+            writePng(path, cameraLikeMonitorImage(frameSet.renderedFrames().get(index)));
+            files.add(path);
+        }
+        return new GeneratedCaptureMediaFixture(
+                GENERATED_CAMERA_LIKE_MONITOR_PNG,
+                frameSet.scenarioDirectory(),
+                mediaDirectory,
+                files,
+                frameSet.renderedFrames().size()
+        );
+    }
+
+    /**
+     * Generates shifted camera-like JPEG monitor photos for normalization-only detector validation.
+     *
+     * @param workspace parent directory for temporary scenario files
+     * @return generated media fixture
+     * @throws IOException if fixture files cannot be written
+     */
+    static GeneratedCaptureMediaFixture generatedCameraLikeMonitorJpeg(Path workspace) throws IOException {
+        GeneratedFrameSet frameSet = generateFrameSet(workspace, GENERATED_CAMERA_LIKE_MONITOR_JPEG);
+        Path mediaDirectory = Files.createDirectories(frameSet.scenarioDirectory().resolve("media"));
+        List<Path> files = new ArrayList<>(frameSet.renderedFrames().size());
+        for (int index = 0; index < frameSet.renderedFrames().size(); index++) {
+            Path path = mediaDirectory.resolve("camera-like-monitor-%04d.jpeg".formatted(index));
+            writeJpeg(path, cameraLikeMonitorImage(frameSet.renderedFrames().get(index)));
+            files.add(path);
+        }
+        return new GeneratedCaptureMediaFixture(
+                GENERATED_CAMERA_LIKE_MONITOR_JPEG,
                 frameSet.scenarioDirectory(),
                 mediaDirectory,
                 files,
@@ -335,6 +387,8 @@ final class CaptureMediaCorpusFixtures {
         return Set.copyOf(new LinkedHashSet<>(List.of(
                 GENERATED_EXACT_PNG,
                 GENERATED_UNCROPPED_INSET,
+                GENERATED_CAMERA_LIKE_MONITOR_PNG,
+                GENERATED_CAMERA_LIKE_MONITOR_JPEG,
                 DUPLICATE_FRAMES,
                 MISSING_UNIQUE_FRAMES,
                 NO_JAB_FRAME,
@@ -435,6 +489,30 @@ final class CaptureMediaCorpusFixtures {
         return canvas;
     }
 
+    private static BufferedImage cameraLikeMonitorImage(RenderedFrame frame) {
+        BufferedImage frameImage = colorShiftedImage(frame, 18);
+        int insetX = 210;
+        int insetY = 140;
+        int canvasWidth = 1700;
+        int canvasHeight = 1000;
+        BufferedImage canvas = new BufferedImage(canvasWidth, canvasHeight, BufferedImage.TYPE_INT_ARGB);
+        Graphics2D graphics = canvas.createGraphics();
+        try {
+            graphics.setColor(new Color(0xFF303840, true));
+            graphics.fillRect(0, 0, canvasWidth, canvasHeight);
+            graphics.setColor(new Color(0xFF15191D, true));
+            graphics.fillRect(48, 42, canvasWidth - 96, canvasHeight - 84);
+            graphics.setColor(new Color(0xFF242A31, true));
+            graphics.fillRect(78, 70, canvasWidth - 156, canvasHeight - 140);
+            graphics.setColor(new Color(0xFF3E4650, true));
+            graphics.fillRect(78, 70, canvasWidth - 156, 48);
+            graphics.drawImage(frameImage, insetX, insetY, null);
+        } finally {
+            graphics.dispose();
+        }
+        return canvas;
+    }
+
     private static BufferedImage nonJabImage() {
         BufferedImage image = new BufferedImage(640, 480, BufferedImage.TYPE_INT_ARGB);
         Graphics2D graphics = image.createGraphics();
@@ -521,6 +599,23 @@ final class CaptureMediaCorpusFixtures {
         if (!ImageIO.write(image, "png", path.toFile())) {
             throw new IOException("No PNG ImageIO writer is available");
         }
+    }
+
+    private static void writeJpeg(Path path, BufferedImage image) throws IOException {
+        if (!ImageIO.write(toRgbImage(image), "jpeg", path.toFile())) {
+            throw new IOException("No JPEG ImageIO writer is available");
+        }
+    }
+
+    private static BufferedImage toRgbImage(BufferedImage image) {
+        BufferedImage rgbImage = new BufferedImage(image.getWidth(), image.getHeight(), BufferedImage.TYPE_INT_RGB);
+        Graphics2D graphics = rgbImage.createGraphics();
+        try {
+            graphics.drawImage(image, 0, 0, null);
+        } finally {
+            graphics.dispose();
+        }
+        return rgbImage;
     }
 
     private static Path writeSourceRoot(Path scenarioDirectory) throws IOException {
