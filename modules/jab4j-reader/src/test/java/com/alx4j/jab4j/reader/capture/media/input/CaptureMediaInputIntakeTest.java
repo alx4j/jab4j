@@ -64,13 +64,59 @@ class CaptureMediaInputIntakeTest {
     }
 
     @Test
-    @DisplayName("Folder intake traverses regular files by file name and reports stable unsupported diagnostics")
-    void folderIntakeTraversesRegularFilesByFileNameAndReportsStableUnsupportedDiagnostics() throws Exception {
+    @DisplayName("JPEG still-image intake accepts JPG and JPEG extensions")
+    void jpegStillImageIntakeAcceptsJpgAndJpegExtensions() throws Exception {
+        Path jpg = tempDir.resolve("frame-001.jpg");
+        Path jpeg = tempDir.resolve("frame-002.jpeg");
+        writeJpeg(jpg, 2, 1, new int[] { 0xFF336699, 0xFF663399 });
+        writeJpeg(jpeg, 1, 2, new int[] { 0xFF112233, 0xFF445566 });
+
+        MediaIntakeResult result = intake.read(List.of(jpg, jpeg));
+
+        assertAll(
+                () -> assertEquals(2, result.submittedSourceCount()),
+                () -> assertEquals(2, result.readableFrames().size()),
+                () -> assertTrue(result.diagnostics().isEmpty()),
+                () -> assertEquals(List.of("frame-001.jpg", "frame-002.jpeg"), result.readableFrames().stream()
+                        .map(frame -> Path.of(frame.sourceId()).getFileName().toString())
+                        .toList()),
+                () -> assertEquals(List.of("jpeg", "jpeg"), result.readableFrames().stream()
+                        .map(MediaInputFrame::formatName)
+                        .toList()),
+                () -> assertEquals(2, result.readableFrames().get(0).widthPixels()),
+                () -> assertEquals(1, result.readableFrames().get(0).heightPixels()),
+                () -> assertEquals(1, result.readableFrames().get(1).widthPixels()),
+                () -> assertEquals(2, result.readableFrames().get(1).heightPixels())
+        );
+    }
+
+    @Test
+    @DisplayName("Uppercase JPG extension is accepted")
+    void uppercaseJpgExtensionIsAccepted() throws Exception {
+        Path source = tempDir.resolve("FRAME.JPG");
+        writeJpeg(source, 1, 1, new int[] { 0xFF778899 });
+
+        MediaIntakeResult result = intake.read(source);
+
+        assertAll(
+                () -> assertEquals(1, result.submittedSourceCount()),
+                () -> assertEquals(1, result.readableFrames().size()),
+                () -> assertTrue(result.diagnostics().isEmpty()),
+                () -> assertEquals(source.toAbsolutePath().normalize().toString(),
+                        result.readableFrames().get(0).sourceId()),
+                () -> assertEquals("jpeg", result.readableFrames().get(0).formatName())
+        );
+    }
+
+    @Test
+    @DisplayName("Folder intake traverses mixed still images by file name and reports stable unsupported diagnostics")
+    void folderIntakeTraversesMixedStillImagesByFileNameAndReportsStableUnsupportedDiagnostics() throws Exception {
         Path sourceDirectory = Files.createDirectories(tempDir.resolve("media"));
+        writeJpeg(sourceDirectory.resolve("a.jpeg"), 1, 1, new int[] { 0xFFFFFFFF });
         writePng(sourceDirectory.resolve("b.png"), 1, 1, new int[] { 0xFF000000 });
-        writePng(sourceDirectory.resolve("a.png"), 1, 1, new int[] { 0xFFFFFFFF });
-        Files.writeString(sourceDirectory.resolve("c.heic"), "unsupported heic");
-        Files.writeString(sourceDirectory.resolve("d.mp4"), "unsupported video");
+        writeJpeg(sourceDirectory.resolve("c.jpg"), 1, 1, new int[] { 0xFF336699 });
+        Files.writeString(sourceDirectory.resolve("d.heic"), "unsupported heic");
+        Files.writeString(sourceDirectory.resolve("e.mp4"), "unsupported video");
         Files.createDirectories(sourceDirectory.resolve("nested"));
 
         MediaIntakeResult result = intake.read(sourceDirectory);
@@ -82,16 +128,21 @@ class CaptureMediaInputIntakeTest {
                 .map(CaptureMediaDiagnostic::code)
                 .toList();
         assertAll(
-                () -> assertEquals(4, result.submittedSourceCount()),
-                () -> assertEquals(List.of("a.png", "b.png"), readableNames),
-                () -> assertEquals(List.of(0, 1), result.readableFrames().stream().map(MediaInputFrame::callerOrder).toList()),
+                () -> assertEquals(5, result.submittedSourceCount()),
+                () -> assertEquals(List.of("a.jpeg", "b.png", "c.jpg"), readableNames),
+                () -> assertEquals(List.of("jpeg", "png", "jpeg"), result.readableFrames().stream()
+                        .map(MediaInputFrame::formatName)
+                        .toList()),
+                () -> assertEquals(List.of(0, 1, 2), result.readableFrames().stream()
+                        .map(MediaInputFrame::callerOrder)
+                        .toList()),
                 () -> assertEquals(2, result.diagnostics().size()),
                 () -> assertEquals(List.of(
                         CaptureMediaDiagnosticCode.UNSUPPORTED_IMAGE_FORMAT,
                         CaptureMediaDiagnosticCode.UNSUPPORTED_CONTAINER
                 ), diagnosticCodes),
                 () -> assertTrue(result.diagnostics().stream().allMatch(CaptureMediaDiagnostic::blocking)),
-                () -> assertEquals(List.of(2, 3), result.diagnostics().stream()
+                () -> assertEquals(List.of(3, 4), result.diagnostics().stream()
                         .map(diagnostic -> diagnostic.callerOrder().orElseThrow())
                         .toList())
         );
@@ -193,6 +244,29 @@ class CaptureMediaInputIntakeTest {
     }
 
     @Test
+    @DisplayName("Corrupt or mislabeled JPEG files produce unreadable-media diagnostics")
+    void corruptOrMislabeledJpegFilesProduceUnreadableMediaDiagnostics() throws Exception {
+        Path corruptJpg = tempDir.resolve("corrupt.jpg");
+        Path mislabeledJpeg = tempDir.resolve("mislabeled.jpeg");
+        Files.writeString(corruptJpg, "not a jpeg");
+        Files.writeString(mislabeledJpeg, "not a jpeg either");
+
+        MediaIntakeResult result = intake.read(List.of(corruptJpg, mislabeledJpeg));
+
+        assertAll(
+                () -> assertEquals(2, result.submittedSourceCount()),
+                () -> assertTrue(result.readableFrames().isEmpty()),
+                () -> assertEquals(List.of(
+                        CaptureMediaDiagnosticCode.UNREADABLE_MEDIA,
+                        CaptureMediaDiagnosticCode.UNREADABLE_MEDIA
+                ), result.diagnostics().stream().map(CaptureMediaDiagnostic::code).toList()),
+                () -> assertEquals(List.of(0, 1), result.diagnostics().stream()
+                        .map(diagnostic -> diagnostic.callerOrder().orElseThrow())
+                        .toList())
+        );
+    }
+
+    @Test
     @DisplayName("Invalid PNG and empty folder produce blocking diagnostics")
     void invalidPngAndEmptyFolderProduceBlockingDiagnostics() throws Exception {
         Path invalidPng = tempDir.resolve("invalid.png");
@@ -220,6 +294,14 @@ class CaptureMediaInputIntakeTest {
         BufferedImage image = new BufferedImage(width, height, BufferedImage.TYPE_INT_ARGB);
         image.setRGB(0, 0, width, height, pixels, 0, width);
         ImageIO.write(image, "png", output.toFile());
+    }
+
+    private void writeJpeg(Path output, int width, int height, int[] pixels) throws Exception {
+        BufferedImage image = new BufferedImage(width, height, BufferedImage.TYPE_INT_RGB);
+        image.setRGB(0, 0, width, height, pixels, 0, width);
+        if (!ImageIO.write(image, "jpeg", output.toFile())) {
+            throw new IllegalStateException("No JPEG ImageIO writer is available");
+        }
     }
 
     private CaptureMediaVideoFrame videoFrame(

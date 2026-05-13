@@ -64,6 +64,11 @@ import com.alx4j.jab4j.reader.capture.CaptureFrameDiagnostic;
 import com.alx4j.jab4j.reader.capture.CaptureReceiverRequest;
 import com.alx4j.jab4j.reader.capture.CaptureReceiverResult;
 import com.alx4j.jab4j.reader.capture.CaptureReceiverSummary;
+import com.alx4j.jab4j.reader.capture.media.CaptureMediaReceiverRequest;
+import com.alx4j.jab4j.reader.capture.media.CaptureMediaReceiverResult;
+import com.alx4j.jab4j.reader.capture.media.CaptureMediaSourceKind;
+import com.alx4j.jab4j.reader.capture.media.CaptureMediaSummary;
+import com.alx4j.jab4j.reader.restore.ReaderRestoreResult;
 import com.alx4j.jab4j.writer.app.WriterApplicationService;
 import com.alx4j.jab4j.writer.app.WriterJobObserver;
 import com.alx4j.jab4j.writer.app.WriterRunRequest;
@@ -469,6 +474,135 @@ class ReaderCliTest {
     }
 
     @Test
+    @DisplayName("Capture media PNG frame folder restores without changing exact PNG mode")
+    void captureMediaPngFrameFolderRestoresWithoutChangingExactPngMode() {
+        RestoreFixture fixture = writeRestorableImageSequence("media-png-restore-source");
+        Path mediaFrames = copyPngFrames(fixture.imageSequence(), "media-png-frames");
+        Path output = tempDir.resolve("media-png-restore");
+        ReaderCli cli = new ReaderCli();
+        ByteArrayOutputStream stdout = new ByteArrayOutputStream();
+        ByteArrayOutputStream stderr = new ByteArrayOutputStream();
+
+        int exitCode = cli.run(
+                new String[] {"--capture-media-input", mediaFrames.toString(), "--output", output.toString()},
+                new PrintStream(stdout, true, StandardCharsets.UTF_8),
+                new PrintStream(stderr, true, StandardCharsets.UTF_8)
+        );
+
+        String stdoutText = stdout.toString(StandardCharsets.UTF_8);
+        assertAll(
+                () -> assertEquals(0, exitCode, () -> stderr.toString(StandardCharsets.UTF_8)),
+                () -> assertTrue(stdoutText.contains("CAPTURE_MEDIA_RESTORED ")),
+                () -> assertTrue(stdoutText.contains("captureMediaInput=" + normalized(mediaFrames))),
+                () -> assertTrue(stdoutText.contains("restoreRequested=true")),
+                () -> assertTrue(stdoutText.contains("outputDirectory=" + normalized(output))),
+                () -> assertTrue(stdoutText.contains("submittedMedia=" + fixture.frameCount())),
+                () -> assertTrue(stdoutText.contains("readableMedia=" + fixture.frameCount())),
+                () -> assertTrue(stdoutText.contains("acceptedCandidates=" + fixture.frameCount())),
+                () -> assertTrue(stdoutText.contains("recoveredUniqueFrames=" + fixture.frameCount())),
+                () -> assertTrue(stdoutText.contains("decodedTiles=" + fixture.decodedTileCount())),
+                () -> assertTrue(stdoutText.contains("restoredFiles=2")),
+                () -> assertTrue(stdoutText.contains("CAPTURE_MEDIA_RESTORE status=RESTORED")),
+                () -> assertEquals("", stderr.toString(StandardCharsets.UTF_8)),
+                () -> assertArrayEquals(
+                        Files.readAllBytes(fixture.sourceRoot().resolve("docs/alpha.txt")),
+                        Files.readAllBytes(output.resolve("payload/docs/alpha.txt"))
+                )
+        );
+    }
+
+    @Test
+    @DisplayName("Capture media JPEG still image reports readable media without claiming frame recovery")
+    void captureMediaJpegStillImageReportsReadableMediaWithoutClaimingFrameRecovery() {
+        Path captureMediaInput = tempDir.resolve("phone-photo.JPG");
+        writeJpeg(captureMediaInput, 320, 240, 0xFF667788);
+        ReaderCli cli = new ReaderCli();
+        ByteArrayOutputStream stdout = new ByteArrayOutputStream();
+        ByteArrayOutputStream stderr = new ByteArrayOutputStream();
+
+        int exitCode = cli.run(
+                new String[] {"--capture-media-input", captureMediaInput.toString()},
+                new PrintStream(stdout, true, StandardCharsets.UTF_8),
+                new PrintStream(stderr, true, StandardCharsets.UTF_8)
+        );
+
+        String stderrText = stderr.toString(StandardCharsets.UTF_8);
+        assertAll(
+                () -> assertEquals(1, exitCode),
+                () -> assertEquals("", stdout.toString(StandardCharsets.UTF_8)),
+                () -> assertTrue(stderrText.contains("CAPTURE_MEDIA_REJECTED ")),
+                () -> assertTrue(stderrText.contains("captureMediaInput=" + normalized(captureMediaInput))),
+                () -> assertTrue(stderrText.contains("restoreRequested=false")),
+                () -> assertTrue(stderrText.contains("submittedMedia=1")),
+                () -> assertTrue(stderrText.contains("readableMedia=1")),
+                () -> assertTrue(stderrText.contains("acceptedCandidates=0")),
+                () -> assertTrue(stderrText.contains("rejectedCandidates=1")),
+                () -> assertTrue(stderrText.contains("message=No recoverable capture media frames were found")),
+                () -> assertTrue(stderrText.contains(
+                        "CAPTURE_MEDIA_DIAGNOSTIC code=SCREEN_OR_FRAME_NOT_FOUND severity=ERROR blocking=true sourceKind=STILL_IMAGE sourceId=phone-photo.JPG callerOrder=0"
+                ))
+        );
+    }
+
+    @Test
+    @DisplayName("Capture media JPEG path preserves restore request and injected restored status output")
+    void captureMediaJpegPathPreservesRestoreRequestAndInjectedRestoredStatusOutput() {
+        Path captureMediaInput = tempDir.resolve("frame.jpeg");
+        Path output = tempDir.resolve("media-restore");
+        List<CaptureMediaReceiverRequest> requests = new ArrayList<>();
+        ReaderCli cli = new ReaderCli(
+                new ReaderApplicationService(),
+                request -> {
+                    throw new AssertionError("capture receiver should not be used for capture media input");
+                },
+                request -> {
+                    requests.add(request);
+                    return CaptureMediaReceiverResult.restored(
+                            new CaptureMediaSummary(1, 1, 1, 0, 0, 0, 1, 4, 2),
+                            List.of(),
+                            ReaderRestoreResult.restored(
+                                    FIXED_SESSION_ID,
+                                    normalized(output),
+                                    2,
+                                    1,
+                                    64
+                            )
+                    );
+                },
+                new ReaderCliParser()
+        );
+        ByteArrayOutputStream stdout = new ByteArrayOutputStream();
+        ByteArrayOutputStream stderr = new ByteArrayOutputStream();
+
+        int exitCode = cli.run(
+                new String[] {"--capture-media-input", captureMediaInput.toString(), "--output", output.toString()},
+                new PrintStream(stdout, true, StandardCharsets.UTF_8),
+                new PrintStream(stderr, true, StandardCharsets.UTF_8)
+        );
+
+        String stdoutText = stdout.toString(StandardCharsets.UTF_8);
+        assertAll(
+                () -> assertEquals(0, exitCode),
+                () -> assertEquals("", stderr.toString(StandardCharsets.UTF_8)),
+                () -> assertEquals(1, requests.size()),
+                () -> assertEquals(CaptureMediaSourceKind.STILL_IMAGE_FILE, requests.get(0).sourceKind()),
+                () -> assertTrue(requests.get(0).restoreRequested()),
+                () -> assertEquals(List.of(normalized(captureMediaInput)), requests.get(0).inputSources()),
+                () -> assertEquals(Optional.of(normalized(output)), requests.get(0).outputDirectory()),
+                () -> assertTrue(stdoutText.contains("CAPTURE_MEDIA_RESTORED ")),
+                () -> assertTrue(stdoutText.contains("captureMediaInput=" + normalized(captureMediaInput))),
+                () -> assertTrue(stdoutText.contains("restoreRequested=true")),
+                () -> assertTrue(stdoutText.contains("readableMedia=1")),
+                () -> assertTrue(stdoutText.contains("acceptedCandidates=1")),
+                () -> assertTrue(stdoutText.contains("decodedTiles=4")),
+                () -> assertTrue(stdoutText.contains("restoredFiles=2")),
+                () -> assertTrue(stdoutText.contains("CAPTURE_MEDIA_RESTORE status=RESTORED sessionId=" + FIXED_SESSION_ID)),
+                () -> assertTrue(stdoutText.contains("restoredDirectories=1")),
+                () -> assertTrue(stdoutText.contains("totalRestoredBytes=64"))
+        );
+    }
+
+    @Test
     @DisplayName("Capture media direct video returns stable unsupported diagnostics when no media service is present")
     void captureMediaDirectVideoReturnsStableUnsupportedDiagnosticsWithoutService() {
         Path captureMediaInput = tempDir.resolve("phone-capture.mov");
@@ -590,7 +724,7 @@ class ReaderCliTest {
                 )),
                 () -> assertTrue(stderrText.contains("Input: current writer imageSequence PNG export directory")),
                 () -> assertTrue(stderrText.contains("Capture input: extracted PNG frame directory")),
-                () -> assertTrue(stderrText.contains("Capture media input: MVP-3 still image")),
+                () -> assertTrue(stderrText.contains("Capture media input: MVP-3 PNG/JPEG still image")),
                 () -> assertTrue(stderrText.contains("frame-sequence.txt is a writer-export validation helper")),
                 () -> assertTrue(stderrText.contains(
                         "Unsupported in the first media slice: full real photo recovery, HEIC, direct .mov/.mp4 decoding"
@@ -870,6 +1004,23 @@ class ReaderCliTest {
         }
     }
 
+    private Path copyPngFrames(Path imageSequence, String directoryName) {
+        Path targetDirectory = tempDir.resolve(directoryName);
+        createDirectories(targetDirectory);
+        try (Stream<Path> files = Files.list(imageSequence)) {
+            List<Path> pngFiles = files
+                    .filter(path -> path.getFileName().toString().endsWith(".png"))
+                    .sorted(Comparator.comparing(path -> path.getFileName().toString()))
+                    .toList();
+            for (Path pngFile : pngFiles) {
+                Files.copy(pngFile, targetDirectory.resolve(pngFile.getFileName()));
+            }
+        } catch (IOException exception) {
+            throw new IllegalStateException("Failed to copy media PNG frames", exception);
+        }
+        return targetDirectory;
+    }
+
     private Path normalized(Path path) {
         return path.toAbsolutePath().normalize();
     }
@@ -914,6 +1065,22 @@ class ReaderCliTest {
             ImageIO.write(image, "png", path.toFile());
         } catch (IOException exception) {
             throw new IllegalStateException("Failed to write test PNG " + path, exception);
+        }
+    }
+
+    private void writeJpeg(Path path, int width, int height, int color) {
+        BufferedImage image = new BufferedImage(width, height, BufferedImage.TYPE_INT_RGB);
+        for (int row = 0; row < height; row++) {
+            for (int col = 0; col < width; col++) {
+                image.setRGB(col, row, color);
+            }
+        }
+        try {
+            if (!ImageIO.write(image, "jpeg", path.toFile())) {
+                throw new IllegalStateException("No JPEG ImageIO writer is available");
+            }
+        } catch (IOException exception) {
+            throw new IllegalStateException("Failed to write test JPEG " + path, exception);
         }
     }
 

@@ -79,8 +79,35 @@ class CaptureMediaReceiverServiceTest {
         );
     }
 
+    @Test
+    @DisplayName("Readable JPEG with unsupported dimensions is rejected as no recoverable frame")
+    void readableJpegWithUnsupportedDimensionsIsRejectedAsNoRecoverableFrame() throws Exception {
+        Path image = tempDir.resolve("uncropped-photo.JPG");
+        writeJpeg(image, 320, 240);
+
+        CaptureMediaReceiverResult result =
+                service.evaluate(CaptureMediaReceiverRequest.evaluateStillImages(List.of(image)));
+
+        assertAll(
+                () -> assertEquals(CaptureMediaReceiverStatus.REJECTED, result.status()),
+                () -> assertEquals(1, result.summary().submittedMediaCount()),
+                () -> assertEquals(1, result.summary().readableMediaCount()),
+                () -> assertEquals(0, result.summary().acceptedCandidateCount()),
+                () -> assertEquals(1, result.summary().rejectedCandidateCount()),
+                () -> assertEquals(CaptureMediaDiagnosticCode.SCREEN_OR_FRAME_NOT_FOUND,
+                        result.diagnostics().get(0).code())
+        );
+    }
+
     private void writePng(Path output, int width, int height) throws Exception {
         BufferedImage image = new BufferedImage(width, height, BufferedImage.TYPE_INT_ARGB);
         ImageIO.write(image, "png", output.toFile());
+    }
+
+    private void writeJpeg(Path output, int width, int height) throws Exception {
+        BufferedImage image = new BufferedImage(width, height, BufferedImage.TYPE_INT_RGB);
+        if (!ImageIO.write(image, "jpeg", output.toFile())) {
+            throw new IllegalStateException("No JPEG ImageIO writer is available");
+        }
     }
 }

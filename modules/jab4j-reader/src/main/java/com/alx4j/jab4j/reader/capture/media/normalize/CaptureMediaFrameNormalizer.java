@@ -44,6 +44,7 @@ public final class CaptureMediaFrameNormalizer {
 
     private final CaptureRenderedLayoutCatalog layoutCatalog;
     private final FixedLayoutPlanner layoutPlanner;
+    private final JabFrameRegionDetector jabFrameRegionDetector;
 
     /**
      * Creates a normalizer backed by the existing supported rendered layout catalog.
@@ -70,6 +71,7 @@ public final class CaptureMediaFrameNormalizer {
     public CaptureMediaFrameNormalizer(CaptureRenderedLayoutCatalog layoutCatalog, FixedLayoutPlanner layoutPlanner) {
         this.layoutCatalog = Objects.requireNonNull(layoutCatalog, "layoutCatalog must not be null");
         this.layoutPlanner = Objects.requireNonNull(layoutPlanner, "layoutPlanner must not be null");
+        this.jabFrameRegionDetector = new JabFrameRegionDetector(this.layoutCatalog, this.layoutPlanner);
     }
 
     /**
@@ -276,15 +278,74 @@ public final class CaptureMediaFrameNormalizer {
                     CaptureMediaDiagnosticCode.MONITOR_TOO_SMALL,
                     "Detected supported rendered frame region is below the minimum generated coverage threshold"
             );
-            case NOT_FOUND -> normalizePerspectiveCorrectedFrame(frame)
-                    .orElseGet(() -> hasPartialAxisAlignedFrameEvidence(frame)
-                            ? rejected(
-                            frame,
-                            CaptureMediaDiagnosticCode.FRAME_PARTIALLY_OUTSIDE_IMAGE,
-                            "Media normalization found partial generated frame evidence at the image boundary"
-                    )
-                            : rejectedUnsupportedDimensions(frame));
+            case NOT_FOUND -> normalizeNonExactRegion(frame);
         };
+    }
+
+    private MediaNormalizationResult normalizeNonExactRegion(MediaInputFrame frame) {
+        Optional<MediaNormalizationResult> generatedPerspectiveResult = normalizePerspectiveCorrectedFrame(frame);
+        if (generatedPerspectiveResult.isPresent()) {
+            return generatedPerspectiveResult.orElseThrow();
+        }
+
+        JabFrameDetectionResult detectionResult = jabFrameRegionDetector.detect(frame);
+        return switch (detectionResult.status()) {
+            case ACCEPTED -> normalizeDetectedJabFrameCandidate(
+                    frame,
+                    detectionResult.selectedCandidate().orElseThrow()
+            );
+            case AMBIGUOUS -> rejected(
+                    frame,
+                    CaptureMediaDiagnosticCode.AMBIGUOUS_SESSIONS,
+                    detectionResult.metrics(),
+                    "Media normalization found multiple plausible JAB frame regions"
+            );
+            case TOO_SMALL -> rejected(
+                    frame,
+                    CaptureMediaDiagnosticCode.MONITOR_TOO_SMALL,
+                    detectionResult.metrics(),
+                    "Detected JAB frame region is below the minimum generated coverage threshold"
+            );
+            case NOT_FOUND -> hasPartialAxisAlignedFrameEvidence(frame)
+                    ? rejected(
+                    frame,
+                    CaptureMediaDiagnosticCode.FRAME_PARTIALLY_OUTSIDE_IMAGE,
+                    "Media normalization found partial generated frame evidence at the image boundary"
+            )
+                    : rejected(
+                    frame,
+                    CaptureMediaDiagnosticCode.SCREEN_OR_FRAME_NOT_FOUND,
+                    detectionResult.metrics(),
+                    "Media normalization did not find a clean supported rendered frame region"
+            );
+        };
+    }
+
+    private MediaNormalizationResult normalizeDetectedJabFrameCandidate(
+            MediaInputFrame frame,
+            JabFrameCandidate candidate
+    ) {
+        PerspectiveTransform transform;
+        try {
+            transform = PerspectiveTransform.fromUnitSquareTo(candidate.corners());
+        } catch (IllegalArgumentException exception) {
+            return rejected(
+                    frame,
+                    CaptureMediaDiagnosticCode.PERSPECTIVE_TOO_SEVERE,
+                    candidate.score().metrics(),
+                    "Detected JAB frame region perspective is not invertible"
+            );
+        }
+
+        int[] correctedPixels = resamplePerspective(frame, candidate.profile(), transform);
+        return MediaNormalizationResult.accepted(NormalizedCaptureFrame.fromPerspectiveCorrectedFrame(
+                frame,
+                candidate.profile(),
+                candidate.corners(),
+                candidate.score().frameCoverageRatio(),
+                candidate.score().skewScore(),
+                correctedPixels
+        ));
     }
 
     private RegionDetection detectAxisAlignedInset(MediaInputFrame frame) {

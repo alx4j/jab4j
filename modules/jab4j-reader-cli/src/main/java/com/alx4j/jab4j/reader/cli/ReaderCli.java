@@ -547,7 +547,7 @@ public final class ReaderCli {
                 "       jab4j-reader-cli --capture-media-input <media-path> [--output <restore-directory>]",
                 "Input: current writer imageSequence PNG export directory, or a parent session directory with exactly one imageSequence child.",
                 "Capture input: extracted PNG frame directory evaluated by the capture receiver; frame-sequence.txt is not required.",
-                "Capture media input: MVP-3 still image, extracted-frame folder, or direct video path evaluated only when the media receiver is available.",
+                "Capture media input: MVP-3 PNG/JPEG still image, extracted-frame folder, or direct video path evaluated only when the media receiver is available.",
                 "frame-sequence.txt is a writer-export validation helper for lossless PNG frames.",
                 "Unsupported in the first media slice: full real photo recovery, HEIC, direct .mov/.mp4 decoding, live camera, mobile app, upload, or SaaS capture."
         );
