@@ -12,12 +12,14 @@ import java.util.Optional;
  * @param captureInputPath optional extracted capture frame directory
  * @param captureMediaInputPath optional MVP-3 capture media source
  * @param outputPath optional restore target directory
+ * @param captureMediaDebugOutputPath optional capture-media debug output directory
  */
 record ReaderCliOptions(
         Optional<Path> inputPath,
         Optional<Path> captureInputPath,
         Optional<Path> captureMediaInputPath,
-        Optional<Path> outputPath
+        Optional<Path> outputPath,
+        Optional<Path> captureMediaDebugOutputPath
 ) {
 
     ReaderCliOptions {
@@ -25,6 +27,10 @@ record ReaderCliOptions(
         captureInputPath = Objects.requireNonNull(captureInputPath, "captureInputPath must not be null");
         captureMediaInputPath = Objects.requireNonNull(captureMediaInputPath, "captureMediaInputPath must not be null");
         outputPath = Objects.requireNonNull(outputPath, "outputPath must not be null");
+        captureMediaDebugOutputPath = Objects.requireNonNull(
+                captureMediaDebugOutputPath,
+                "captureMediaDebugOutputPath must not be null"
+        );
         int inputModes = (inputPath.isPresent() ? 1 : 0)
                 + (captureInputPath.isPresent() ? 1 : 0)
                 + (captureMediaInputPath.isPresent() ? 1 : 0);
@@ -33,6 +39,9 @@ record ReaderCliOptions(
         }
         if ((inputPath.isPresent() || captureInputPath.isPresent()) && outputPath.isEmpty()) {
             throw new IllegalArgumentException("baseline and capture modes require an output path");
+        }
+        if (captureMediaDebugOutputPath.isPresent() && captureMediaInputPath.isEmpty()) {
+            throw new IllegalArgumentException("capture media debug output requires capture-media input");
         }
     }
 
@@ -48,7 +57,8 @@ record ReaderCliOptions(
                 Optional.of(Objects.requireNonNull(inputPath, "inputPath must not be null")),
                 Optional.empty(),
                 Optional.empty(),
-                Optional.of(Objects.requireNonNull(outputPath, "outputPath must not be null"))
+                Optional.of(Objects.requireNonNull(outputPath, "outputPath must not be null")),
+                Optional.empty()
         );
     }
 
@@ -64,7 +74,8 @@ record ReaderCliOptions(
                 Optional.empty(),
                 Optional.of(Objects.requireNonNull(captureInputPath, "captureInputPath must not be null")),
                 Optional.empty(),
-                Optional.of(Objects.requireNonNull(outputPath, "outputPath must not be null"))
+                Optional.of(Objects.requireNonNull(outputPath, "outputPath must not be null")),
+                Optional.empty()
         );
     }
 
@@ -76,11 +87,28 @@ record ReaderCliOptions(
      * @return capture media reader CLI options
      */
     static ReaderCliOptions captureMedia(Path captureMediaInputPath, Optional<Path> outputPath) {
+        return captureMedia(captureMediaInputPath, outputPath, Optional.empty());
+    }
+
+    /**
+     * Creates options for the MVP-3 capture media receiver path with optional debug output.
+     *
+     * @param captureMediaInputPath capture media source path
+     * @param outputPath optional restore target directory
+     * @param captureMediaDebugOutputPath optional debug output directory
+     * @return capture media reader CLI options
+     */
+    static ReaderCliOptions captureMedia(
+            Path captureMediaInputPath,
+            Optional<Path> outputPath,
+            Optional<Path> captureMediaDebugOutputPath
+    ) {
         return new ReaderCliOptions(
                 Optional.empty(),
                 Optional.empty(),
                 Optional.of(Objects.requireNonNull(captureMediaInputPath, "captureMediaInputPath must not be null")),
-                Objects.requireNonNull(outputPath, "outputPath must not be null")
+                Objects.requireNonNull(outputPath, "outputPath must not be null"),
+                Objects.requireNonNull(captureMediaDebugOutputPath, "captureMediaDebugOutputPath must not be null")
         );
     }
 }

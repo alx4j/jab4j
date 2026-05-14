@@ -2,15 +2,25 @@ package com.alx4j.jab4j.reader.capture.media;
 
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.awt.image.BufferedImage;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import javax.imageio.ImageIO;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import com.alx4j.jab4j.reader.capture.decode.CaptureFrameSetAssembler;
+import com.alx4j.jab4j.reader.capture.media.decode.CaptureMediaFrameDecoder;
+import com.alx4j.jab4j.reader.capture.media.input.CaptureMediaInputIntake;
+import com.alx4j.jab4j.reader.capture.media.input.ImageIoCaptureMediaStillImageDecoder;
+import com.alx4j.jab4j.reader.capture.media.normalize.CaptureMediaFrameNormalizer;
+import com.alx4j.jab4j.reader.capture.media.video.CaptureMediaVideoFrameSourceAdapter;
+import com.alx4j.jab4j.reader.capture.media.video.CaptureMediaVideoLimits;
+import com.alx4j.jab4j.reader.restore.ReaderRestoreService;
 
 @DisplayName("Capture media receiver service")
 class CaptureMediaReceiverServiceTest {
@@ -48,7 +58,7 @@ class CaptureMediaReceiverServiceTest {
         Path image = tempDir.resolve("phone-photo.heic");
 
         CaptureMediaReceiverResult result =
-                service.evaluate(CaptureMediaReceiverRequest.evaluateStillImages(List.of(image)));
+                imageIoOnlyService().evaluate(CaptureMediaReceiverRequest.evaluateStillImages(List.of(image)));
 
         assertAll(
                 () -> assertEquals(CaptureMediaReceiverStatus.REJECTED, result.status()),
@@ -99,6 +109,35 @@ class CaptureMediaReceiverServiceTest {
         );
     }
 
+    @Test
+    @DisplayName("Debug output writes normalized candidate PNG and sampler metadata before decode rejects content")
+    void debugOutputWritesNormalizedCandidatePngAndSamplerMetadataBeforeDecodeRejectsContent() throws Exception {
+        Path image = tempDir.resolve("candidate.png");
+        Path debugOutput = tempDir.resolve("capture-media-debug");
+        writePng(image, 1280, 720);
+
+        CaptureMediaReceiverResult result = service.evaluate(
+                CaptureMediaReceiverRequest.evaluateStillImages(List.of(image))
+                        .withDebugOutputDirectory(debugOutput)
+        );
+
+        Path candidateImage = debugOutput.resolve("candidate-0000.png");
+        Path candidateMetadata = debugOutput.resolve("candidate-0000.txt");
+        String metadata = Files.readString(candidateMetadata);
+        assertAll(
+                () -> assertTrue(result.failed()),
+                () -> assertTrue(result.summary().readableMediaCount() > 0),
+                () -> assertFalse(result.diagnostics().stream()
+                        .anyMatch(diagnostic -> diagnostic.code() == CaptureMediaDiagnosticCode.DEBUG_EXPORT_FAILURE)),
+                () -> assertTrue(Files.isRegularFile(candidateImage)),
+                () -> assertTrue(Files.isRegularFile(candidateMetadata)),
+                () -> assertTrue(metadata.contains("sourceId=" + image.toAbsolutePath().normalize())),
+                () -> assertTrue(metadata.contains("layoutProfileId=debug-low-density")),
+                () -> assertTrue(metadata.contains("sampler.candidateAttemptCount=")),
+                () -> assertTrue(metadata.contains("sampler.decodedPayloadCount="))
+        );
+    }
+
     private void writePng(Path output, int width, int height) throws Exception {
         BufferedImage image = new BufferedImage(width, height, BufferedImage.TYPE_INT_ARGB);
         ImageIO.write(image, "png", output.toFile());
@@ -109,5 +148,19 @@ class CaptureMediaReceiverServiceTest {
         if (!ImageIO.write(image, "jpeg", output.toFile())) {
             throw new IllegalStateException("No JPEG ImageIO writer is available");
         }
+    }
+
+    private CaptureMediaReceiverService imageIoOnlyService() {
+        return new CaptureMediaReceiverService(
+                new CaptureMediaInputIntake(
+                        new ImageIoCaptureMediaStillImageDecoder(),
+                        CaptureMediaVideoFrameSourceAdapter.unsupported(),
+                        CaptureMediaVideoLimits.conservativeDefaults()
+                ),
+                new CaptureMediaFrameNormalizer(),
+                new CaptureMediaFrameDecoder(),
+                new CaptureFrameSetAssembler(),
+                new ReaderRestoreService()
+        );
     }
 }

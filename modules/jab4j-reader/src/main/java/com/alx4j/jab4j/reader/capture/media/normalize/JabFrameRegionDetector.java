@@ -47,13 +47,11 @@ final class JabFrameRegionDetector {
     private static final double MIN_SYNC_SCORE = 0.72d;
     private static final double MIN_GRID_SCORE = 0.58d;
     private static final double MIN_ASPECT_SCORE = 0.80d;
-    private static final double MIN_CAMERA_TOTAL_SCORE = 0.49d;
+    private static final double MIN_CAMERA_TOTAL_SCORE = 0.45d;
     private static final double MIN_CAMERA_BORDER_SCORE = 0.08d;
-    private static final double MIN_CAMERA_SYNC_SCORE = 0.54d;
+    private static final double MIN_CAMERA_SYNC_SCORE = 0.48d;
     private static final double MIN_CAMERA_GRID_SCORE = 0.36d;
     private static final double MIN_CAMERA_PALETTE_CONFIDENCE = 0.49d;
-    private static final double DOMINANT_SCORE_MARGIN = 0.08d;
-    private static final double DOMINANT_COVERAGE_RATIO = 1.60d;
     private static final double SAME_REGION_IOU = 0.80d;
     private static final int EDGE_SAMPLE_COUNT = 19;
     private static final int MIN_EDGE_POINTS = 5;
@@ -106,9 +104,6 @@ final class JabFrameRegionDetector {
                 .toList();
         if (acceptedCandidates.isEmpty()) {
             return JabFrameDetectionResult.tooSmall(evidenceCandidates);
-        }
-        if (acceptedCandidates.size() > 1 && !dominates(acceptedCandidates.get(0), acceptedCandidates.get(1))) {
-            return JabFrameDetectionResult.ambiguous(acceptedCandidates);
         }
         return JabFrameDetectionResult.accepted(acceptedCandidates);
     }
@@ -670,11 +665,6 @@ final class JabFrameRegionDetector {
             }
         }
         return List.copyOf(distinct);
-    }
-
-    private boolean dominates(JabFrameCandidate first, JabFrameCandidate second) {
-        return first.score().totalScore() >= second.score().totalScore() + DOMINANT_SCORE_MARGIN
-                || first.score().frameCoverageRatio() >= second.score().frameCoverageRatio() * DOMINANT_COVERAGE_RATIO;
     }
 
     private double intersectionOverUnion(JabFrameCandidate first, JabFrameCandidate second) {

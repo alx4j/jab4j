@@ -40,8 +40,21 @@ public final class CaptureMediaTilePayloadSampler {
     private static final int WHITE_INDEX = 7;
     private static final int MIN_MODULE_SIZE_PX = 4;
     private static final int SUPPORTED_PROTOCOL_COMPATIBILITY_VERSION = 1;
+    private static final double MAX_RGB_DISTANCE = Math.sqrt(3.0d * 255.0d * 255.0d);
+    private static final double CAMERA_MAX_ACCEPTED_RGB_DISTANCE = 170.0d;
+    private static final double MIN_BORDER_SIGNATURE_WHITE_RATIO = 0.60d;
+    private static final double MAX_BORDER_SIGNATURE_NON_WHITE_RATIO = 0.10d;
+    private static final double MAX_BORDER_SIGNATURE_REJECTED_RATIO = 0.40d;
+    private static final int CAMERA_SLOT_ALIGNMENT_RADIUS_PX = 56;
+    private static final int CAMERA_SLOT_ALIGNMENT_STEP_PX = 4;
+    private static final int CAMERA_SLOT_ALIGNMENT_SAMPLE_STRIDE_PX = 4;
+    private static final double MIN_CAMERA_BORDER_WHITE_RATIO = 0.54d;
+    private static final double MAX_CAMERA_BORDER_REJECTED_RATIO = 0.08d;
+    private static final double MIN_CAMERA_BORDER_STRONG_SIDE_RATIO = 0.68d;
+    private static final double MIN_CAMERA_BORDER_MODERATE_SIDE_RATIO = 0.42d;
 
     private final CaptureMediaPaletteSampler paletteSampler;
+    private final List<Integer> paletteArgb;
     private final CaptureRenderedLayoutCatalog layoutCatalog;
     private final FixedLayoutPlanner layoutPlanner;
     private final TileDecoder tileDecoder;
@@ -81,6 +94,7 @@ public final class CaptureMediaTilePayloadSampler {
             TilePayloadEnvelopeCodec envelopeCodec
     ) {
         this.paletteSampler = Objects.requireNonNull(paletteSampler, "paletteSampler must not be null");
+        this.paletteArgb = this.paletteSampler.paletteArgb();
         this.layoutCatalog = Objects.requireNonNull(layoutCatalog, "layoutCatalog must not be null");
         this.layoutPlanner = Objects.requireNonNull(layoutPlanner, "layoutPlanner must not be null");
         this.tileDecoder = Objects.requireNonNull(tileDecoder, "tileDecoder must not be null");
@@ -163,18 +177,80 @@ public final class CaptureMediaTilePayloadSampler {
         return FrameSample.accepted(payloads, diagnostics, confidence);
     }
 
+    /**
+     * Inspects sampler decisions for one normalized frame without changing restore behavior.
+     *
+     * <p>This diagnostic path is intended for MVP-3 media tuning. It exposes the same tile-slot, side-version,
+     * palette, finder, tile-decode, and envelope-validation decisions used by {@link #sample(NormalizedCaptureFrame)}
+     * so exported normalized candidates can be analyzed without returning to the original phone photo.</p>
+     *
+     * @param frame normalized media frame
+     * @return deterministic sampler inspection result
+     */
+    public FrameInspection inspect(NormalizedCaptureFrame frame) {
+        Objects.requireNonNull(frame, "frame must not be null");
+        Optional<LayoutProfile> resolvedLayout = layoutCatalog
+                .resolve(frame.normalizedWidthPixels(), frame.normalizedHeightPixels())
+                .filter(profile -> profile.profileId().equals(frame.layoutProfileId()));
+        if (resolvedLayout.isEmpty()) {
+            return new FrameInspection(
+                    frame.sourceId(),
+                    frame.layoutProfileId(),
+                    List.of(),
+                    0,
+                    0,
+                    0,
+                    0
+            );
+        }
+
+        FixedLayoutPlan layoutPlan = layoutPlanner.plan(resolvedLayout.orElseThrow());
+        List<SlotInspection> slots = new ArrayList<>();
+        int candidateAttemptCount = 0;
+        int paletteRejectedAttemptCount = 0;
+        int noFinderAttemptCount = 0;
+        int decodedPayloadCount = 0;
+        List<TilePlacement> placements = layoutPlan.tilePlacements();
+        for (int tileIndex = 0; tileIndex < placements.size(); tileIndex++) {
+            SlotInspection slot = inspectSlot(frame, layoutPlan, placements.get(tileIndex), tileIndex);
+            slots.add(slot);
+            for (CandidateInspection candidate : slot.candidates()) {
+                candidateAttemptCount++;
+                if (candidate.status() == CandidateInspectionStatus.PALETTE_REJECTED) {
+                    paletteRejectedAttemptCount++;
+                } else if (candidate.status() == CandidateInspectionStatus.NO_FINDER) {
+                    noFinderAttemptCount++;
+                }
+                if (candidate.decodeStatus() == DecodeInspectionStatus.ACCEPTED_PAYLOAD) {
+                    decodedPayloadCount++;
+                }
+            }
+        }
+        return new FrameInspection(
+                frame.sourceId(),
+                frame.layoutProfileId(),
+                slots,
+                candidateAttemptCount,
+                noFinderAttemptCount,
+                paletteRejectedAttemptCount,
+                decodedPayloadCount
+        );
+    }
+
     private SlotSample sampleSlot(
             NormalizedCaptureFrame frame,
             FixedLayoutPlan layoutPlan,
             TilePlacement placement,
             int tileIndex
     ) {
-        BorderSample borderSample = sampleRenderedTileBorder(frame, layoutPlan, placement);
+        TilePlacement effectivePlacement = alignedTilePlacement(frame, layoutPlan, placement);
+        BorderSample borderSample = sampleRenderedTileBorder(frame, layoutPlan, effectivePlacement);
         if (borderSample.status() != BorderSampleStatus.SIGNATURE) {
-            if (borderSample.status() == BorderSampleStatus.REJECTED && hasInteriorContent(frame, layoutPlan, placement)) {
+            if (borderSample.status() == BorderSampleStatus.REJECTED
+                    && hasInteriorContent(frame, layoutPlan, effectivePlacement)) {
                 return SlotSample.rejected(borderSample.paletteConfidence().orElseThrow());
             }
-            return hasInteriorContent(frame, layoutPlan, placement)
+            return hasInteriorContent(frame, layoutPlan, effectivePlacement)
                     ? SlotSample.noSignatureContent()
                     : SlotSample.empty();
         }
@@ -182,7 +258,7 @@ public final class CaptureMediaTilePayloadSampler {
         List<CandidateSample> candidates = new ArrayList<>();
         CandidateSample rejectedCandidate = null;
         for (int sideVersion = tileCodecProfile.minSideVersion(); sideVersion <= tileCodecProfile.maxSideVersion(); sideVersion++) {
-            CandidateSample candidate = sampleCandidate(frame, layoutPlan, placement, tileIndex, sideVersion);
+            CandidateSample candidate = sampleCandidate(frame, layoutPlan, effectivePlacement, tileIndex, sideVersion);
             if (candidate.status() == CandidateSampleStatus.REJECTED) {
                 rejectedCandidate = lowerConfidence(rejectedCandidate, candidate);
             } else if (candidate.status() == CandidateSampleStatus.CANDIDATE) {
@@ -205,6 +281,131 @@ public final class CaptureMediaTilePayloadSampler {
         return SlotSample.undecodable(Optional.empty());
     }
 
+    private SlotInspection inspectSlot(
+            NormalizedCaptureFrame frame,
+            FixedLayoutPlan layoutPlan,
+            TilePlacement placement,
+            int tileIndex
+    ) {
+        TilePlacement effectivePlacement = alignedTilePlacement(frame, layoutPlan, placement);
+        BorderSample borderSample = sampleRenderedTileBorder(frame, layoutPlan, effectivePlacement);
+        boolean interiorContent = hasInteriorContent(frame, layoutPlan, effectivePlacement);
+        if (borderSample.status() != BorderSampleStatus.SIGNATURE) {
+            return new SlotInspection(
+                    tileIndex,
+                    inspectionStatus(borderSample.status()),
+                    interiorContent,
+                    List.of()
+            );
+        }
+
+        List<CandidateInspection> candidates = new ArrayList<>();
+        for (int sideVersion = tileCodecProfile.minSideVersion(); sideVersion <= tileCodecProfile.maxSideVersion(); sideVersion++) {
+            CandidateSample candidate = sampleCandidate(frame, layoutPlan, effectivePlacement, tileIndex, sideVersion);
+            DecodeInspectionStatus decodeStatus = DecodeInspectionStatus.NOT_ATTEMPTED;
+            if (candidate.status() == CandidateSampleStatus.CANDIDATE) {
+                TilePayload payload = decodeCandidate(layoutPlan, tileIndex, candidate.logicalTile().orElseThrow());
+                decodeStatus = payload == null
+                        ? DecodeInspectionStatus.REJECTED_BY_TILE_OR_ENVELOPE
+                        : DecodeInspectionStatus.ACCEPTED_PAYLOAD;
+            }
+            candidates.add(new CandidateInspection(
+                    sideVersion,
+                    tileCodecProfile.dimensionForSideVersion(sideVersion),
+                    inspectionStatus(candidate.status()),
+                    decodeStatus,
+                    candidate.optionalPaletteConfidence()
+            ));
+        }
+        return new SlotInspection(
+                tileIndex,
+                inspectionStatus(borderSample.status()),
+                interiorContent,
+                candidates
+        );
+    }
+
+    private BorderInspectionStatus inspectionStatus(BorderSampleStatus status) {
+        return switch (status) {
+            case SIGNATURE -> BorderInspectionStatus.SIGNATURE;
+            case NO_SIGNATURE -> BorderInspectionStatus.NO_SIGNATURE;
+            case REJECTED -> BorderInspectionStatus.PALETTE_REJECTED;
+        };
+    }
+
+    private CandidateInspectionStatus inspectionStatus(CandidateSampleStatus status) {
+        return switch (status) {
+            case NO_FINDER -> CandidateInspectionStatus.NO_FINDER;
+            case REJECTED -> CandidateInspectionStatus.PALETTE_REJECTED;
+            case CANDIDATE -> CandidateInspectionStatus.FINDER_CANDIDATE;
+        };
+    }
+
+    private TilePlacement alignedTilePlacement(
+            NormalizedCaptureFrame frame,
+            FixedLayoutPlan layoutPlan,
+            TilePlacement placement
+    ) {
+        if (!cameraDerived(frame)) {
+            return placement;
+        }
+        int border = layoutPlan.separatorThicknessPx();
+        TilePlacement bestPlacement = placement;
+        BorderEvidence bestEvidence = sampleBorderEvidence(
+                frame,
+                placement,
+                border,
+                CAMERA_SLOT_ALIGNMENT_SAMPLE_STRIDE_PX
+        );
+        for (int offsetY = -CAMERA_SLOT_ALIGNMENT_RADIUS_PX;
+                offsetY <= CAMERA_SLOT_ALIGNMENT_RADIUS_PX;
+                offsetY += CAMERA_SLOT_ALIGNMENT_STEP_PX) {
+            for (int offsetX = -CAMERA_SLOT_ALIGNMENT_RADIUS_PX;
+                    offsetX <= CAMERA_SLOT_ALIGNMENT_RADIUS_PX;
+                    offsetX += CAMERA_SLOT_ALIGNMENT_STEP_PX) {
+                Optional<TilePlacement> shiftedPlacement = shiftedPlacement(frame, placement, offsetX, offsetY);
+                if (shiftedPlacement.isEmpty()) {
+                    continue;
+                }
+                BorderEvidence evidence = sampleBorderEvidence(
+                        frame,
+                        shiftedPlacement.orElseThrow(),
+                        border,
+                        CAMERA_SLOT_ALIGNMENT_SAMPLE_STRIDE_PX
+                );
+                if (evidence.alignmentScore() > bestEvidence.alignmentScore()) {
+                    bestEvidence = evidence;
+                    bestPlacement = shiftedPlacement.orElseThrow();
+                }
+            }
+        }
+        return bestPlacement;
+    }
+
+    private Optional<TilePlacement> shiftedPlacement(
+            NormalizedCaptureFrame frame,
+            TilePlacement placement,
+            int offsetX,
+            int offsetY
+    ) {
+        int shiftedX = placement.xPx() + offsetX;
+        int shiftedY = placement.yPx() + offsetY;
+        if (shiftedX < 0
+                || shiftedY < 0
+                || shiftedX + placement.widthPx() > frame.normalizedWidthPixels()
+                || shiftedY + placement.heightPx() > frame.normalizedHeightPixels()) {
+            return Optional.empty();
+        }
+        return Optional.of(new TilePlacement(
+                placement.row(),
+                placement.col(),
+                shiftedX,
+                shiftedY,
+                placement.widthPx(),
+                placement.heightPx()
+        ));
+    }
+
     private CandidateSample lowerConfidence(CandidateSample current, CandidateSample candidate) {
         if (current == null) {
             return candidate;
@@ -220,38 +421,52 @@ public final class CaptureMediaTilePayloadSampler {
             TilePlacement placement
     ) {
         int border = layoutPlan.separatorThicknessPx();
-        PaletteSampleAccumulator rejectedSamples = new PaletteSampleAccumulator();
-        boolean rejected = false;
-        for (int row = 0; row < placement.heightPx(); row++) {
-            for (int col = 0; col < placement.widthPx(); col++) {
-                if (row < border || row >= placement.heightPx() - border
-                        || col < border || col >= placement.widthPx() - border) {
-                    CaptureMediaPaletteSample sample = paletteSampler.sampleTolerantPalette(
-                            frame,
-                            placement.yPx() + row,
-                            placement.xPx() + col
-                    );
-                    if (!sample.accepted()) {
-                        rejectedSamples.add(sample);
-                        rejected = true;
-                    } else if (sample.paletteIndex() != WHITE_INDEX) {
-                        return rejected
-                                ? BorderSample.rejected(rejectedSamples.summary())
-                                : BorderSample.noSignature();
-                    }
+        BorderEvidence evidence = sampleBorderEvidence(frame, placement, border, 1);
+        if (evidence.sampleCount() == 0) {
+            return BorderSample.noSignature();
+        }
+
+        if (evidence.exactLikeSignature() || (cameraDerived(frame) && evidence.cameraSignature())) {
+            return BorderSample.signature();
+        }
+        if (evidence.rejectedSamples() > 0) {
+            return BorderSample.rejected(evidence.paletteConfidence());
+        }
+        return BorderSample.noSignature();
+    }
+
+    private BorderEvidence sampleBorderEvidence(
+            NormalizedCaptureFrame frame,
+            TilePlacement placement,
+            int border,
+            int sampleStride
+    ) {
+        BorderEvidenceBuilder evidence = new BorderEvidenceBuilder();
+        for (int row = 0; row < placement.heightPx(); row += sampleStride) {
+            for (int col = 0; col < placement.widthPx(); col += sampleStride) {
+                boolean top = row < border;
+                boolean bottom = row >= placement.heightPx() - border;
+                boolean left = col < border;
+                boolean right = col >= placement.widthPx() - border;
+                if (!top && !bottom && !left && !right) {
+                    continue;
                 }
+                CaptureMediaPaletteSample sample = sampleTolerantPalette(
+                        frame,
+                        placement.yPx() + row,
+                        placement.xPx() + col
+                );
+                evidence.add(sample, top, bottom, left, right);
             }
         }
-        return rejected
-                ? BorderSample.rejected(rejectedSamples.summary())
-                : BorderSample.signature();
+        return evidence.toEvidence();
     }
 
     private boolean hasInteriorContent(NormalizedCaptureFrame frame, FixedLayoutPlan layoutPlan, TilePlacement placement) {
         int border = layoutPlan.separatorThicknessPx();
         for (int row = border; row < placement.heightPx() - border; row++) {
             for (int col = border; col < placement.widthPx() - border; col++) {
-                CaptureMediaPaletteSample sample = paletteSampler.sampleTolerantPalette(
+                CaptureMediaPaletteSample sample = sampleTolerantPalette(
                         frame,
                         placement.yPx() + row,
                         placement.xPx() + col
@@ -298,7 +513,7 @@ public final class CaptureMediaTilePayloadSampler {
                         + offsetY
                         + ((row + tileCodecProfile.quietZoneModules()) * moduleSize)
                         + (moduleSize / 2);
-                CaptureMediaPaletteSample sample = paletteSampler.sampleTolerantPalette(frame, sampleY, sampleX);
+                CaptureMediaPaletteSample sample = sampleTolerantPalette(frame, sampleY, sampleX);
                 confidence.add(sample);
                 if (!sample.accepted()) {
                     rejected = true;
@@ -332,6 +547,69 @@ public final class CaptureMediaTilePayloadSampler {
                 moduleColors,
                 diagnostics
         ), summary);
+    }
+
+    private CaptureMediaPaletteSample sampleTolerantPalette(NormalizedCaptureFrame frame, int row, int col) {
+        int argb = frame.argbPixelAt(row, col);
+        CaptureMediaPaletteSample standardSample = paletteSampler.tolerantPaletteSample(argb);
+        if (standardSample.accepted() || !cameraDerived(frame)) {
+            return standardSample;
+        }
+
+        NearestPaletteColor nearest = nearestPaletteColor(argb);
+        if (nearest.rgbDistance() > CAMERA_MAX_ACCEPTED_RGB_DISTANCE) {
+            return standardSample;
+        }
+        return new CaptureMediaPaletteSample(
+                argb,
+                nearest.paletteIndex(),
+                nearest.paletteArgb(),
+                nearest.rgbDistance(),
+                nearest.rgbDistance() / MAX_RGB_DISTANCE,
+                1.0d - (nearest.rgbDistance() / CAMERA_MAX_ACCEPTED_RGB_DISTANCE),
+                CaptureMediaPaletteSampleStatus.LOW_CONFIDENCE
+        );
+    }
+
+    private boolean cameraDerived(NormalizedCaptureFrame frame) {
+        return frame.qualityMetrics().measured(frame.qualityMetrics().frameCoverageRatio())
+                && frame.qualityMetrics().frameCoverageRatio() < 0.99d;
+    }
+
+    private NearestPaletteColor nearestPaletteColor(int argb) {
+        int nearestIndex = 0;
+        double nearestDistance = Double.POSITIVE_INFINITY;
+        for (int index = 0; index < paletteArgb.size(); index++) {
+            double distance = rgbDistance(argb, paletteArgb.get(index));
+            if (distance < nearestDistance) {
+                nearestIndex = index;
+                nearestDistance = distance;
+            }
+        }
+        return new NearestPaletteColor(nearestIndex, paletteArgb.get(nearestIndex), nearestDistance);
+    }
+
+    private double rgbDistance(int firstArgb, int secondArgb) {
+        int redDelta = red(firstArgb) - red(secondArgb);
+        int greenDelta = green(firstArgb) - green(secondArgb);
+        int blueDelta = blue(firstArgb) - blue(secondArgb);
+        return Math.sqrt(
+                (redDelta * redDelta)
+                        + (greenDelta * greenDelta)
+                        + (blueDelta * blueDelta)
+        );
+    }
+
+    private int red(int argb) {
+        return (argb >>> 16) & 0xFF;
+    }
+
+    private int green(int argb) {
+        return (argb >>> 8) & 0xFF;
+    }
+
+    private int blue(int argb) {
+        return argb & 0xFF;
     }
 
     private String formatMetric(double value) {
@@ -501,6 +779,173 @@ public final class CaptureMediaTilePayloadSampler {
     }
 
     /**
+     * Diagnostic sampler evidence for one normalized media frame.
+     *
+     * @param sourceId source identifier of the normalized frame
+     * @param layoutProfileId normalized layout profile id
+     * @param slots per-slot sampler evidence
+     * @param candidateAttemptCount side-version attempts across all signed slots
+     * @param noFinderAttemptCount attempts that failed finder-pattern checks
+     * @param paletteRejectedAttemptCount attempts blocked by palette tolerance
+     * @param decodedPayloadCount accepted payload count after tile and envelope validation
+     */
+    public record FrameInspection(
+            String sourceId,
+            String layoutProfileId,
+            List<SlotInspection> slots,
+            int candidateAttemptCount,
+            int noFinderAttemptCount,
+            int paletteRejectedAttemptCount,
+            int decodedPayloadCount
+    ) {
+
+        /**
+         * Creates a validated immutable frame inspection.
+         */
+        public FrameInspection {
+            if (sourceId == null || sourceId.isBlank()) {
+                throw new IllegalArgumentException("sourceId must not be blank");
+            }
+            if (layoutProfileId == null || layoutProfileId.isBlank()) {
+                throw new IllegalArgumentException("layoutProfileId must not be blank");
+            }
+            slots = List.copyOf(Objects.requireNonNull(slots, "slots must not be null"));
+            if (slots.stream().anyMatch(Objects::isNull)) {
+                throw new IllegalArgumentException("slots must not contain null values");
+            }
+            if (candidateAttemptCount < 0
+                    || noFinderAttemptCount < 0
+                    || paletteRejectedAttemptCount < 0
+                    || decodedPayloadCount < 0) {
+                throw new IllegalArgumentException("inspection counts must be non-negative");
+            }
+        }
+    }
+
+    /**
+     * Diagnostic sampler evidence for one rendered tile slot.
+     *
+     * @param tileIndex zero-based tile slot index
+     * @param borderStatus border signature status
+     * @param interiorContent true when the tile interior has non-empty content evidence
+     * @param candidates per-side-version candidate evidence
+     */
+    public record SlotInspection(
+            int tileIndex,
+            BorderInspectionStatus borderStatus,
+            boolean interiorContent,
+            List<CandidateInspection> candidates
+    ) {
+
+        /**
+         * Creates a validated immutable slot inspection.
+         */
+        public SlotInspection {
+            if (tileIndex < 0) {
+                throw new IllegalArgumentException("tileIndex must be non-negative");
+            }
+            Objects.requireNonNull(borderStatus, "borderStatus must not be null");
+            candidates = List.copyOf(Objects.requireNonNull(candidates, "candidates must not be null"));
+            if (candidates.stream().anyMatch(Objects::isNull)) {
+                throw new IllegalArgumentException("candidates must not contain null values");
+            }
+        }
+    }
+
+    /**
+     * Diagnostic sampler evidence for one side-version attempt in one tile slot.
+     *
+     * @param sideVersion tile codec side version attempted
+     * @param dimension logical tile module dimension for the side version
+     * @param status finder and palette status for this attempt
+     * @param decodeStatus tile/envelope validation status when a finder candidate existed
+     * @param paletteConfidence aggregate palette confidence for sampled modules, when available
+     */
+    public record CandidateInspection(
+            int sideVersion,
+            int dimension,
+            CandidateInspectionStatus status,
+            DecodeInspectionStatus decodeStatus,
+            Optional<PaletteConfidenceSummary> paletteConfidence
+    ) {
+
+        /**
+         * Creates a validated immutable candidate inspection.
+         */
+        public CandidateInspection {
+            if (sideVersion < 0) {
+                throw new IllegalArgumentException("sideVersion must be non-negative");
+            }
+            if (dimension <= 0) {
+                throw new IllegalArgumentException("dimension must be positive");
+            }
+            Objects.requireNonNull(status, "status must not be null");
+            Objects.requireNonNull(decodeStatus, "decodeStatus must not be null");
+            paletteConfidence = Objects.requireNonNull(paletteConfidence, "paletteConfidence must not be null");
+        }
+    }
+
+    /**
+     * Border-signature status for a tile slot inspection.
+     */
+    public enum BorderInspectionStatus {
+        /**
+         * The slot border matched the expected white tile signature.
+         */
+        SIGNATURE,
+
+        /**
+         * The slot border did not match the tile signature.
+         */
+        NO_SIGNATURE,
+
+        /**
+         * The slot border had samples outside the supported palette tolerance.
+         */
+        PALETTE_REJECTED
+    }
+
+    /**
+     * Side-version candidate status before tile/envelope validation.
+     */
+    public enum CandidateInspectionStatus {
+        /**
+         * Sampled modules did not contain all expected finder patterns.
+         */
+        NO_FINDER,
+
+        /**
+         * Sampled modules contained one or more rejected palette samples.
+         */
+        PALETTE_REJECTED,
+
+        /**
+         * Sampled modules passed palette and finder checks and were passed to tile decode.
+         */
+        FINDER_CANDIDATE
+    }
+
+    /**
+     * Tile/envelope validation status for a finder candidate.
+     */
+    public enum DecodeInspectionStatus {
+        /**
+         * Decode was not attempted because the side-version sample was not a finder candidate.
+         */
+        NOT_ATTEMPTED,
+
+        /**
+         * Tile decode and envelope validation accepted a payload for this slot.
+         */
+        ACCEPTED_PAYLOAD,
+
+        /**
+         * Tile decode, envelope CRC validation, or slot identity validation rejected this candidate.
+         */
+        REJECTED_BY_TILE_OR_ENVELOPE
+    }
+
+    /**
      * Aggregate confidence metrics for sampled palette modules.
      *
      * @param sampledModuleCount number of sampled modules
@@ -605,6 +1050,9 @@ public final class CaptureMediaTilePayloadSampler {
         CANDIDATE
     }
 
+    private record NearestPaletteColor(int paletteIndex, int paletteArgb, double rgbDistance) {
+    }
+
     private record CandidateSample(
             CandidateSampleStatus status,
             Optional<LogicalTile> logicalTile,
@@ -641,6 +1089,173 @@ public final class CaptureMediaTilePayloadSampler {
         SIGNATURE,
         NO_SIGNATURE,
         REJECTED
+    }
+
+    private record BorderEvidence(
+            int sampleCount,
+            int whiteSamples,
+            int nonWhiteSamples,
+            int rejectedSamples,
+            BorderSideEvidence top,
+            BorderSideEvidence bottom,
+            BorderSideEvidence left,
+            BorderSideEvidence right,
+            PaletteSampleAccumulator rejectedConfidence
+    ) {
+
+        private BorderEvidence {
+            if (sampleCount < 0 || whiteSamples < 0 || nonWhiteSamples < 0 || rejectedSamples < 0) {
+                throw new IllegalArgumentException("border evidence counts must be non-negative");
+            }
+            Objects.requireNonNull(top, "top must not be null");
+            Objects.requireNonNull(bottom, "bottom must not be null");
+            Objects.requireNonNull(left, "left must not be null");
+            Objects.requireNonNull(right, "right must not be null");
+            Objects.requireNonNull(rejectedConfidence, "rejectedConfidence must not be null");
+        }
+
+        private double whiteRatio() {
+            return ratio(whiteSamples, sampleCount);
+        }
+
+        private double nonWhiteRatio() {
+            return ratio(nonWhiteSamples, sampleCount);
+        }
+
+        private double rejectedRatio() {
+            return ratio(rejectedSamples, sampleCount);
+        }
+
+        private boolean exactLikeSignature() {
+            return whiteRatio() >= MIN_BORDER_SIGNATURE_WHITE_RATIO
+                    && nonWhiteRatio() <= MAX_BORDER_SIGNATURE_NON_WHITE_RATIO
+                    && rejectedRatio() <= MAX_BORDER_SIGNATURE_REJECTED_RATIO;
+        }
+
+        private boolean cameraSignature() {
+            return rejectedRatio() <= MAX_CAMERA_BORDER_REJECTED_RATIO
+                    && whiteRatio() >= MIN_CAMERA_BORDER_WHITE_RATIO
+                    && strongSideCount() >= 2;
+        }
+
+        private double alignmentScore() {
+            return whiteRatio()
+                    - (0.45d * nonWhiteRatio())
+                    - (0.90d * rejectedRatio())
+                    + (0.08d * strongSideCount())
+                    + (0.03d * moderateSideCount());
+        }
+
+        private int strongSideCount() {
+            return sideCountAtLeast(MIN_CAMERA_BORDER_STRONG_SIDE_RATIO);
+        }
+
+        private int moderateSideCount() {
+            return sideCountAtLeast(MIN_CAMERA_BORDER_MODERATE_SIDE_RATIO);
+        }
+
+        private int sideCountAtLeast(double minimumWhiteRatio) {
+            int count = 0;
+            if (top.whiteRatio() >= minimumWhiteRatio) {
+                count++;
+            }
+            if (bottom.whiteRatio() >= minimumWhiteRatio) {
+                count++;
+            }
+            if (left.whiteRatio() >= minimumWhiteRatio) {
+                count++;
+            }
+            if (right.whiteRatio() >= minimumWhiteRatio) {
+                count++;
+            }
+            return count;
+        }
+
+        private PaletteConfidenceSummary paletteConfidence() {
+            return rejectedConfidence.summary();
+        }
+
+        private static double ratio(int numerator, int denominator) {
+            return denominator == 0 ? 0.0d : (double) numerator / denominator;
+        }
+    }
+
+    private record BorderSideEvidence(int sampleCount, int whiteSamples) {
+
+        private BorderSideEvidence {
+            if (sampleCount < 0 || whiteSamples < 0) {
+                throw new IllegalArgumentException("border side counts must be non-negative");
+            }
+        }
+
+        private double whiteRatio() {
+            return sampleCount == 0 ? 0.0d : (double) whiteSamples / sampleCount;
+        }
+    }
+
+    private static final class BorderEvidenceBuilder {
+
+        private int sampleCount;
+        private int whiteSamples;
+        private int nonWhiteSamples;
+        private int rejectedSamples;
+        private int topSamples;
+        private int topWhiteSamples;
+        private int bottomSamples;
+        private int bottomWhiteSamples;
+        private int leftSamples;
+        private int leftWhiteSamples;
+        private int rightSamples;
+        private int rightWhiteSamples;
+        private final PaletteSampleAccumulator rejectedConfidence = new PaletteSampleAccumulator();
+
+        private void add(CaptureMediaPaletteSample sample, boolean top, boolean bottom, boolean left, boolean right) {
+            Objects.requireNonNull(sample, "sample must not be null");
+            sampleCount++;
+            boolean white = sample.accepted() && sample.paletteIndex() == WHITE_INDEX;
+            if (white) {
+                whiteSamples++;
+            } else if (sample.accepted()) {
+                nonWhiteSamples++;
+            } else {
+                rejectedSamples++;
+                rejectedConfidence.add(sample);
+            }
+            addSideEvidence(top, bottom, left, right, white);
+        }
+
+        private void addSideEvidence(boolean top, boolean bottom, boolean left, boolean right, boolean white) {
+            if (top) {
+                topSamples++;
+                topWhiteSamples += white ? 1 : 0;
+            }
+            if (bottom) {
+                bottomSamples++;
+                bottomWhiteSamples += white ? 1 : 0;
+            }
+            if (left) {
+                leftSamples++;
+                leftWhiteSamples += white ? 1 : 0;
+            }
+            if (right) {
+                rightSamples++;
+                rightWhiteSamples += white ? 1 : 0;
+            }
+        }
+
+        private BorderEvidence toEvidence() {
+            return new BorderEvidence(
+                    sampleCount,
+                    whiteSamples,
+                    nonWhiteSamples,
+                    rejectedSamples,
+                    new BorderSideEvidence(topSamples, topWhiteSamples),
+                    new BorderSideEvidence(bottomSamples, bottomWhiteSamples),
+                    new BorderSideEvidence(leftSamples, leftWhiteSamples),
+                    new BorderSideEvidence(rightSamples, rightWhiteSamples),
+                    rejectedConfidence
+            );
+        }
     }
 
     private record BorderSample(BorderSampleStatus status, Optional<PaletteConfidenceSummary> paletteConfidence) {

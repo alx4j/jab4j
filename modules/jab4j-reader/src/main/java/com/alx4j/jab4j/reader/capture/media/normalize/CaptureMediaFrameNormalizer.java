@@ -40,6 +40,7 @@ public final class CaptureMediaFrameNormalizer {
     private static final double MAX_GLARE_NEAR_WHITE_RATIO = 0.96d;
     private static final int GLARE_SAMPLE_STRIDE_PX = 4;
     private static final int MIN_PARTIAL_SYNC_SAMPLES = 4;
+    private static final int MAX_JAB_CANDIDATES_TO_NORMALIZE = 3;
     private static final double MAX_RGB_DISTANCE = Math.sqrt(3.0d * 255.0d * 255.0d);
 
     private final CaptureRenderedLayoutCatalog layoutCatalog;
@@ -290,9 +291,9 @@ public final class CaptureMediaFrameNormalizer {
 
         JabFrameDetectionResult detectionResult = jabFrameRegionDetector.detect(frame);
         return switch (detectionResult.status()) {
-            case ACCEPTED -> normalizeDetectedJabFrameCandidate(
+            case ACCEPTED -> normalizeDetectedJabFrameCandidates(
                     frame,
-                    detectionResult.selectedCandidate().orElseThrow()
+                    detectionResult.rankedCandidates()
             );
             case AMBIGUOUS -> rejected(
                     frame,
@@ -319,6 +320,28 @@ public final class CaptureMediaFrameNormalizer {
                     "Media normalization did not find a clean supported rendered frame region"
             );
         };
+    }
+
+    private MediaNormalizationResult normalizeDetectedJabFrameCandidates(
+            MediaInputFrame frame,
+            List<JabFrameCandidate> candidates
+    ) {
+        List<NormalizedCaptureFrame> normalizedCandidates = new ArrayList<>();
+        for (JabFrameCandidate candidate : candidates.stream()
+                .limit(MAX_JAB_CANDIDATES_TO_NORMALIZE)
+                .toList()) {
+            normalizeDetectedJabFrameCandidate(frame, candidate)
+                    .frame()
+                    .ifPresent(normalizedCandidates::add);
+        }
+        if (normalizedCandidates.isEmpty()) {
+            return rejected(
+                    frame,
+                    CaptureMediaDiagnosticCode.PERSPECTIVE_TOO_SEVERE,
+                    "Detected JAB frame region perspective is not invertible"
+            );
+        }
+        return MediaNormalizationResult.accepted(normalizedCandidates);
     }
 
     private MediaNormalizationResult normalizeDetectedJabFrameCandidate(

@@ -42,10 +42,14 @@ class CaptureMediaReceiverContractTest {
         CaptureMediaReceiverRequest videoEvaluateOnly = CaptureMediaReceiverRequest.evaluateVideoFiles(
                 List.of(Path.of("capture.mov"))
         );
+        CaptureMediaReceiverRequest debugEvaluateOnly = CaptureMediaReceiverRequest
+                .evaluateStillImages(List.of(Path.of("debug-photo.jpg")))
+                .withDebugOutputDirectory(Path.of("debug-output"));
 
         assertAll(
                 () -> assertEquals(CaptureMediaSourceKind.STILL_IMAGE_FILE, evaluateOnly.sourceKind()),
                 () -> assertFalse(evaluateOnly.restoreRequested()),
+                () -> assertTrue(evaluateOnly.debugOutputDirectory().isEmpty()),
                 () -> assertEquals(2, evaluateOnly.inputSources().size()),
                 () -> assertTrue(evaluateOnly.inputSources().get(0).isAbsolute()),
                 () -> assertThrows(
@@ -56,6 +60,7 @@ class CaptureMediaReceiverContractTest {
                 () -> assertTrue(restore.restoreRequested()),
                 () -> assertTrue(restore.outputDirectory().orElseThrow().isAbsolute()),
                 () -> assertEquals(CaptureMediaSourceKind.VIDEO_FILE, videoEvaluateOnly.sourceKind()),
+                () -> assertTrue(debugEvaluateOnly.debugOutputDirectory().orElseThrow().isAbsolute()),
                 () -> assertTrue(CaptureMediaSourceKind.VIDEO_FILE.video()),
                 () -> assertTrue(CaptureMediaSourceKind.EXTRACTED_FRAME_FOLDER.extractedFrameCollection()),
                 () -> assertFalse(CaptureMediaSourceKind.STILL_IMAGE_FILE.video())
@@ -88,15 +93,30 @@ class CaptureMediaReceiverContractTest {
                 ),
                 () -> assertThrows(
                         NullPointerException.class,
+                    () -> new CaptureMediaReceiverRequest(
+                            CaptureMediaSourceKind.STILL_IMAGE_FILE,
+                            List.of(Path.of("photo.jpg")),
+                            null
+                    )
+                ),
+                () -> assertThrows(
+                        NullPointerException.class,
                         () -> new CaptureMediaReceiverRequest(
                                 CaptureMediaSourceKind.STILL_IMAGE_FILE,
                                 List.of(Path.of("photo.jpg")),
+                                Optional.empty(),
                                 null
                         )
                 ),
                 () -> assertThrows(
                         NullPointerException.class,
                         () -> CaptureMediaReceiverRequest.restoreStillImages(List.of(Path.of("photo.jpg")), null)
+                ),
+                () -> assertThrows(
+                        NullPointerException.class,
+                        () -> CaptureMediaReceiverRequest
+                                .evaluateStillImages(List.of(Path.of("photo.jpg")))
+                                .withDebugOutputDirectory(null)
                 )
         );
     }
@@ -122,6 +142,7 @@ class CaptureMediaReceiverContractTest {
                 () -> assertTrue(codes.contains(CaptureMediaDiagnosticCode.UNREADABLE_MEDIA)),
                 () -> assertTrue(codes.contains(CaptureMediaDiagnosticCode.AMBIGUOUS_SESSIONS)),
                 () -> assertTrue(codes.contains(CaptureMediaDiagnosticCode.RESTORE_FAILURE)),
+                () -> assertTrue(codes.contains(CaptureMediaDiagnosticCode.DEBUG_EXPORT_FAILURE)),
                 () -> assertTrue(CaptureMediaDiagnosticCode.DUPLICATE_MEDIA_FRAME.duplicate()),
                 () -> assertFalse(CaptureMediaDiagnosticCode.RESTORE_FAILURE.duplicate()),
                 () -> assertTrue(CaptureMediaDiagnosticCode.UNSUPPORTED_CONTAINER.unsupportedMedia()),
@@ -289,9 +310,11 @@ class CaptureMediaReceiverContractTest {
     @DisplayName("Summary validates count invariants and candidate helper behavior")
     void summaryValidatesCountInvariantsAndCandidateHelperBehavior() {
         CaptureMediaSummary summary = new CaptureMediaSummary(5, 4, 3, 1, 0, 1, 2, 12, 0);
+        CaptureMediaSummary topN = new CaptureMediaSummary(1, 1, 3, 0, 0, 1, 1, 4, 0);
 
         assertAll(
                 () -> assertTrue(summary.hasAcceptedCandidates()),
+                () -> assertTrue(topN.hasAcceptedCandidates()),
                 () -> assertTrue(summary.hasRecoveredUniqueFrames()),
                 () -> assertFalse(CaptureMediaSummary.empty().hasAcceptedCandidates()),
                 () -> assertFalse(CaptureMediaSummary.empty().hasRecoveredUniqueFrames()),
@@ -302,10 +325,6 @@ class CaptureMediaReceiverContractTest {
                 () -> assertThrows(
                         IllegalArgumentException.class,
                         () -> new CaptureMediaSummary(1, 2, 0, 0, 0, 0, 0, 0, 0)
-                ),
-                () -> assertThrows(
-                        IllegalArgumentException.class,
-                        () -> new CaptureMediaSummary(1, 1, 2, 0, 0, 0, 0, 0, 0)
                 ),
                 () -> assertThrows(
                         IllegalArgumentException.class,

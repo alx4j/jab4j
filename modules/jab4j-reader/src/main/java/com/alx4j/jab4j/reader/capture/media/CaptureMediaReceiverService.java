@@ -1,5 +1,6 @@
 package com.alx4j.jab4j.reader.capture.media;
 
+import java.io.IOException;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -15,6 +16,7 @@ import com.alx4j.jab4j.reader.capture.CaptureReceiverResult;
 import com.alx4j.jab4j.reader.capture.decode.CaptureAssemblyResult;
 import com.alx4j.jab4j.reader.capture.decode.CaptureFrameSetAssembler;
 import com.alx4j.jab4j.reader.capture.decode.CaptureSessionContent;
+import com.alx4j.jab4j.reader.capture.media.debug.CaptureMediaCandidateDebugExporter;
 import com.alx4j.jab4j.reader.capture.media.decode.CaptureMediaFrameDecodeResult;
 import com.alx4j.jab4j.reader.capture.media.decode.CaptureMediaFrameDecoder;
 import com.alx4j.jab4j.reader.capture.media.input.CaptureMediaInputIntake;
@@ -43,6 +45,7 @@ public final class CaptureMediaReceiverService {
     private final CaptureMediaFrameDecoder mediaFrameDecoder;
     private final CaptureFrameSetAssembler frameSetAssembler;
     private final ReaderRestoreService readerRestoreService;
+    private final CaptureMediaCandidateDebugExporter debugExporter;
 
     /**
      * Creates a media receiver using default still-image intake, normalization, media decode, assembly, and restore
@@ -54,7 +57,8 @@ public final class CaptureMediaReceiverService {
                 new CaptureMediaFrameNormalizer(),
                 new CaptureMediaFrameDecoder(),
                 new CaptureFrameSetAssembler(),
-                new ReaderRestoreService()
+                new ReaderRestoreService(),
+                new CaptureMediaCandidateDebugExporter()
         );
     }
 
@@ -78,7 +82,8 @@ public final class CaptureMediaReceiverService {
                 frameNormalizer,
                 requireLegacyReceiver(cleanCaptureReceiver),
                 new CaptureFrameSetAssembler(),
-                new ReaderRestoreService()
+                new ReaderRestoreService(),
+                new CaptureMediaCandidateDebugExporter()
         );
     }
 
@@ -105,11 +110,40 @@ public final class CaptureMediaReceiverService {
             CaptureFrameSetAssembler frameSetAssembler,
             ReaderRestoreService readerRestoreService
     ) {
+        this(
+                mediaInputIntake,
+                frameNormalizer,
+                mediaFrameDecoder,
+                frameSetAssembler,
+                readerRestoreService,
+                new CaptureMediaCandidateDebugExporter()
+        );
+    }
+
+    /**
+     * Creates a media receiver with explicit collaborators, including candidate debug export.
+     *
+     * @param mediaInputIntake media source intake
+     * @param frameNormalizer conservative frame normalizer
+     * @param mediaFrameDecoder normalized media frame decoder
+     * @param frameSetAssembler decoded frame-set assembler
+     * @param readerRestoreService source-neutral restore service
+     * @param debugExporter normalized candidate debug exporter
+     */
+    public CaptureMediaReceiverService(
+            CaptureMediaInputIntake mediaInputIntake,
+            CaptureMediaFrameNormalizer frameNormalizer,
+            CaptureMediaFrameDecoder mediaFrameDecoder,
+            CaptureFrameSetAssembler frameSetAssembler,
+            ReaderRestoreService readerRestoreService,
+            CaptureMediaCandidateDebugExporter debugExporter
+    ) {
         this.mediaInputIntake = Objects.requireNonNull(mediaInputIntake, "mediaInputIntake must not be null");
         this.frameNormalizer = Objects.requireNonNull(frameNormalizer, "frameNormalizer must not be null");
         this.mediaFrameDecoder = Objects.requireNonNull(mediaFrameDecoder, "mediaFrameDecoder must not be null");
         this.frameSetAssembler = Objects.requireNonNull(frameSetAssembler, "frameSetAssembler must not be null");
         this.readerRestoreService = Objects.requireNonNull(readerRestoreService, "readerRestoreService must not be null");
+        this.debugExporter = Objects.requireNonNull(debugExporter, "debugExporter must not be null");
     }
 
     /**
@@ -152,115 +186,169 @@ public final class CaptureMediaReceiverService {
         MediaIntakeResult intakeResult = mediaInputIntake.read(request);
         List<CaptureMediaDiagnostic> diagnostics = new ArrayList<>(intakeResult.diagnostics());
         List<NormalizedCaptureFrame> normalizedFrames = normalizeReadableFrames(intakeResult, diagnostics);
-        CaptureMediaSummary intakeSummary = mediaSummary(intakeResult, normalizedFrames, diagnostics, 0, 0, 0, 0, 0);
-
-        if (normalizedFrames.isEmpty()) {
-            if (diagnostics.stream().anyMatch(CaptureMediaDiagnostic::blocking)) {
-                return failedFromMediaDiagnostics(intakeSummary, diagnostics);
-            }
-            diagnostics.add(CaptureMediaDiagnostic.forMediaSet(
-                    CaptureMediaDiagnosticCode.MISSING_UNIQUE_FRAME,
-                    CaptureMediaDiagnosticSeverity.ERROR,
-                    "Capture media input does not contain any normalized frame candidates"
-            ));
-            return CaptureMediaReceiverResult.incomplete(
-                    mediaSummary(intakeResult, normalizedFrames, diagnostics, 0, 0, 0, 0, 0),
-                    diagnostics,
-                    "Capture media input is missing required unique frame content"
-            );
-        }
-        CaptureMediaFrameDecodeResult decodeResult;
         try {
-            decodeResult = mediaFrameDecoder.decode(normalizedFrames);
+            CaptureMediaSummary intakeSummary = mediaSummary(
+                    intakeResult,
+                    normalizedFrames,
+                    diagnostics,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0
+            );
+
+            if (normalizedFrames.isEmpty()) {
+                if (diagnostics.stream().anyMatch(CaptureMediaDiagnostic::blocking)) {
+                    return failedFromMediaDiagnostics(intakeSummary, diagnostics);
+                }
+                diagnostics.add(CaptureMediaDiagnostic.forMediaSet(
+                        CaptureMediaDiagnosticCode.MISSING_UNIQUE_FRAME,
+                        CaptureMediaDiagnosticSeverity.ERROR,
+                        "Capture media input does not contain any normalized frame candidates"
+                ));
+                return CaptureMediaReceiverResult.incomplete(
+                        mediaSummary(intakeResult, normalizedFrames, diagnostics, 0, 0, 0, 0, 0),
+                        diagnostics,
+                        "Capture media input is missing required unique frame content"
+                );
+            }
+            Optional<CaptureMediaReceiverResult> debugFailure = exportDebugCandidates(
+                    request,
+                    intakeResult,
+                    normalizedFrames,
+                    diagnostics
+            );
+            if (debugFailure.isPresent()) {
+                return debugFailure.orElseThrow();
+            }
+
+            CaptureMediaFrameDecodeResult decodeResult = mediaFrameDecoder.decode(normalizedFrames);
+            diagnostics.addAll(decodeResult.diagnostics());
+            if (decodeResult.decodedFrames().isEmpty()
+                    && diagnostics.stream().noneMatch(CaptureMediaDiagnostic::blocking)) {
+                diagnostics.add(CaptureMediaDiagnostic.forMediaSet(
+                        CaptureMediaDiagnosticCode.MISSING_UNIQUE_FRAME,
+                        CaptureMediaDiagnosticSeverity.ERROR,
+                        "No capture media frame content was decoded"
+                ));
+            }
+
+            CaptureAssemblyResult assemblyResult = frameSetAssembler.assemble(decodeResult.decodedFrames());
+            diagnostics.addAll(mapAssemblyDiagnostics(request.sourceKind(), assemblyResult.diagnostics(), normalizedFrames));
+            CaptureMediaSummary summary = mediaSummary(
+                    intakeResult,
+                    normalizedFrames,
+                    diagnostics,
+                    assemblyResult.acceptedCandidateCount(),
+                    assemblyResult.duplicateFrameCount(),
+                    decodeResult.rejectedCandidateCount(),
+                    assemblyResult.decodedTileCount(),
+                    0
+            );
+
+            if (assemblyResult.rejected()) {
+                return CaptureMediaReceiverResult.rejected(
+                        summary,
+                        diagnostics,
+                        "Capture media input contains inconsistent decoded content"
+                );
+            }
+            if (assemblyResult.incomplete()) {
+                return CaptureMediaReceiverResult.incomplete(
+                        summary,
+                        diagnostics,
+                        "Capture media input is missing required unique frame content"
+                );
+            }
+            if (assemblyResult.content().isEmpty()) {
+                diagnostics.add(CaptureMediaDiagnostic.forMediaSet(
+                        CaptureMediaDiagnosticCode.MISSING_UNIQUE_FRAME,
+                        CaptureMediaDiagnosticSeverity.ERROR,
+                        "Decoded capture media content is not complete enough for restore"
+                ));
+                return CaptureMediaReceiverResult.incomplete(
+                        mediaSummary(
+                                intakeResult,
+                                normalizedFrames,
+                                diagnostics,
+                                assemblyResult.acceptedCandidateCount(),
+                                assemblyResult.duplicateFrameCount(),
+                                decodeResult.rejectedCandidateCount(),
+                                assemblyResult.decodedTileCount(),
+                                0
+                        ),
+                        diagnostics,
+                        "Capture media input is missing required unique frame content"
+                );
+            }
+            List<CaptureMediaDiagnostic> successfulDiagnostics =
+                    diagnosticsForCompleteContent(request.sourceKind(), diagnostics);
+            CaptureMediaSummary successfulSummary = mediaSummary(
+                    intakeResult,
+                    normalizedFrames,
+                    successfulDiagnostics,
+                    assemblyResult.acceptedCandidateCount(),
+                    assemblyResult.duplicateFrameCount(),
+                    decodeResult.rejectedCandidateCount(),
+                    assemblyResult.decodedTileCount(),
+                    0
+            );
+            if (successfulDiagnostics.stream().anyMatch(CaptureMediaDiagnostic::blocking)) {
+                return failedFromMediaDiagnostics(successfulSummary, successfulDiagnostics);
+            }
+            if (!restoreRequested) {
+                return CaptureMediaReceiverResult.eligible(
+                        successfulSummary,
+                        successfulDiagnostics,
+                        "Capture media input is eligible for restore"
+                );
+            }
+            return restoreDecodedContent(
+                    assemblyResult.content().orElseThrow(),
+                    request.outputDirectory().orElseThrow(),
+                    successfulSummary,
+                    successfulDiagnostics
+            );
         } finally {
             normalizedFrames.forEach(NormalizedCaptureFrame::releaseArgbPixels);
         }
-        diagnostics.addAll(decodeResult.diagnostics());
-        if (decodeResult.decodedFrames().isEmpty()
-                && diagnostics.stream().noneMatch(CaptureMediaDiagnostic::blocking)) {
-            diagnostics.add(CaptureMediaDiagnostic.forMediaSet(
-                    CaptureMediaDiagnosticCode.MISSING_UNIQUE_FRAME,
-                    CaptureMediaDiagnosticSeverity.ERROR,
-                    "No capture media frame content was decoded"
-            ));
-        }
+    }
 
-        CaptureAssemblyResult assemblyResult = frameSetAssembler.assemble(decodeResult.decodedFrames());
-        diagnostics.addAll(mapAssemblyDiagnostics(request.sourceKind(), assemblyResult.diagnostics(), normalizedFrames));
-        CaptureMediaSummary summary = mediaSummary(
-                intakeResult,
-                normalizedFrames,
-                diagnostics,
-                assemblyResult.acceptedCandidateCount(),
-                assemblyResult.duplicateFrameCount(),
-                decodeResult.rejectedCandidateCount(),
-                assemblyResult.decodedTileCount(),
-                0
-        );
-
-        if (assemblyResult.rejected()) {
-            return CaptureMediaReceiverResult.rejected(
-                    summary,
-                    diagnostics,
-                    "Capture media input contains inconsistent decoded content"
-            );
+    private Optional<CaptureMediaReceiverResult> exportDebugCandidates(
+            CaptureMediaReceiverRequest request,
+            MediaIntakeResult intakeResult,
+            List<NormalizedCaptureFrame> normalizedFrames,
+            List<CaptureMediaDiagnostic> diagnostics
+    ) {
+        Optional<Path> debugOutputDirectory = request.debugOutputDirectory();
+        if (debugOutputDirectory.isEmpty()) {
+            return Optional.empty();
         }
-        if (assemblyResult.incomplete()) {
-            return CaptureMediaReceiverResult.incomplete(
-                    summary,
-                    diagnostics,
-                    "Capture media input is missing required unique frame content"
-            );
-        }
-        if (assemblyResult.content().isEmpty()) {
+        try {
+            debugExporter.export(normalizedFrames, debugOutputDirectory.orElseThrow());
+            return Optional.empty();
+        } catch (IOException exception) {
             diagnostics.add(CaptureMediaDiagnostic.forMediaSet(
-                    CaptureMediaDiagnosticCode.MISSING_UNIQUE_FRAME,
+                    CaptureMediaDiagnosticCode.DEBUG_EXPORT_FAILURE,
                     CaptureMediaDiagnosticSeverity.ERROR,
-                    "Decoded capture media content is not complete enough for restore"
+                    "Capture media debug output could not be written to " + debugOutputDirectory.orElseThrow()
             ));
-            return CaptureMediaReceiverResult.incomplete(
+            return Optional.of(CaptureMediaReceiverResult.rejected(
                     mediaSummary(
                             intakeResult,
                             normalizedFrames,
                             diagnostics,
-                            assemblyResult.acceptedCandidateCount(),
-                            assemblyResult.duplicateFrameCount(),
-                            decodeResult.rejectedCandidateCount(),
-                            assemblyResult.decodedTileCount(),
+                            0,
+                            0,
+                            normalizedFrames.size(),
+                            0,
                             0
                     ),
                     diagnostics,
-                    "Capture media input is missing required unique frame content"
-            );
+                    "Capture media debug output could not be written"
+            ));
         }
-        List<CaptureMediaDiagnostic> successfulDiagnostics =
-                diagnosticsForCompleteContent(request.sourceKind(), diagnostics);
-        CaptureMediaSummary successfulSummary = mediaSummary(
-                intakeResult,
-                normalizedFrames,
-                successfulDiagnostics,
-                assemblyResult.acceptedCandidateCount(),
-                assemblyResult.duplicateFrameCount(),
-                decodeResult.rejectedCandidateCount(),
-                assemblyResult.decodedTileCount(),
-                0
-        );
-        if (successfulDiagnostics.stream().anyMatch(CaptureMediaDiagnostic::blocking)) {
-            return failedFromMediaDiagnostics(successfulSummary, successfulDiagnostics);
-        }
-        if (!restoreRequested) {
-            return CaptureMediaReceiverResult.eligible(
-                    successfulSummary,
-                    successfulDiagnostics,
-                    "Capture media input is eligible for restore"
-            );
-        }
-        return restoreDecodedContent(
-                assemblyResult.content().orElseThrow(),
-                request.outputDirectory().orElseThrow(),
-                successfulSummary,
-                successfulDiagnostics
-        );
     }
 
     private List<NormalizedCaptureFrame> normalizeReadableFrames(
@@ -271,7 +359,7 @@ public final class CaptureMediaReceiverService {
         for (MediaInputFrame frame : intakeResult.readableFrames()) {
             try {
                 MediaNormalizationResult normalizationResult = frameNormalizer.normalize(frame);
-                normalizationResult.frame().ifPresent(normalizedFrames::add);
+                normalizedFrames.addAll(normalizationResult.frames());
                 diagnostics.addAll(normalizationResult.diagnostics());
             } finally {
                 frame.releaseArgbPixels();
@@ -360,7 +448,10 @@ public final class CaptureMediaReceiverService {
             return "Direct .mov/.mp4 capture media input is unsupported";
         }
         if (diagnostics.stream().anyMatch(diagnostic -> diagnostic.code() == CaptureMediaDiagnosticCode.UNSUPPORTED_IMAGE_FORMAT)) {
-            return "HEIC/HEIF capture media input is unsupported";
+            if (diagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("HEIC/HEIF"))) {
+                return "HEIC/HEIF capture media input requires optional libheif support";
+            }
+            return "Capture media image format is unsupported";
         }
         if (diagnostics.stream().anyMatch(diagnostic -> diagnostic.code() == CaptureMediaDiagnosticCode.SCREEN_OR_FRAME_NOT_FOUND)) {
             return "No recoverable capture media frames were found";

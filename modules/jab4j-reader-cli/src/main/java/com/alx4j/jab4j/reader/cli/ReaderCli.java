@@ -37,8 +37,8 @@ import com.alx4j.jab4j.reader.restore.ReaderRestoreResult;
  * <p>The CLI accepts the exact {@code imageSequence} directory or a parent session directory with exactly one
  * {@code imageSequence} child through {@code --input}. Extracted PNG capture frames use the explicit
  * {@code --capture-input} mode. MVP-3 media uses {@code --capture-media-input} without changing the existing modes.
- * Direct video, HEIC, live camera, upload, and SaaS capture remain out of scope unless a media receiver or video
- * adapter is added by the reader module.</p>
+ * Direct video, live camera, upload, and SaaS capture remain out of scope unless a media receiver or video adapter is
+ * added by the reader module. HEIC/HEIF still images require optional libheif command-line setup.</p>
  */
 public final class ReaderCli {
 
@@ -248,12 +248,14 @@ public final class ReaderCli {
     private int runCaptureMediaReceiver(ReaderCliOptions options, PrintStream stdout, PrintStream stderr) {
         Path captureMediaInputPath = options.captureMediaInputPath().orElseThrow();
         Optional<Path> outputPath = options.outputPath();
-        CaptureMediaReceiverRequest request = captureMediaRequest(captureMediaInputPath, outputPath);
+        Optional<Path> debugOutputPath = options.captureMediaDebugOutputPath();
+        CaptureMediaReceiverRequest request = captureMediaRequest(captureMediaInputPath, outputPath, debugOutputPath);
         LOGGER.info(
-                "Reader CLI capture media receiver starting captureMediaInputPath={} restoreRequested={} outputPath={}",
+                "Reader CLI capture media receiver starting captureMediaInputPath={} restoreRequested={} outputPath={} debugOutputPath={}",
                 captureMediaInputPath,
                 request.restoreRequested(),
-                outputPath.orElse(null)
+                outputPath.orElse(null),
+                debugOutputPath.orElse(null)
         );
 
         CaptureMediaReceiverResult result;
@@ -276,12 +278,13 @@ public final class ReaderCli {
         }
 
         PrintStream resultStream = result.failed() ? stderr : stdout;
-        renderCaptureMediaResult(resultStream, captureMediaInputPath, outputPath, result);
+        renderCaptureMediaResult(resultStream, captureMediaInputPath, outputPath, debugOutputPath, result);
         if (result.failed()) {
             LOGGER.warn(
-                    "Reader CLI capture media receiver returned failure captureMediaInputPath={} restoreRequested={} status={} message={}",
+                    "Reader CLI capture media receiver returned failure captureMediaInputPath={} restoreRequested={} debugOutputPath={} status={} message={}",
                     captureMediaInputPath,
                     request.restoreRequested(),
+                    debugOutputPath.orElse(null),
                     result.status(),
                     result.message()
             );
@@ -289,9 +292,10 @@ public final class ReaderCli {
         }
 
         LOGGER.info(
-                "Reader CLI capture media receiver completed captureMediaInputPath={} restoreRequested={} status={} submittedMedia={} acceptedCandidates={} decodedTiles={} restoredFiles={}",
+                "Reader CLI capture media receiver completed captureMediaInputPath={} restoreRequested={} debugOutputPath={} status={} submittedMedia={} acceptedCandidates={} decodedTiles={} restoredFiles={}",
                 captureMediaInputPath,
                 request.restoreRequested(),
+                debugOutputPath.orElse(null),
                 result.status(),
                 result.summary().submittedMediaCount(),
                 result.summary().acceptedCandidateCount(),
@@ -380,6 +384,7 @@ public final class ReaderCli {
             PrintStream stream,
             Path captureMediaInputPath,
             Optional<Path> outputPath,
+            Optional<Path> debugOutputPath,
             CaptureMediaReceiverResult result
     ) {
         CaptureMediaSummary summary = result.summary();
@@ -409,6 +414,10 @@ public final class ReaderCli {
                 restoreResult.restoredDirectoryCount(),
                 restoreResult.totalRestoredBytes(),
                 restoreResult.message()
+        ));
+        debugOutputPath.ifPresent(path -> stream.printf(
+                "CAPTURE_MEDIA_DEBUG outputDirectory=%s%n",
+                normalized(path)
         ));
         for (CaptureMediaDiagnostic diagnostic : result.diagnostics()) {
             renderCaptureMediaDiagnostic(stream, diagnostic);
@@ -496,11 +505,18 @@ public final class ReaderCli {
                 .orElse("-");
     }
 
-    private CaptureMediaReceiverRequest captureMediaRequest(Path captureMediaInputPath, Optional<Path> outputPath) {
+    private CaptureMediaReceiverRequest captureMediaRequest(
+            Path captureMediaInputPath,
+            Optional<Path> outputPath,
+            Optional<Path> debugOutputPath
+    ) {
         CaptureMediaSourceKind sourceKind = inferCaptureMediaSourceKind(captureMediaInputPath);
-        return outputPath
+        CaptureMediaReceiverRequest request = outputPath
                 .map(path -> CaptureMediaReceiverRequest.restore(sourceKind, List.of(captureMediaInputPath), path))
                 .orElseGet(() -> CaptureMediaReceiverRequest.evaluateOnly(sourceKind, List.of(captureMediaInputPath)));
+        return debugOutputPath
+                .map(request::withDebugOutputDirectory)
+                .orElse(request);
     }
 
     private CaptureMediaSourceKind inferCaptureMediaSourceKind(Path inputPath) {
@@ -544,12 +560,13 @@ public final class ReaderCli {
         return String.join(System.lineSeparator(),
                 "Usage: jab4j-reader-cli --input <imageSequence-or-session-directory> --output <restore-directory>",
                 "       jab4j-reader-cli --capture-input <frames-directory> --output <restore-directory>",
-                "       jab4j-reader-cli --capture-media-input <media-path> [--output <restore-directory>]",
+                "       jab4j-reader-cli --capture-media-input <media-path> [--output <restore-directory>] [--capture-media-debug-output <debug-directory>]",
                 "Input: current writer imageSequence PNG export directory, or a parent session directory with exactly one imageSequence child.",
                 "Capture input: extracted PNG frame directory evaluated by the capture receiver; frame-sequence.txt is not required.",
-                "Capture media input: MVP-3 PNG/JPEG still image, extracted-frame folder, or direct video path evaluated only when the media receiver is available.",
+                "Capture media input: MVP-3 PNG/JPEG still image, optional HEIC/HEIF still image, extracted-frame folder, or direct video path evaluated only when the media receiver is available.",
+                "Capture media debug output: optional normalized candidate PNGs and sampler metadata for --capture-media-input runs.",
                 "frame-sequence.txt is a writer-export validation helper for lossless PNG frames.",
-                "Unsupported in the first media slice: full real photo recovery, HEIC, direct .mov/.mp4 decoding, live camera, mobile app, upload, or SaaS capture."
+                "Unsupported in the first media slice: full real photo recovery, direct .mov/.mp4 decoding, live camera, mobile app, upload, or SaaS capture. HEIC/HEIF requires optional libheif heif-convert/heif-dec."
         );
     }
 

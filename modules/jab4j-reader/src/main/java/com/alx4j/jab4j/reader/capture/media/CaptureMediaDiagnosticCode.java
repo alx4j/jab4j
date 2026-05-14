@@ -77,7 +77,12 @@ public enum CaptureMediaDiagnosticCode {
     /**
      * Media qualification succeeded, but the restore attempt failed.
      */
-    RESTORE_FAILURE;
+    RESTORE_FAILURE,
+
+    /**
+     * Requested normalized-candidate debug output could not be written.
+     */
+    DEBUG_EXPORT_FAILURE;
 
     /**
      * Indicates whether this code describes duplicate media content.
