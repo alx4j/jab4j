@@ -27,6 +27,9 @@ import com.alx4j.jab4j.reader.capture.media.normalize.NormalizedCaptureFrame;
 import com.alx4j.jab4j.reader.capture.media.quality.CaptureMediaQualityMetrics;
 import com.alx4j.jab4j.reader.capture.media.sample.CaptureMediaTilePayloadSampler.FrameSample;
 import com.alx4j.jab4j.reader.capture.media.sample.CaptureMediaTilePayloadSampler.FrameSampleStatus;
+import com.alx4j.jab4j.reader.capture.media.sample.CaptureMediaTilePayloadSampler.BorderInspectionStatus;
+import com.alx4j.jab4j.reader.capture.media.sample.CaptureMediaTilePayloadSampler.DecodeInspectionStatus;
+import com.alx4j.jab4j.reader.capture.media.sample.CaptureMediaTilePayloadSampler.FrameInspection;
 import com.alx4j.jab4j.render.layout.FixedLayoutPlan;
 import com.alx4j.jab4j.render.layout.FixedLayoutPlanner;
 import com.alx4j.jab4j.render.layout.TilePlacement;
@@ -77,13 +80,19 @@ class CaptureMediaTilePayloadSamplerTest {
         RenderedTileFixture fixture = renderedTileFixture(0);
 
         FrameSample sample = sampler.sample(fixture.frame());
+        FrameInspection inspection = sampler.inspect(fixture.frame());
 
         assertAll(
                 () -> assertEquals(FrameSampleStatus.ACCEPTED, sample.status()),
                 () -> assertEquals(List.of(fixture.payload()), sample.payloads()),
                 () -> assertTrue(sample.diagnostics().isEmpty()),
                 () -> assertEquals(1.0d, sample.paletteConfidence().orElseThrow().minimumConfidence()),
-                () -> assertEquals(0, sample.paletteConfidence().orElseThrow().lowConfidenceSampleCount())
+                () -> assertEquals(0, sample.paletteConfidence().orElseThrow().lowConfidenceSampleCount()),
+                () -> assertEquals(1, inspection.decodedPayloadCount()),
+                () -> assertEquals(BorderInspectionStatus.SIGNATURE, inspection.slots().get(0).borderStatus()),
+                () -> assertTrue(inspection.slots().get(0).interiorContent()),
+                () -> assertTrue(inspection.slots().get(0).candidates().stream()
+                        .anyMatch(candidate -> candidate.decodeStatus() == DecodeInspectionStatus.ACCEPTED_PAYLOAD))
         );
     }
 
@@ -108,11 +117,31 @@ class CaptureMediaTilePayloadSamplerTest {
     }
 
     @Test
+    @DisplayName("Sparse off-palette border pixels do not block otherwise decodable media tiles")
+    void sparseOffPaletteBorderPixelsDoNotBlockOtherwiseDecodableMediaTiles() {
+        RenderedTileFixture fixture = renderedTileFixture(0);
+        int[] pixels = fixture.frame().copyArgbPixels();
+        mutateSparseTileBorderPixels(pixels, 17);
+        NormalizedCaptureFrame frame = frame(pixels);
+
+        FrameSample sample = sampler.sample(frame);
+        FrameInspection inspection = sampler.inspect(frame);
+
+        assertAll(
+                () -> assertEquals(FrameSampleStatus.ACCEPTED, sample.status()),
+                () -> assertEquals(List.of(fixture.payload()), sample.payloads()),
+                () -> assertEquals(BorderInspectionStatus.SIGNATURE, inspection.slots().get(0).borderStatus()),
+                () -> assertEquals(1, inspection.decodedPayloadCount())
+        );
+    }
+
+    @Test
     @DisplayName("Below-threshold color shifts block decoded content")
     void belowThresholdColorShiftsBlockDecodedContent() {
         RenderedTileFixture fixture = renderedTileFixture(50);
 
         FrameSample sample = sampler.sample(fixture.frame());
+        FrameInspection inspection = sampler.inspect(fixture.frame());
         CaptureMediaDiagnostic diagnostic = sample.diagnostics().get(0);
 
         assertAll(
@@ -121,7 +150,46 @@ class CaptureMediaTilePayloadSamplerTest {
                 () -> assertEquals(CaptureMediaDiagnosticCode.COLOR_OR_COMPRESSION_SHIFT, diagnostic.code()),
                 () -> assertEquals(CaptureMediaDiagnosticSeverity.ERROR, diagnostic.severity()),
                 () -> assertTrue(diagnostic.blocking()),
-                () -> assertTrue(diagnostic.metrics().get("rejectedSampleCount") > 0.0d)
+                () -> assertTrue(diagnostic.metrics().get("rejectedSampleCount") > 0.0d),
+                () -> assertEquals(BorderInspectionStatus.PALETTE_REJECTED, inspection.slots().get(0).borderStatus()),
+                () -> assertEquals(0, inspection.decodedPayloadCount())
+        );
+    }
+
+    @Test
+    @DisplayName("Camera-derived candidates can decode with low-confidence palette expansion")
+    void cameraDerivedCandidatesCanDecodeWithLowConfidencePaletteExpansion() {
+        RenderedTileFixture fixture = renderedTileFixture(50);
+        NormalizedCaptureFrame cameraFrame = cameraDerivedFrame(fixture.frame().copyArgbPixels());
+
+        FrameSample sample = sampler.sample(cameraFrame);
+        FrameInspection inspection = sampler.inspect(cameraFrame);
+
+        assertAll(
+                () -> assertEquals(FrameSampleStatus.ACCEPTED, sample.status()),
+                () -> assertEquals(List.of(fixture.payload()), sample.payloads()),
+                () -> assertEquals(CaptureMediaDiagnosticCode.COLOR_OR_COMPRESSION_SHIFT,
+                        sample.diagnostics().get(0).code()),
+                () -> assertEquals(CaptureMediaDiagnosticSeverity.WARNING, sample.diagnostics().get(0).severity()),
+                () -> assertTrue(sample.paletteConfidence().orElseThrow().lowConfidenceSampleCount() > 0),
+                () -> assertEquals(1, inspection.decodedPayloadCount())
+        );
+    }
+
+    @Test
+    @DisplayName("Camera-derived shifted tile slots are aligned before border sampling")
+    void cameraDerivedShiftedTileSlotsAreAlignedBeforeBorderSampling() {
+        RenderedTileFixture fixture = renderedTileFixture(18, 36, -40);
+        NormalizedCaptureFrame cameraFrame = cameraDerivedFrame(fixture.frame().copyArgbPixels());
+
+        FrameSample sample = sampler.sample(cameraFrame);
+        FrameInspection inspection = sampler.inspect(cameraFrame);
+
+        assertAll(
+                () -> assertEquals(FrameSampleStatus.ACCEPTED, sample.status()),
+                () -> assertEquals(List.of(fixture.payload()), sample.payloads()),
+                () -> assertEquals(BorderInspectionStatus.SIGNATURE, inspection.slots().get(0).borderStatus()),
+                () -> assertEquals(1, inspection.decodedPayloadCount())
         );
     }
 
@@ -131,8 +199,10 @@ class CaptureMediaTilePayloadSamplerTest {
         RenderedTileFixture fixture = renderedTileFixture(0);
         int[] corruptedPixels = fixture.frame().copyArgbPixels();
         mutateDataModule(corruptedPixels, fixture.logicalTile(), 3, 3);
+        NormalizedCaptureFrame corruptedFrame = frame(corruptedPixels);
 
-        FrameSample sample = sampler.sample(frame(corruptedPixels));
+        FrameSample sample = sampler.sample(corruptedFrame);
+        FrameInspection inspection = sampler.inspect(corruptedFrame);
         CaptureMediaDiagnostic diagnostic = sample.diagnostics().get(0);
 
         assertAll(
@@ -140,18 +210,25 @@ class CaptureMediaTilePayloadSamplerTest {
                 () -> assertTrue(sample.payloads().isEmpty()),
                 () -> assertEquals(CaptureMediaDiagnosticCode.COLOR_OR_COMPRESSION_SHIFT, diagnostic.code()),
                 () -> assertEquals(CaptureMediaDiagnosticSeverity.ERROR, diagnostic.severity()),
-                () -> assertTrue(diagnostic.blocking())
+                () -> assertTrue(diagnostic.blocking()),
+                () -> assertTrue(inspection.slots().get(0).candidates().stream()
+                        .anyMatch(candidate ->
+                                candidate.decodeStatus() == DecodeInspectionStatus.REJECTED_BY_TILE_OR_ENVELOPE))
         );
     }
 
     private RenderedTileFixture renderedTileFixture(int colorShift) {
+        return renderedTileFixture(colorShift, 0, 0);
+    }
+
+    private RenderedTileFixture renderedTileFixture(int colorShift, int offsetX, int offsetY) {
         TilePayload payload = payload();
         byte[] envelope = envelopeCodec.serialize(payload);
         LogicalTile logicalTile = TileCodecs.defaultEncoder().encode(envelope, TILE_PROFILE);
         RenderedTile renderedTile = new TileRasterRenderer().render(logicalTile, LAYOUT_PLAN);
         int[] framePixels = new int[CAPTURE_LAYOUT.frameWidthPx() * CAPTURE_LAYOUT.frameHeightPx()];
         Arrays.fill(framePixels, 0xFF000000);
-        pasteTile(framePixels, renderedTile, colorShift);
+        pasteTile(framePixels, renderedTile, colorShift, offsetX, offsetY);
         return new RenderedTileFixture(frame(framePixels), payload, logicalTile);
     }
 
@@ -180,12 +257,20 @@ class CaptureMediaTilePayloadSamplerTest {
         return (int) crc32c.getValue();
     }
 
-    private void pasteTile(int[] framePixels, RenderedTile renderedTile, int colorShift) {
+    private void pasteTile(
+            int[] framePixels,
+            RenderedTile renderedTile,
+            int colorShift,
+            int offsetX,
+            int offsetY
+    ) {
         TilePlacement placement = LAYOUT_PLAN.tilePlacements().get(0);
+        int destinationX = placement.xPx() + offsetX;
+        int destinationY = placement.yPx() + offsetY;
         for (int row = 0; row < renderedTile.heightPixels(); row++) {
             for (int col = 0; col < renderedTile.widthPixels(); col++) {
                 int source = renderedTile.argbPixels().get((row * renderedTile.widthPixels()) + col);
-                framePixels[((placement.yPx() + row) * CAPTURE_LAYOUT.frameWidthPx()) + placement.xPx() + col] =
+                framePixels[((destinationY + row) * CAPTURE_LAYOUT.frameWidthPx()) + destinationX + col] =
                         shiftPaletteColor(source, colorShift);
             }
         }
@@ -232,6 +317,24 @@ class CaptureMediaTilePayloadSamplerTest {
         }
     }
 
+    private void mutateSparseTileBorderPixels(int[] framePixels, int interval) {
+        TilePlacement placement = LAYOUT_PLAN.tilePlacements().get(0);
+        int border = LAYOUT_PLAN.separatorThicknessPx();
+        int visited = 0;
+        for (int row = 0; row < placement.heightPx(); row++) {
+            for (int col = 0; col < placement.widthPx(); col++) {
+                if (row < border || row >= placement.heightPx() - border
+                        || col < border || col >= placement.widthPx() - border) {
+                    if (visited % interval == 0) {
+                        framePixels[((placement.yPx() + row) * CAPTURE_LAYOUT.frameWidthPx()) + placement.xPx() + col] =
+                                0xFF7F7F7F;
+                    }
+                    visited++;
+                }
+            }
+        }
+    }
+
     private NormalizedCaptureFrame frame(int[] pixels) {
         return new NormalizedCaptureFrame(
                 "tile-source.png",
@@ -246,6 +349,24 @@ class CaptureMediaTilePayloadSamplerTest {
                 CAPTURE_LAYOUT.profileId(),
                 FrameCorners.exactFrame(CAPTURE_LAYOUT.frameWidthPx(), CAPTURE_LAYOUT.frameHeightPx()),
                 CaptureMediaQualityMetrics.exactRenderedFrame(),
+                pixels
+        );
+    }
+
+    private NormalizedCaptureFrame cameraDerivedFrame(int[] pixels) {
+        return new NormalizedCaptureFrame(
+                "phone-tile-source.jpeg",
+                CaptureMediaSourceKind.STILL_IMAGE_FILE,
+                0,
+                CAPTURE_LAYOUT.frameWidthPx(),
+                CAPTURE_LAYOUT.frameHeightPx(),
+                CAPTURE_LAYOUT.frameWidthPx(),
+                CAPTURE_LAYOUT.frameHeightPx(),
+                "jpeg",
+                "abc123",
+                CAPTURE_LAYOUT.profileId(),
+                FrameCorners.exactFrame(CAPTURE_LAYOUT.frameWidthPx(), CAPTURE_LAYOUT.frameHeightPx()),
+                CaptureMediaQualityMetrics.perspectiveCorrected(0.50d, 0.05d),
                 pixels
         );
     }

@@ -1,6 +1,5 @@
 package com.alx4j.jab4j.reader.capture.media.input;
 
-import java.awt.image.BufferedImage;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -9,14 +8,10 @@ import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HexFormat;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
 import java.util.Optional;
-import javax.imageio.ImageIO;
-import javax.imageio.ImageReader;
-import javax.imageio.stream.ImageInputStream;
 import com.alx4j.jab4j.reader.capture.media.CaptureMediaDiagnostic;
 import com.alx4j.jab4j.reader.capture.media.CaptureMediaDiagnosticCode;
 import com.alx4j.jab4j.reader.capture.media.CaptureMediaDiagnosticSeverity;
@@ -33,14 +28,17 @@ import com.alx4j.jab4j.reader.capture.media.video.CaptureMediaVideoLimits;
  */
 public final class CaptureMediaInputIntake {
 
+    private final CaptureMediaStillImageDecoder stillImageDecoder;
     private final CaptureMediaVideoFrameSourceAdapter videoFrameSourceAdapter;
     private final CaptureMediaVideoLimits videoLimits;
 
     /**
-     * Creates media intake with ImageIO still-image support and the first configured direct-video adapter, if any.
+     * Creates media intake with ImageIO still-image support, optional libheif HEIC/HEIF support, and the first
+     * configured direct-video adapter, if any.
      */
     public CaptureMediaInputIntake() {
         this(
+                CaptureMediaStillImageDecoder.defaultDecoder(),
                 CaptureMediaVideoFrameSourceAdapter.loadFirstAvailable()
                         .orElseGet(CaptureMediaVideoFrameSourceAdapter::unsupported),
                 CaptureMediaVideoLimits.conservativeDefaults()
@@ -57,6 +55,22 @@ public final class CaptureMediaInputIntake {
             CaptureMediaVideoFrameSourceAdapter videoFrameSourceAdapter,
             CaptureMediaVideoLimits videoLimits
     ) {
+        this(CaptureMediaStillImageDecoder.defaultDecoder(), videoFrameSourceAdapter, videoLimits);
+    }
+
+    /**
+     * Creates media intake with explicit still-image and direct-video adapter boundaries.
+     *
+     * @param stillImageDecoder still-image decoder chain
+     * @param videoFrameSourceAdapter optional direct-video frame-source adapter
+     * @param videoLimits direct-video extraction limits supplied to the adapter
+     */
+    public CaptureMediaInputIntake(
+            CaptureMediaStillImageDecoder stillImageDecoder,
+            CaptureMediaVideoFrameSourceAdapter videoFrameSourceAdapter,
+            CaptureMediaVideoLimits videoLimits
+    ) {
+        this.stillImageDecoder = Objects.requireNonNull(stillImageDecoder, "stillImageDecoder must not be null");
         this.videoFrameSourceAdapter = Objects.requireNonNull(
                 videoFrameSourceAdapter,
                 "videoFrameSourceAdapter must not be null"
@@ -68,7 +82,7 @@ public final class CaptureMediaInputIntake {
      * Discovers and decodes one still-image file or one folder of still-image files.
      *
      * @param inputSource input file or directory
-     * @return intake result with decoded PNG/JPEG still-image frames and stable diagnostics
+     * @return intake result with decoded still-image frames and stable diagnostics
      */
     public MediaIntakeResult read(Path inputSource) {
         return read(List.of(Objects.requireNonNull(inputSource, "inputSource must not be null")));
@@ -78,7 +92,7 @@ public final class CaptureMediaInputIntake {
      * Discovers and decodes sources declared by a media receiver request.
      *
      * @param request media receiver request
-     * @return intake result with decoded PNG/JPEG still-image frames and stable diagnostics
+     * @return intake result with decoded still-image frames and stable diagnostics
      */
     public MediaIntakeResult read(CaptureMediaReceiverRequest request) {
         Objects.requireNonNull(request, "request must not be null");
@@ -89,7 +103,7 @@ public final class CaptureMediaInputIntake {
      * Discovers and decodes source files in deterministic input order.
      *
      * @param inputSources input files or directories
-     * @return intake result with decoded PNG/JPEG still-image frames and stable diagnostics
+     * @return intake result with decoded still-image frames and stable diagnostics
      */
     public MediaIntakeResult read(List<Path> inputSources) {
         return read(CaptureMediaSourceKind.STILL_IMAGE_FILE, inputSources);
@@ -100,7 +114,7 @@ public final class CaptureMediaInputIntake {
      *
      * @param sourceKind caller-declared media source kind
      * @param inputSources input files or directories
-     * @return intake result with decoded PNG/JPEG still-image frames and stable diagnostics
+     * @return intake result with decoded still-image frames and stable diagnostics
      */
     public MediaIntakeResult read(CaptureMediaSourceKind sourceKind, List<Path> inputSources) {
         Objects.requireNonNull(sourceKind, "sourceKind must not be null");
@@ -146,34 +160,27 @@ public final class CaptureMediaInputIntake {
             }
 
             try {
-                BufferedImage image = ImageIO.read(sourceFile.toFile());
-                if (image == null) {
-                    diagnostics.add(errorForSource(
-                            CaptureMediaDiagnosticCode.UNREADABLE_MEDIA,
-                            sourceKind,
-                            sourceId,
-                            order,
-                            "Still-image media source could not be decoded"
-                    ));
-                    continue;
-                }
-                try {
-                    int width = image.getWidth();
-                    int height = image.getHeight();
-                    int[] pixels = image.getRGB(0, 0, width, height, null, 0, width);
-                    frames.add(new MediaInputFrame(
-                            sourceId,
-                            sourceKind,
-                            order,
-                            width,
-                            height,
-                            imageFormatName(sourceFile).orElse(classification.formatName()),
-                            sha256Hex(pixels),
-                            pixels
-                    ));
-                } finally {
-                    image.flush();
-                }
+                CaptureMediaStillImageDecoder.DecodedStillImage image =
+                        stillImageDecoder.decode(sourceFile, classification.extension());
+                int[] pixels = image.copyArgbPixels();
+                frames.add(new MediaInputFrame(
+                        sourceId,
+                        sourceKind,
+                        order,
+                        image.widthPixels(),
+                        image.heightPixels(),
+                        image.formatName(),
+                        sha256Hex(pixels),
+                        pixels
+                ));
+            } catch (StillImageDecodeException exception) {
+                diagnostics.add(errorForSource(
+                        exception.diagnosticCode(),
+                        sourceKind,
+                        sourceId,
+                        order,
+                        exception.getMessage()
+                ));
             } catch (IOException exception) {
                 diagnostics.add(errorForSource(
                         CaptureMediaDiagnosticCode.UNREADABLE_MEDIA,
@@ -269,19 +276,25 @@ public final class CaptureMediaInputIntake {
     private SourceClassification classify(CaptureMediaSourceKind sourceKind, Path sourceFile) {
         String extension = extension(sourceFile).toLowerCase(Locale.ROOT);
         return switch (extension) {
-            case "png" -> SourceClassification.supported("png");
-            case "jpg", "jpeg" -> SourceClassification.supported("jpeg");
-            case "heic", "heif" -> SourceClassification.unsupported(
-                    CaptureMediaDiagnosticCode.UNSUPPORTED_IMAGE_FORMAT,
-                    "HEIC/HEIF capture media input is unsupported by this ImageIO-only media intake slice"
-            );
+            case "png", "jpg", "jpeg" -> stillImageDecoder.supportsExtension(extension)
+                    ? SourceClassification.supported(extension)
+                    : SourceClassification.unsupported(
+                            CaptureMediaDiagnosticCode.UNSUPPORTED_IMAGE_FORMAT,
+                            "Media intake still-image decoder is unavailable for ." + extension
+                    );
+            case "heic", "heif" -> stillImageDecoder.supportsExtension(extension)
+                    ? SourceClassification.supported(extension)
+                    : SourceClassification.unsupported(
+                            CaptureMediaDiagnosticCode.UNSUPPORTED_IMAGE_FORMAT,
+                            "HEIC/HEIF capture media input requires optional libheif heif-convert/heif-dec support; install libheif tools or configure jab4j.heif.convert.path / JAB4J_HEIF_CONVERT"
+                    );
             case "mov", "mp4" -> SourceClassification.unsupported(
                     CaptureMediaDiagnosticCode.UNSUPPORTED_CONTAINER,
                     "Direct .mov/.mp4 capture media input is unsupported; no adapter is configured"
             );
             default -> SourceClassification.unsupported(
                     CaptureMediaDiagnosticCode.UNSUPPORTED_IMAGE_FORMAT,
-                    "Media intake supports PNG and JPEG still-image files only"
+                    "Media intake supports PNG, JPEG, and optional HEIC/HEIF still-image files only"
             );
         };
     }
@@ -293,24 +306,6 @@ public final class CaptureMediaInputIntake {
             return "";
         }
         return fileName.substring(dotIndex + 1);
-    }
-
-    private Optional<String> imageFormatName(Path sourceFile) throws IOException {
-        try (ImageInputStream stream = ImageIO.createImageInputStream(sourceFile.toFile())) {
-            if (stream == null) {
-                return Optional.empty();
-            }
-            Iterator<ImageReader> readers = ImageIO.getImageReaders(stream);
-            if (!readers.hasNext()) {
-                return Optional.empty();
-            }
-            ImageReader reader = readers.next();
-            try {
-                return Optional.of(reader.getFormatName().toLowerCase(Locale.ROOT));
-            } finally {
-                reader.dispose();
-            }
-        }
     }
 
     private String sha256Hex(int[] pixels) {
@@ -363,12 +358,12 @@ public final class CaptureMediaInputIntake {
     private record SourceClassification(
             boolean unsupported,
             Optional<CaptureMediaDiagnosticCode> diagnosticCode,
-            String formatName,
+            String extension,
             String message
     ) {
 
-        static SourceClassification supported(String formatName) {
-            return new SourceClassification(false, Optional.empty(), formatName, "");
+        static SourceClassification supported(String extension) {
+            return new SourceClassification(false, Optional.empty(), extension, "");
         }
 
         static SourceClassification unsupported(CaptureMediaDiagnosticCode code, String message) {

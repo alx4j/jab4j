@@ -27,7 +27,7 @@ record JabFrameDetectionResult(
             throw new IllegalArgumentException("rankedCandidates must not contain null values");
         }
         if (status == JabFrameDetectionStatus.ACCEPTED && rankedCandidates.isEmpty()) {
-            throw new IllegalArgumentException("accepted detection requires one selected candidate");
+            throw new IllegalArgumentException("accepted detection requires at least one candidate");
         }
     }
 
@@ -98,7 +98,7 @@ record JabFrameDetectionResult(
  */
 enum JabFrameDetectionStatus {
     /**
-     * Exactly one dominant candidate is safe to normalize.
+     * One or more ranked candidates are plausible enough to normalize and pass to decode.
      */
     ACCEPTED,
 

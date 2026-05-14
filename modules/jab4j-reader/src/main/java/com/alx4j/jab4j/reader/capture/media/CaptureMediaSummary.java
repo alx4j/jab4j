@@ -5,7 +5,8 @@ package com.alx4j.jab4j.reader.capture.media;
  *
  * @param submittedMediaCount number of media sources submitted or discovered
  * @param readableMediaCount number of media sources decoded or adapted into readable images
- * @param acceptedCandidateCount number of usable media candidates accepted for decode
+ * @param acceptedCandidateCount number of usable media candidates accepted for decode; one readable media item may
+ *         yield more than one candidate
  * @param rejectedCandidateCount number of media candidates rejected by intake or qualification
  * @param uncertainCandidateCount number of readable candidates that could not be confidently accepted or rejected
  * @param duplicateMediaFrameCount number of duplicate media frames detected
@@ -53,17 +54,14 @@ public record CaptureMediaSummary(
         if (readableMediaCount > submittedMediaCount) {
             throw new IllegalArgumentException("readableMediaCount must not exceed submittedMediaCount");
         }
-        if (acceptedCandidateCount > readableMediaCount) {
-            throw new IllegalArgumentException("acceptedCandidateCount must not exceed readableMediaCount");
-        }
         if (rejectedCandidateCount > submittedMediaCount) {
             throw new IllegalArgumentException("rejectedCandidateCount must not exceed submittedMediaCount");
         }
         if (uncertainCandidateCount > readableMediaCount) {
             throw new IllegalArgumentException("uncertainCandidateCount must not exceed readableMediaCount");
         }
-        if (duplicateMediaFrameCount > readableMediaCount) {
-            throw new IllegalArgumentException("duplicateMediaFrameCount must not exceed readableMediaCount");
+        if (duplicateMediaFrameCount > acceptedCandidateCount) {
+            throw new IllegalArgumentException("duplicateMediaFrameCount must not exceed acceptedCandidateCount");
         }
         if (recoveredUniqueFrameCount > acceptedCandidateCount) {
             throw new IllegalArgumentException("recoveredUniqueFrameCount must not exceed acceptedCandidateCount");

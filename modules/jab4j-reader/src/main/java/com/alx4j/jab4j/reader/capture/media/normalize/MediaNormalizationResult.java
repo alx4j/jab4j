@@ -8,27 +8,30 @@ import com.alx4j.jab4j.reader.capture.media.CaptureMediaDiagnostic;
 /**
  * Result of conservative capture-media frame normalization.
  *
- * @param frame normalized frame when accepted
+ * @param frames normalized frames when accepted
  * @param diagnostics normalization diagnostics
  */
 public record MediaNormalizationResult(
-        Optional<NormalizedCaptureFrame> frame,
+        List<NormalizedCaptureFrame> frames,
         List<CaptureMediaDiagnostic> diagnostics
 ) {
 
     /**
      * Creates a validated normalization result.
      *
-     * @param frame normalized frame when accepted
+     * @param frames normalized frames when accepted
      * @param diagnostics normalization diagnostics
      */
     public MediaNormalizationResult {
-        frame = Objects.requireNonNull(frame, "frame must not be null");
+        frames = List.copyOf(Objects.requireNonNull(frames, "frames must not be null"));
+        if (frames.stream().anyMatch(Objects::isNull)) {
+            throw new IllegalArgumentException("frames must not contain null values");
+        }
         diagnostics = List.copyOf(Objects.requireNonNull(diagnostics, "diagnostics must not be null"));
         if (diagnostics.stream().anyMatch(Objects::isNull)) {
             throw new IllegalArgumentException("diagnostics must not contain null values");
         }
-        if (frame.isPresent() && diagnostics.stream().anyMatch(CaptureMediaDiagnostic::blocking)) {
+        if (!frames.isEmpty() && diagnostics.stream().anyMatch(CaptureMediaDiagnostic::blocking)) {
             throw new IllegalArgumentException("accepted normalization results must not contain blocking diagnostics");
         }
     }
@@ -40,7 +43,20 @@ public record MediaNormalizationResult(
      * @return accepted result
      */
     public static MediaNormalizationResult accepted(NormalizedCaptureFrame frame) {
-        return new MediaNormalizationResult(Optional.of(Objects.requireNonNull(frame, "frame must not be null")), List.of());
+        return accepted(List.of(Objects.requireNonNull(frame, "frame must not be null")));
+    }
+
+    /**
+     * Creates an accepted normalization result with one or more normalized candidates.
+     *
+     * @param frames normalized frames
+     * @return accepted result
+     */
+    public static MediaNormalizationResult accepted(List<NormalizedCaptureFrame> frames) {
+        if (Objects.requireNonNull(frames, "frames must not be null").isEmpty()) {
+            throw new IllegalArgumentException("accepted normalization requires at least one frame");
+        }
+        return new MediaNormalizationResult(frames, List.of());
     }
 
     /**
@@ -50,7 +66,16 @@ public record MediaNormalizationResult(
      * @return rejected result
      */
     public static MediaNormalizationResult rejected(CaptureMediaDiagnostic diagnostic) {
-        return new MediaNormalizationResult(Optional.empty(), List.of(Objects.requireNonNull(diagnostic, "diagnostic must not be null")));
+        return new MediaNormalizationResult(List.of(), List.of(Objects.requireNonNull(diagnostic, "diagnostic must not be null")));
+    }
+
+    /**
+     * Returns the first normalized frame for legacy single-candidate callers.
+     *
+     * @return first normalized frame when accepted
+     */
+    public Optional<NormalizedCaptureFrame> frame() {
+        return frames.stream().findFirst();
     }
 
     /**
@@ -59,6 +84,6 @@ public record MediaNormalizationResult(
      * @return true when a normalized frame is present
      */
     public boolean accepted() {
-        return frame.isPresent();
+        return !frames.isEmpty();
     }
 }

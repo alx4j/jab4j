@@ -1,9 +1,5 @@
 package com.alx4j.jab4j.reader.capture.media.debug;
 
-import com.alx4j.jab4j.reader.capture.media.normalize.FrameCorners;
-import com.alx4j.jab4j.reader.capture.media.normalize.NormalizedCaptureFrame;
-
-import javax.imageio.ImageIO;
 import java.awt.image.BufferedImage;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -12,11 +8,37 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
+import javax.imageio.ImageIO;
+import com.alx4j.jab4j.reader.capture.media.normalize.FrameCorners;
+import com.alx4j.jab4j.reader.capture.media.normalize.NormalizedCaptureFrame;
+import com.alx4j.jab4j.reader.capture.media.sample.CaptureMediaTilePayloadSampler;
+import com.alx4j.jab4j.reader.capture.media.sample.CaptureMediaTilePayloadSampler.CandidateInspection;
+import com.alx4j.jab4j.reader.capture.media.sample.CaptureMediaTilePayloadSampler.FrameInspection;
+import com.alx4j.jab4j.reader.capture.media.sample.CaptureMediaTilePayloadSampler.PaletteConfidenceSummary;
+import com.alx4j.jab4j.reader.capture.media.sample.CaptureMediaTilePayloadSampler.SlotInspection;
 
 /**
  * Writes normalized capture candidates and sidecar metadata for visual diagnostics.
  */
 public final class CaptureMediaCandidateDebugExporter {
+
+    private final CaptureMediaTilePayloadSampler tilePayloadSampler;
+
+    /**
+     * Creates a debug exporter with the default media sampler inspection logic.
+     */
+    public CaptureMediaCandidateDebugExporter() {
+        this(new CaptureMediaTilePayloadSampler());
+    }
+
+    /**
+     * Creates a debug exporter with an explicit sampler for focused tests.
+     *
+     * @param tilePayloadSampler sampler used to inspect normalized candidates
+     */
+    public CaptureMediaCandidateDebugExporter(CaptureMediaTilePayloadSampler tilePayloadSampler) {
+        this.tilePayloadSampler = Objects.requireNonNull(tilePayloadSampler, "tilePayloadSampler");
+    }
 
     /**
      * Exports one normalized candidate as a PNG plus a metadata text file.
@@ -75,34 +97,76 @@ public final class CaptureMediaCandidateDebugExporter {
         );
         ImageIO.write(image, "PNG", imagePath.toFile());
 
-        Files.writeString(metadataPath, metadata(frame), StandardCharsets.UTF_8);
+        Files.writeString(metadataPath, metadata(frame, tilePayloadSampler.inspect(frame)), StandardCharsets.UTF_8);
         return new CandidateDebugExport(imagePath, metadataPath);
     }
 
-    private String metadata(NormalizedCaptureFrame frame) {
+    private String metadata(NormalizedCaptureFrame frame, FrameInspection inspection) {
         FrameCorners corners = frame.frameCorners();
-        return String.join(System.lineSeparator(),
-                "sourceId=" + frame.sourceId(),
-                "sourceKind=" + frame.sourceKind(),
-                "callerOrder=" + frame.callerOrder(),
-                "formatName=" + frame.formatName(),
-                "originalWidthPixels=" + frame.originalWidthPixels(),
-                "originalHeightPixels=" + frame.originalHeightPixels(),
-                "normalizedWidthPixels=" + frame.normalizedWidthPixels(),
-                "normalizedHeightPixels=" + frame.normalizedHeightPixels(),
-                "pixelSha256=" + frame.pixelSha256(),
-                "layoutProfileId=" + frame.layoutProfileId(),
-                "frameCorners.topLeftX=" + corners.topLeftX(),
-                "frameCorners.topLeftY=" + corners.topLeftY(),
-                "frameCorners.topRightX=" + corners.topRightX(),
-                "frameCorners.topRightY=" + corners.topRightY(),
-                "frameCorners.bottomRightX=" + corners.bottomRightX(),
-                "frameCorners.bottomRightY=" + corners.bottomRightY(),
-                "frameCorners.bottomLeftX=" + corners.bottomLeftX(),
-                "frameCorners.bottomLeftY=" + corners.bottomLeftY(),
-                "quality.frameCoverageRatio=" + frame.qualityMetrics().frameCoverageRatio(),
-                "quality.skewScore=" + frame.qualityMetrics().skewScore(),
-                "");
+        List<String> lines = new ArrayList<>();
+        lines.add("sourceId=" + frame.sourceId());
+        lines.add("sourceKind=" + frame.sourceKind());
+        lines.add("callerOrder=" + frame.callerOrder());
+        lines.add("formatName=" + frame.formatName());
+        lines.add("originalWidthPixels=" + frame.originalWidthPixels());
+        lines.add("originalHeightPixels=" + frame.originalHeightPixels());
+        lines.add("normalizedWidthPixels=" + frame.normalizedWidthPixels());
+        lines.add("normalizedHeightPixels=" + frame.normalizedHeightPixels());
+        lines.add("pixelSha256=" + frame.pixelSha256());
+        lines.add("layoutProfileId=" + frame.layoutProfileId());
+        lines.add("frameCorners.topLeftX=" + corners.topLeftX());
+        lines.add("frameCorners.topLeftY=" + corners.topLeftY());
+        lines.add("frameCorners.topRightX=" + corners.topRightX());
+        lines.add("frameCorners.topRightY=" + corners.topRightY());
+        lines.add("frameCorners.bottomRightX=" + corners.bottomRightX());
+        lines.add("frameCorners.bottomRightY=" + corners.bottomRightY());
+        lines.add("frameCorners.bottomLeftX=" + corners.bottomLeftX());
+        lines.add("frameCorners.bottomLeftY=" + corners.bottomLeftY());
+        lines.add("quality.frameCoverageRatio=" + frame.qualityMetrics().frameCoverageRatio());
+        lines.add("quality.skewScore=" + frame.qualityMetrics().skewScore());
+        lines.add("quality.blurScore=" + frame.qualityMetrics().blurScore());
+        lines.add("quality.glareScore=" + frame.qualityMetrics().glareScore());
+        lines.add("quality.exposureScore=" + frame.qualityMetrics().exposureScore());
+        lines.add("quality.colorDistanceScore=" + frame.qualityMetrics().colorDistanceScore());
+        lines.add("sampler.candidateAttemptCount=" + inspection.candidateAttemptCount());
+        lines.add("sampler.noFinderAttemptCount=" + inspection.noFinderAttemptCount());
+        lines.add("sampler.paletteRejectedAttemptCount=" + inspection.paletteRejectedAttemptCount());
+        lines.add("sampler.decodedPayloadCount=" + inspection.decodedPayloadCount());
+        lines.add("sampler.slotCount=" + inspection.slots().size());
+        addSlotInspection(lines, inspection);
+        lines.add("");
+        return String.join(System.lineSeparator(), lines);
+    }
+
+    private void addSlotInspection(List<String> lines, FrameInspection inspection) {
+        for (SlotInspection slot : inspection.slots()) {
+            String slotPrefix = "sampler.slot." + slot.tileIndex();
+            lines.add(slotPrefix + ".borderStatus=" + slot.borderStatus());
+            lines.add(slotPrefix + ".interiorContent=" + slot.interiorContent());
+            lines.add(slotPrefix + ".candidateCount=" + slot.candidates().size());
+            for (CandidateInspection candidate : slot.candidates()) {
+                String candidatePrefix = slotPrefix + ".sideVersion." + candidate.sideVersion();
+                lines.add(candidatePrefix + ".dimension=" + candidate.dimension());
+                lines.add(candidatePrefix + ".status=" + candidate.status());
+                lines.add(candidatePrefix + ".decodeStatus=" + candidate.decodeStatus());
+                candidate.paletteConfidence()
+                        .ifPresent(confidence -> addPaletteConfidence(lines, candidatePrefix, confidence));
+            }
+        }
+    }
+
+    private void addPaletteConfidence(
+            List<String> lines,
+            String candidatePrefix,
+            PaletteConfidenceSummary confidence
+    ) {
+        lines.add(candidatePrefix + ".palette.sampledModuleCount=" + confidence.sampledModuleCount());
+        lines.add(candidatePrefix + ".palette.shiftedSampleCount=" + confidence.shiftedSampleCount());
+        lines.add(candidatePrefix + ".palette.lowConfidenceSampleCount=" + confidence.lowConfidenceSampleCount());
+        lines.add(candidatePrefix + ".palette.rejectedSampleCount=" + confidence.rejectedSampleCount());
+        lines.add(candidatePrefix + ".palette.minimumConfidence=" + confidence.minimumConfidence());
+        lines.add(candidatePrefix + ".palette.averageConfidence=" + confidence.averageConfidence());
+        lines.add(candidatePrefix + ".palette.maximumRgbDistance=" + confidence.maximumRgbDistance());
     }
 
     /**

@@ -12,12 +12,29 @@ import java.util.Optional;
  * @param sourceKind kind of media supplied by the caller
  * @param inputSources media files or folders supplied by the caller
  * @param outputDirectory optional restore output directory; absent for evaluate-only requests
+ * @param debugOutputDirectory optional directory for normalized candidate debug PNGs and metadata
  */
 public record CaptureMediaReceiverRequest(
         CaptureMediaSourceKind sourceKind,
         List<Path> inputSources,
-        Optional<Path> outputDirectory
+        Optional<Path> outputDirectory,
+        Optional<Path> debugOutputDirectory
 ) {
+
+    /**
+     * Creates a media receiver request without debug output.
+     *
+     * @param sourceKind caller-declared media source kind
+     * @param inputSources media files or folders supplied by the caller
+     * @param outputDirectory optional restore output directory
+     */
+    public CaptureMediaReceiverRequest(
+            CaptureMediaSourceKind sourceKind,
+            List<Path> inputSources,
+            Optional<Path> outputDirectory
+    ) {
+        this(sourceKind, inputSources, outputDirectory, Optional.empty());
+    }
 
     /**
      * Creates a validated media receiver request.
@@ -25,6 +42,7 @@ public record CaptureMediaReceiverRequest(
      * @param sourceKind caller-declared media source kind
      * @param inputSources media files or folders supplied by the caller
      * @param outputDirectory optional restore output directory
+     * @param debugOutputDirectory optional directory for normalized candidate debug output
      */
     public CaptureMediaReceiverRequest {
         Objects.requireNonNull(sourceKind, "sourceKind must not be null");
@@ -39,6 +57,10 @@ public record CaptureMediaReceiverRequest(
 
         outputDirectory = Objects.requireNonNull(outputDirectory, "outputDirectory must not be null")
                 .map(CaptureMediaReceiverRequest::normalizedOutputPath);
+        debugOutputDirectory = Objects.requireNonNull(
+                debugOutputDirectory,
+                "debugOutputDirectory must not be null"
+        ).map(CaptureMediaReceiverRequest::normalizedOutputPath);
     }
 
     /**
@@ -54,6 +76,28 @@ public record CaptureMediaReceiverRequest(
     ) {
         Objects.requireNonNull(inputSources, "inputSources must not be null");
         return new CaptureMediaReceiverRequest(sourceKind, inputSources.stream().toList(), Optional.empty());
+    }
+
+    /**
+     * Creates an evaluate-only request with normalized candidate debug output enabled.
+     *
+     * @param sourceKind caller-declared media source kind
+     * @param inputSources media files or folders supplied by the caller
+     * @param debugOutputDirectory directory for debug PNGs and metadata
+     * @return evaluate-only media receiver request with debug output
+     */
+    public static CaptureMediaReceiverRequest evaluateOnlyWithDebugOutput(
+            CaptureMediaSourceKind sourceKind,
+            Collection<Path> inputSources,
+            Path debugOutputDirectory
+    ) {
+        Objects.requireNonNull(inputSources, "inputSources must not be null");
+        return new CaptureMediaReceiverRequest(
+                sourceKind,
+                inputSources.stream().toList(),
+                Optional.empty(),
+                Optional.of(Objects.requireNonNull(debugOutputDirectory, "debugOutputDirectory must not be null"))
+        );
     }
 
     /**
@@ -74,6 +118,30 @@ public record CaptureMediaReceiverRequest(
                 sourceKind,
                 inputSources.stream().toList(),
                 Optional.of(Objects.requireNonNull(outputDirectory, "outputDirectory must not be null"))
+        );
+    }
+
+    /**
+     * Creates a restore request with normalized candidate debug output enabled.
+     *
+     * @param sourceKind caller-declared media source kind
+     * @param inputSources media files or folders supplied by the caller
+     * @param outputDirectory restore output directory
+     * @param debugOutputDirectory directory for debug PNGs and metadata
+     * @return media receiver restore request with debug output
+     */
+    public static CaptureMediaReceiverRequest restoreWithDebugOutput(
+            CaptureMediaSourceKind sourceKind,
+            Collection<Path> inputSources,
+            Path outputDirectory,
+            Path debugOutputDirectory
+    ) {
+        Objects.requireNonNull(inputSources, "inputSources must not be null");
+        return new CaptureMediaReceiverRequest(
+                sourceKind,
+                inputSources.stream().toList(),
+                Optional.of(Objects.requireNonNull(outputDirectory, "outputDirectory must not be null")),
+                Optional.of(Objects.requireNonNull(debugOutputDirectory, "debugOutputDirectory must not be null"))
         );
     }
 
@@ -141,6 +209,21 @@ public record CaptureMediaReceiverRequest(
      */
     public static CaptureMediaReceiverRequest restoreVideoFiles(Collection<Path> inputSources, Path outputDirectory) {
         return restore(CaptureMediaSourceKind.VIDEO_FILE, inputSources, outputDirectory);
+    }
+
+    /**
+     * Returns an equivalent request with normalized candidate debug output enabled.
+     *
+     * @param debugOutputDirectory directory for debug PNGs and metadata
+     * @return request with debug output enabled
+     */
+    public CaptureMediaReceiverRequest withDebugOutputDirectory(Path debugOutputDirectory) {
+        return new CaptureMediaReceiverRequest(
+                sourceKind,
+                inputSources,
+                outputDirectory,
+                Optional.of(Objects.requireNonNull(debugOutputDirectory, "debugOutputDirectory must not be null"))
+        );
     }
 
     /**

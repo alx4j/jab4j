@@ -25,7 +25,8 @@ class ReaderCliParserTest {
                 () -> assertEquals(Path.of("/tmp/export/imageSequence"), options.inputPath().orElseThrow()),
                 () -> assertEquals(java.util.Optional.empty(), options.captureInputPath()),
                 () -> assertEquals(java.util.Optional.empty(), options.captureMediaInputPath()),
-                () -> assertEquals(Path.of("/tmp/restore"), options.outputPath().orElseThrow())
+                () -> assertEquals(Path.of("/tmp/restore"), options.outputPath().orElseThrow()),
+                () -> assertEquals(java.util.Optional.empty(), options.captureMediaDebugOutputPath())
         );
     }
 
@@ -41,7 +42,8 @@ class ReaderCliParserTest {
                 () -> assertEquals(java.util.Optional.empty(), options.inputPath()),
                 () -> assertEquals(Path.of("/tmp/capture-frames"), options.captureInputPath().orElseThrow()),
                 () -> assertEquals(java.util.Optional.empty(), options.captureMediaInputPath()),
-                () -> assertEquals(Path.of("/tmp/restore"), options.outputPath().orElseThrow())
+                () -> assertEquals(Path.of("/tmp/restore"), options.outputPath().orElseThrow()),
+                () -> assertEquals(java.util.Optional.empty(), options.captureMediaDebugOutputPath())
         );
     }
 
@@ -56,7 +58,26 @@ class ReaderCliParserTest {
                 () -> assertEquals(java.util.Optional.empty(), options.inputPath()),
                 () -> assertEquals(java.util.Optional.empty(), options.captureInputPath()),
                 () -> assertEquals(Path.of("/tmp/media/capture.mov"), options.captureMediaInputPath().orElseThrow()),
-                () -> assertEquals(java.util.Optional.empty(), options.outputPath())
+                () -> assertEquals(java.util.Optional.empty(), options.outputPath()),
+                () -> assertEquals(java.util.Optional.empty(), options.captureMediaDebugOutputPath())
+        );
+    }
+
+    @Test
+    @DisplayName("The capture media debug output flag parses only for media mode")
+    void parsesCaptureMediaDebugOutputPath() {
+        ReaderCliOptions options = parser.parse(new String[] {
+                "--capture-media-input", "/tmp/media/frame.jpeg",
+                "--capture-media-debug-output", "/tmp/media-debug"
+        });
+
+        assertAll(
+                () -> assertEquals(java.util.Optional.empty(), options.inputPath()),
+                () -> assertEquals(java.util.Optional.empty(), options.captureInputPath()),
+                () -> assertEquals(Path.of("/tmp/media/frame.jpeg"), options.captureMediaInputPath().orElseThrow()),
+                () -> assertEquals(java.util.Optional.empty(), options.outputPath()),
+                () -> assertEquals(Path.of("/tmp/media-debug"),
+                        options.captureMediaDebugOutputPath().orElseThrow())
         );
     }
 
@@ -72,7 +93,8 @@ class ReaderCliParserTest {
                 () -> assertEquals(java.util.Optional.empty(), options.inputPath()),
                 () -> assertEquals(java.util.Optional.empty(), options.captureInputPath()),
                 () -> assertEquals(Path.of("/tmp/media/frame.png"), options.captureMediaInputPath().orElseThrow()),
-                () -> assertEquals(Path.of("/tmp/restore"), options.outputPath().orElseThrow())
+                () -> assertEquals(Path.of("/tmp/restore"), options.outputPath().orElseThrow()),
+                () -> assertEquals(java.util.Optional.empty(), options.captureMediaDebugOutputPath())
         );
     }
 
@@ -88,7 +110,8 @@ class ReaderCliParserTest {
                 () -> assertEquals(Path.of("/tmp/export/imageSequence"), options.inputPath().orElseThrow()),
                 () -> assertEquals(java.util.Optional.empty(), options.captureInputPath()),
                 () -> assertEquals(java.util.Optional.empty(), options.captureMediaInputPath()),
-                () -> assertEquals(Path.of("/tmp/restore"), options.outputPath().orElseThrow())
+                () -> assertEquals(Path.of("/tmp/restore"), options.outputPath().orElseThrow()),
+                () -> assertEquals(java.util.Optional.empty(), options.captureMediaDebugOutputPath())
         );
     }
 
@@ -144,6 +167,14 @@ class ReaderCliParserTest {
                         "--capture-media-input", "/tmp/media"
                 })
         );
+        ReaderCliException debugWithoutMedia = assertThrows(
+                ReaderCliException.class,
+                () -> parser.parse(new String[] {
+                        "--input", "/tmp/exact",
+                        "--output", "/tmp/out",
+                        "--capture-media-debug-output", "/tmp/debug"
+                })
+        );
 
         assertAll(
                 () -> assertEquals(
@@ -161,6 +192,10 @@ class ReaderCliParserTest {
                 () -> assertEquals(
                         "--capture-input and --capture-media-input are mutually exclusive",
                         captureAndMedia.getMessage()
+                ),
+                () -> assertEquals(
+                        "--capture-media-debug-output requires --capture-media-input",
+                        debugWithoutMedia.getMessage()
                 )
         );
     }
@@ -184,11 +219,23 @@ class ReaderCliParserTest {
                         "--output", "/tmp/b"
                 })
         );
+        ReaderCliException duplicateDebug = assertThrows(
+                ReaderCliException.class,
+                () -> parser.parse(new String[] {
+                        "--capture-media-input", "/tmp/media",
+                        "--capture-media-debug-output", "/tmp/a",
+                        "--capture-media-debug-output", "/tmp/b"
+                })
+        );
 
         assertAll(
                 () -> assertEquals("One --output path is required", missing.getMessage()),
                 () -> assertEquals("One --output path is required", missingCaptureOutput.getMessage()),
-                () -> assertEquals("Only one --output path is supported", duplicate.getMessage())
+                () -> assertEquals("Only one --output path is supported", duplicate.getMessage()),
+                () -> assertEquals(
+                        "Only one --capture-media-debug-output path is supported",
+                        duplicateDebug.getMessage()
+                )
         );
     }
 

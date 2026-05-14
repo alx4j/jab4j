@@ -21,6 +21,7 @@ final class ReaderCliParser {
         Path captureInput = null;
         Path captureMediaInput = null;
         Path output = null;
+        Path captureMediaDebugOutput = null;
         for (int index = 0; index < args.length; index++) {
             String argument = args[index];
             switch (argument) {
@@ -41,6 +42,12 @@ final class ReaderCliParser {
                         throw new ReaderCliException("Only one --capture-media-input path is supported");
                     }
                     captureMediaInput = Path.of(requireValue(args, ++index, argument));
+                }
+                case "--capture-media-debug-output" -> {
+                    if (captureMediaDebugOutput != null) {
+                        throw new ReaderCliException("Only one --capture-media-debug-output path is supported");
+                    }
+                    captureMediaDebugOutput = Path.of(requireValue(args, ++index, argument));
                 }
                 case "--output" -> {
                     if (output != null) {
@@ -74,6 +81,9 @@ final class ReaderCliParser {
                     "One input path is required: use --input, --capture-input, or --capture-media-input"
             );
         }
+        if (captureMediaDebugOutput != null && captureMediaInput == null) {
+            throw new ReaderCliException("--capture-media-debug-output requires --capture-media-input");
+        }
         if (captureMediaInput == null && output == null) {
             throw new ReaderCliException("One --output path is required");
         }
@@ -83,7 +93,11 @@ final class ReaderCliParser {
         if (captureInput != null) {
             return ReaderCliOptions.capture(captureInput, output);
         }
-        return ReaderCliOptions.captureMedia(captureMediaInput, java.util.Optional.ofNullable(output));
+        return ReaderCliOptions.captureMedia(
+                captureMediaInput,
+                java.util.Optional.ofNullable(output),
+                java.util.Optional.ofNullable(captureMediaDebugOutput)
+        );
     }
 
     private String requireValue(String[] args, int index, String argumentName) {

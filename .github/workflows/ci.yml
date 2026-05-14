@@ -31,9 +31,18 @@ jobs:
           java-version: ${{ matrix.java }}
           cache: maven
 
+      - name: Install optional HEIC tooling
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libheif-examples
+          converter_path="$(command -v heif-convert || command -v heif-dec)"
+          test -x "$converter_path"
+          echo "JAB4J_HEIF_CONVERT=$converter_path" >> "$GITHUB_ENV"
+
       - name: Verify
         run: |
           mvn -B -ntp -T 2C clean verify \
+            -Djab4j.heif.nativeSmoke=true \
             -Djunit.jupiter.execution.parallel.enabled=true \
             -Djunit.jupiter.execution.parallel.mode.default=concurrent \
             -Djunit.jupiter.execution.parallel.mode.classes.default=concurrent \

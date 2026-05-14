@@ -7,6 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.awt.image.BufferedImage;
+import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -25,12 +26,17 @@ import com.alx4j.jab4j.reader.capture.media.CaptureMediaSourceKind;
 import com.alx4j.jab4j.reader.capture.media.video.CaptureMediaVideoFrame;
 import com.alx4j.jab4j.reader.capture.media.video.CaptureMediaVideoFrameReadRequest;
 import com.alx4j.jab4j.reader.capture.media.video.CaptureMediaVideoFrameReadResult;
+import com.alx4j.jab4j.reader.capture.media.video.CaptureMediaVideoFrameSourceAdapter;
 import com.alx4j.jab4j.reader.capture.media.video.CaptureMediaVideoLimits;
 
 @DisplayName("Capture media still-image intake")
 class CaptureMediaInputIntakeTest {
 
-    private final CaptureMediaInputIntake intake = new CaptureMediaInputIntake();
+    private final CaptureMediaInputIntake intake = new CaptureMediaInputIntake(
+            new ImageIoCaptureMediaStillImageDecoder(),
+            CaptureMediaVideoFrameSourceAdapter.unsupported(),
+            CaptureMediaVideoLimits.conservativeDefaults()
+    );
 
     @TempDir
     Path tempDir;
@@ -141,10 +147,65 @@ class CaptureMediaInputIntakeTest {
                         CaptureMediaDiagnosticCode.UNSUPPORTED_IMAGE_FORMAT,
                         CaptureMediaDiagnosticCode.UNSUPPORTED_CONTAINER
                 ), diagnosticCodes),
+                () -> assertTrue(result.diagnostics().get(0).message().contains("libheif")),
                 () -> assertTrue(result.diagnostics().stream().allMatch(CaptureMediaDiagnostic::blocking)),
                 () -> assertEquals(List.of(3, 4), result.diagnostics().stream()
                         .map(diagnostic -> diagnostic.callerOrder().orElseThrow())
                         .toList())
+        );
+    }
+
+    @Test
+    @DisplayName("Configured HEIC decoder accepts HEIC and HEIF still images")
+    void configuredHeicDecoderAcceptsHeicAndHeifStillImages() throws Exception {
+        Path heic = tempDir.resolve("frame-001.HEIC");
+        Path heif = tempDir.resolve("frame-002.heif");
+        Files.writeString(heic, "fake heic handled by test decoder");
+        Files.writeString(heif, "fake heif handled by test decoder");
+        CaptureMediaInputIntake configuredIntake = new CaptureMediaInputIntake(
+                new FakeHeifStillImageDecoder(false),
+                CaptureMediaVideoFrameSourceAdapter.unsupported(),
+                CaptureMediaVideoLimits.conservativeDefaults()
+        );
+
+        MediaIntakeResult result = configuredIntake.read(List.of(heic, heif));
+
+        assertAll(
+                () -> assertEquals(2, result.submittedSourceCount()),
+                () -> assertEquals(2, result.readableFrames().size()),
+                () -> assertTrue(result.diagnostics().isEmpty()),
+                () -> assertEquals(List.of("frame-001.HEIC", "frame-002.heif"), result.readableFrames().stream()
+                        .map(frame -> Path.of(frame.sourceId()).getFileName().toString())
+                        .toList()),
+                () -> assertEquals(List.of("heic", "heif"), result.readableFrames().stream()
+                        .map(MediaInputFrame::formatName)
+                        .toList()),
+                () -> assertEquals(0xFF445566, result.readableFrames().get(0).argbPixelAt(0, 0)),
+                () -> assertEquals(0xFF778899, result.readableFrames().get(1).argbPixelAt(0, 0))
+        );
+    }
+
+    @Test
+    @DisplayName("Configured HEIC decoder failures produce unreadable-media diagnostics")
+    void configuredHeicDecoderFailuresProduceUnreadableMediaDiagnostics() throws Exception {
+        Path heic = tempDir.resolve("broken.heic");
+        Files.writeString(heic, "bad heic");
+        CaptureMediaInputIntake configuredIntake = new CaptureMediaInputIntake(
+                new FakeHeifStillImageDecoder(true),
+                CaptureMediaVideoFrameSourceAdapter.unsupported(),
+                CaptureMediaVideoLimits.conservativeDefaults()
+        );
+
+        MediaIntakeResult result = configuredIntake.read(heic);
+
+        assertAll(
+                () -> assertEquals(1, result.submittedSourceCount()),
+                () -> assertTrue(result.readableFrames().isEmpty()),
+                () -> assertEquals(1, result.diagnostics().size()),
+                () -> assertEquals(CaptureMediaDiagnosticCode.UNREADABLE_MEDIA,
+                        result.diagnostics().get(0).code()),
+                () -> assertTrue(result.diagnostics().get(0).message().contains("libheif")),
+                () -> assertEquals(0, result.diagnostics().get(0).callerOrder().orElseThrow())
         );
     }
 
@@ -330,5 +391,41 @@ class CaptureMediaInputIntakeTest {
         }
         MessageDigest digest = MessageDigest.getInstance("SHA-256");
         return HexFormat.of().formatHex(digest.digest(buffer.array()));
+    }
+
+    private static final class FakeHeifStillImageDecoder implements CaptureMediaStillImageDecoder {
+
+        private final boolean failDecode;
+
+        private FakeHeifStillImageDecoder(boolean failDecode) {
+            this.failDecode = failDecode;
+        }
+
+        @Override
+        public boolean supportsExtension(String extension) {
+            return switch (CaptureMediaStillImageDecoder.normalizedExtension(extension)) {
+                case "heic", "heif" -> true;
+                default -> false;
+            };
+        }
+
+        @Override
+        public CaptureMediaStillImageDecoder.DecodedStillImage decode(Path sourceFile, String extension)
+                throws IOException {
+            if (failDecode) {
+                throw new StillImageDecodeException(
+                        CaptureMediaDiagnosticCode.UNREADABLE_MEDIA,
+                        "HEIC/HEIF media source could not be decoded by the configured libheif HEIC tool"
+                );
+            }
+            String normalizedExtension = CaptureMediaStillImageDecoder.normalizedExtension(extension);
+            int pixel = "heif".equals(normalizedExtension) ? 0xFF778899 : 0xFF445566;
+            return new CaptureMediaStillImageDecoder.DecodedStillImage(
+                    1,
+                    1,
+                    normalizedExtension,
+                    new int[] { pixel }
+            );
+        }
     }
 }

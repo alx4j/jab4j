@@ -81,6 +81,7 @@ class CaptureMediaFrameNormalizerTest {
         inputFrame.releaseArgbPixels();
         assertAll(
                 () -> assertTrue(result.accepted()),
+                () -> assertEquals(1, result.frames().size()),
                 () -> assertTrue(result.diagnostics().isEmpty()),
                 () -> assertEquals("capture-frame.png", normalized.sourceId()),
                 () -> assertEquals(CaptureMediaSourceKind.STILL_IMAGE_FILE, normalized.sourceKind()),
@@ -132,6 +133,7 @@ class CaptureMediaFrameNormalizerTest {
         CaptureMediaQualityMetrics metrics = normalized.qualityMetrics();
         assertAll(
                 () -> assertTrue(result.accepted()),
+                () -> assertEquals(1, result.frames().size()),
                 () -> assertTrue(result.diagnostics().isEmpty()),
                 () -> assertEquals(scenario + ".png", normalized.sourceId()),
                 () -> assertEquals(CaptureMediaSourceKind.STILL_IMAGE_FILE, normalized.sourceKind()),
@@ -289,6 +291,7 @@ class CaptureMediaFrameNormalizerTest {
         CaptureMediaQualityMetrics metrics = normalized.qualityMetrics();
         assertAll(
                 () -> assertTrue(result.accepted()),
+                () -> assertEquals(1, result.frames().size()),
                 () -> assertTrue(result.diagnostics().isEmpty()),
                 () -> assertEquals(DEBUG_FRAME_WIDTH, normalized.normalizedWidthPixels()),
                 () -> assertEquals(DEBUG_FRAME_HEIGHT, normalized.normalizedHeightPixels()),
@@ -350,6 +353,7 @@ class CaptureMediaFrameNormalizerTest {
         CaptureMediaQualityMetrics metrics = normalized.qualityMetrics();
         assertAll(
                 () -> assertTrue(result.accepted()),
+                () -> assertEquals(1, result.frames().size()),
                 () -> assertTrue(result.diagnostics().isEmpty()),
                 () -> assertEquals(DEBUG_FRAME_WIDTH, normalized.normalizedWidthPixels()),
                 () -> assertEquals(DEBUG_FRAME_HEIGHT, normalized.normalizedHeightPixels()),
@@ -394,6 +398,7 @@ class CaptureMediaFrameNormalizerTest {
         String exportedMetadata = Files.readString(export.metadataPath());
         assertAll(
                 () -> assertTrue(result.accepted()),
+                () -> assertEquals(1, result.frames().size()),
                 () -> assertTrue(result.diagnostics().isEmpty()),
                 () -> assertEquals(DEBUG_FRAME_WIDTH, normalized.normalizedWidthPixels()),
                 () -> assertEquals(DEBUG_FRAME_HEIGHT, normalized.normalizedHeightPixels()),
@@ -503,8 +508,8 @@ class CaptureMediaFrameNormalizerTest {
     }
 
     @Test
-    @DisplayName("Generated multiple camera-like JAB regions are rejected as ambiguous")
-    void generatedMultipleCameraLikeJabRegionsAreRejectedAsAmbiguous() {
+    @DisplayName("Generated multiple camera-like JAB regions are returned as ranked normalized candidates")
+    void generatedMultipleCameraLikeJabRegionsAreReturnedAsRankedNormalizedCandidates() {
         int canvasWidth = 2920;
         int canvasHeight = 1000;
         int[] renderedFrame = shiftPaletteColors(renderedDebugFramePixels(), 18);
@@ -516,14 +521,41 @@ class CaptureMediaFrameNormalizerTest {
 
         MediaNormalizationResult result = normalizer.normalize(inputFrame);
 
-        CaptureMediaDiagnostic diagnostic = result.diagnostics().get(0);
         assertAll(
-                () -> assertFalse(result.accepted()),
-                () -> assertTrue(result.frame().isEmpty()),
-                () -> assertEquals(1, result.diagnostics().size()),
-                () -> assertEquals(CaptureMediaDiagnosticCode.AMBIGUOUS_SESSIONS, diagnostic.code()),
-                () -> assertTrue(diagnostic.blocking()),
-                () -> assertTrue(diagnostic.metrics().get("detectedCandidateCount") >= 2.0d)
+                () -> assertTrue(result.accepted(), () -> result.diagnostics().toString()),
+                () -> assertEquals(2, result.frames().size()),
+                () -> assertTrue(result.diagnostics().isEmpty()),
+                () -> assertTrue(result.frames().stream()
+                        .allMatch(frame -> frame.normalizedWidthPixels() == DEBUG_FRAME_WIDTH)),
+                () -> assertTrue(result.frames().stream()
+                        .allMatch(frame -> frame.normalizedHeightPixels() == DEBUG_FRAME_HEIGHT))
+        );
+    }
+
+    @Test
+    @DisplayName("Generated camera-like JAB regions are bounded to the top ranked candidates")
+    void generatedCameraLikeJabRegionsAreBoundedToTopRankedCandidates() {
+        int canvasWidth = 5320;
+        int canvasHeight = 860;
+        int[] renderedFrame = shiftPaletteColors(renderedDebugFramePixels(), 18);
+        int[] canvas = blankCanvas(canvasWidth, canvasHeight);
+        fillRect(canvas, canvasWidth, 24, 24, canvasWidth - 48, canvasHeight - 48, 0xFF15191D);
+        paste(renderedFrame, canvas, canvasWidth, canvasHeight, 40, 70);
+        paste(renderedFrame, canvas, canvasWidth, canvasHeight, 1360, 70);
+        paste(renderedFrame, canvas, canvasWidth, canvasHeight, 2680, 70);
+        paste(renderedFrame, canvas, canvasWidth, canvasHeight, 4000, 70);
+        MediaInputFrame inputFrame = mediaFrame("top-n-camera-like-monitor.png", canvasWidth, canvasHeight, canvas);
+
+        MediaNormalizationResult result = normalizer.normalize(inputFrame);
+
+        assertAll(
+                () -> assertTrue(result.accepted(), () -> result.diagnostics().toString()),
+                () -> assertEquals(3, result.frames().size()),
+                () -> assertTrue(result.diagnostics().isEmpty()),
+                () -> assertTrue(result.frames().stream()
+                        .allMatch(frame -> frame.normalizedWidthPixels() == DEBUG_FRAME_WIDTH)),
+                () -> assertTrue(result.frames().stream()
+                        .allMatch(frame -> frame.normalizedHeightPixels() == DEBUG_FRAME_HEIGHT))
         );
     }
 

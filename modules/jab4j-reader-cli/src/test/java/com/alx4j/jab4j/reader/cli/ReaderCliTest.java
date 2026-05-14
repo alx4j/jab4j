@@ -64,6 +64,9 @@ import com.alx4j.jab4j.reader.capture.CaptureFrameDiagnostic;
 import com.alx4j.jab4j.reader.capture.CaptureReceiverRequest;
 import com.alx4j.jab4j.reader.capture.CaptureReceiverResult;
 import com.alx4j.jab4j.reader.capture.CaptureReceiverSummary;
+import com.alx4j.jab4j.reader.capture.media.CaptureMediaDiagnostic;
+import com.alx4j.jab4j.reader.capture.media.CaptureMediaDiagnosticCode;
+import com.alx4j.jab4j.reader.capture.media.CaptureMediaDiagnosticSeverity;
 import com.alx4j.jab4j.reader.capture.media.CaptureMediaReceiverRequest;
 import com.alx4j.jab4j.reader.capture.media.CaptureMediaReceiverResult;
 import com.alx4j.jab4j.reader.capture.media.CaptureMediaSourceKind;
@@ -603,6 +606,52 @@ class ReaderCliTest {
     }
 
     @Test
+    @DisplayName("Capture media debug output path is passed to the receiver")
+    void captureMediaDebugOutputPathIsPassedToReceiver() {
+        Path captureMediaInput = tempDir.resolve("frame.jpeg");
+        Path debugOutput = tempDir.resolve("media-debug");
+        List<CaptureMediaReceiverRequest> requests = new ArrayList<>();
+        ReaderCli cli = new ReaderCli(
+                new ReaderApplicationService(),
+                request -> {
+                    throw new AssertionError("capture receiver should not be used for capture media input");
+                },
+                request -> {
+                    requests.add(request);
+                    return CaptureMediaReceiverResult.eligible(
+                            new CaptureMediaSummary(1, 1, 1, 0, 0, 0, 1, 4, 0),
+                            List.of(),
+                            "Capture media input is eligible for restore"
+                    );
+                },
+                new ReaderCliParser()
+        );
+        ByteArrayOutputStream stdout = new ByteArrayOutputStream();
+        ByteArrayOutputStream stderr = new ByteArrayOutputStream();
+
+        int exitCode = cli.run(
+                new String[] {
+                        "--capture-media-input", captureMediaInput.toString(),
+                        "--capture-media-debug-output", debugOutput.toString()
+                },
+                new PrintStream(stdout, true, StandardCharsets.UTF_8),
+                new PrintStream(stderr, true, StandardCharsets.UTF_8)
+        );
+
+        String stdoutText = stdout.toString(StandardCharsets.UTF_8);
+        assertAll(
+                () -> assertEquals(0, exitCode),
+                () -> assertEquals("", stderr.toString(StandardCharsets.UTF_8)),
+                () -> assertEquals(1, requests.size()),
+                () -> assertFalse(requests.get(0).restoreRequested()),
+                () -> assertEquals(Optional.of(normalized(debugOutput)), requests.get(0).debugOutputDirectory()),
+                () -> assertTrue(stdoutText.contains("CAPTURE_MEDIA_ELIGIBLE ")),
+                () -> assertTrue(stdoutText.contains("restoreRequested=false")),
+                () -> assertTrue(stdoutText.contains("CAPTURE_MEDIA_DEBUG outputDirectory=" + normalized(debugOutput)))
+        );
+    }
+
+    @Test
     @DisplayName("Capture media direct video returns stable unsupported diagnostics when no media service is present")
     void captureMediaDirectVideoReturnsStableUnsupportedDiagnosticsWithoutService() {
         Path captureMediaInput = tempDir.resolve("phone-capture.mov");
@@ -672,7 +721,7 @@ class ReaderCliTest {
     @DisplayName("Capture media HEIC returns stable unsupported image diagnostics")
     void captureMediaHeicReturnsStableUnsupportedImageDiagnostics() {
         Path captureMediaInput = tempDir.resolve("phone-photo.heic");
-        ReaderCli cli = new ReaderCli();
+        ReaderCli cli = cliWithUnavailableHeifCaptureMediaReceiver();
         ByteArrayOutputStream stdout = new ByteArrayOutputStream();
         ByteArrayOutputStream stderr = new ByteArrayOutputStream();
 
@@ -691,7 +740,7 @@ class ReaderCliTest {
                 () -> assertTrue(stderrText.contains(
                         "CAPTURE_MEDIA_DIAGNOSTIC code=UNSUPPORTED_IMAGE_FORMAT severity=ERROR blocking=true sourceKind=STILL_IMAGE sourceId=phone-photo.heic"
                 )),
-                () -> assertTrue(stderrText.contains("HEIC/HEIF capture media input is unsupported"))
+                () -> assertTrue(stderrText.contains("HEIC/HEIF capture media input requires optional libheif"))
         );
     }
 
@@ -724,10 +773,15 @@ class ReaderCliTest {
                 )),
                 () -> assertTrue(stderrText.contains("Input: current writer imageSequence PNG export directory")),
                 () -> assertTrue(stderrText.contains("Capture input: extracted PNG frame directory")),
-                () -> assertTrue(stderrText.contains("Capture media input: MVP-3 PNG/JPEG still image")),
+                () -> assertTrue(stderrText.contains(
+                        "Capture media input: MVP-3 PNG/JPEG still image, optional HEIC/HEIF still image"
+                )),
+                () -> assertTrue(stderrText.contains(
+                        "Capture media debug output: optional normalized candidate PNGs and sampler metadata"
+                )),
                 () -> assertTrue(stderrText.contains("frame-sequence.txt is a writer-export validation helper")),
                 () -> assertTrue(stderrText.contains(
-                        "Unsupported in the first media slice: full real photo recovery, HEIC, direct .mov/.mp4 decoding"
+                        "Unsupported in the first media slice: full real photo recovery, direct .mov/.mp4 decoding"
                 ))
         );
     }
@@ -1019,6 +1073,28 @@ class ReaderCliTest {
             throw new IllegalStateException("Failed to copy media PNG frames", exception);
         }
         return targetDirectory;
+    }
+
+    private ReaderCli cliWithUnavailableHeifCaptureMediaReceiver() {
+        return new ReaderCli(
+                new ReaderApplicationService(),
+                request -> {
+                    throw new AssertionError("capture receiver should not be used for capture media input");
+                },
+                request -> CaptureMediaReceiverResult.rejected(
+                        new CaptureMediaSummary(1, 0, 0, 1, 0, 0, 0, 0, 0),
+                        List.of(CaptureMediaDiagnostic.forSource(
+                                CaptureMediaDiagnosticCode.UNSUPPORTED_IMAGE_FORMAT,
+                                CaptureMediaDiagnosticSeverity.ERROR,
+                                request.sourceKind(),
+                                request.inputSources().get(0).toAbsolutePath().normalize().toString(),
+                                0,
+                                "HEIC/HEIF capture media input requires optional libheif heif-convert/heif-dec support"
+                        )),
+                        "HEIC/HEIF capture media input requires optional libheif support"
+                ),
+                new ReaderCliParser()
+        );
     }
 
     private Path normalized(Path path) {
