@@ -396,10 +396,20 @@ jobs:
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             echo "GitHub release already exists: $RELEASE_TAG"
           else
+            gh api "repos/${GITHUB_REPOSITORY}/releases/generate-notes" \
+              --method POST \
+              -f tag_name="$RELEASE_TAG" \
+              --jq .body \
+              | awk '
+                  /^[*-] Start [0-9]+\.[0-9]+\.[0-9]+-SNAPSHOT by @[^ ]+ in / { next }
+                  /^[*-] Release v[0-9]+\.[0-9]+\.[0-9]+ by @[^ ]+ in / { next }
+                  { print }
+                ' > /tmp/release-notes.md
+
             gh release create "$RELEASE_TAG" \
               --verify-tag \
               --title "$RELEASE_TAG" \
-              --generate-notes
+              --notes-file /tmp/release-notes.md
           fi
 
   prepare-next-snapshot:
@@ -416,6 +426,7 @@ jobs:
     outputs:
       next_snapshot: ${{ steps.versions.outputs.next_snapshot }}
       next_snapshot_pr_url: ${{ steps.pr.outputs.url }}
+      next_snapshot_merge_commit: ${{ steps.wait.outputs.merge_commit }}
 
     steps:
       - name: Check out release commit
@@ -542,6 +553,48 @@ jobs:
           PR_URL: ${{ steps.pr.outputs.url }}
         run: gh pr merge "$PR_URL" --squash --auto --delete-branch
 
+      - name: Wait for next snapshot PR merge
+        id: wait
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_AUTOMATION_TOKEN || github.token }}
+          PR_URL: ${{ steps.pr.outputs.url }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          deadline=$((SECONDS + 7200))
+
+          while true; do
+            STATE="$(gh pr view "$PR_URL" --json state --jq .state)"
+            MERGED_AT="$(gh pr view "$PR_URL" --json mergedAt --jq '.mergedAt // ""')"
+
+            if [[ -n "$MERGED_AT" ]]; then
+              MERGE_COMMIT="$(gh pr view "$PR_URL" --json mergeCommit --jq '.mergeCommit.oid // ""')"
+
+              if [[ -z "$MERGE_COMMIT" ]]; then
+                echo "Next snapshot PR is merged, but GitHub did not return a merge commit."
+                exit 1
+              fi
+
+              echo "Next snapshot PR merged at $MERGED_AT as $MERGE_COMMIT."
+              echo "merge_commit=$MERGE_COMMIT" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+
+            if [[ "$STATE" == "CLOSED" ]]; then
+              echo "Next snapshot PR was closed without being merged."
+              exit 1
+            fi
+
+            if (( SECONDS >= deadline )); then
+              echo "Timed out waiting for next snapshot PR auto-merge."
+              exit 1
+            fi
+
+            echo "Waiting for next snapshot PR auto-merge..."
+            sleep 30
+          done
+
   notify-release-result:
     name: Notify release result
     runs-on: ubuntu-24.04
@@ -572,6 +625,7 @@ jobs:
             Release PR: ${{ needs.prepare-release.outputs.release_pr_url }}
             Next snapshot: ${{ needs.prepare-next-snapshot.outputs.next_snapshot }}
             Next snapshot PR: ${{ needs.prepare-next-snapshot.outputs.next_snapshot_pr_url }}
+            Next snapshot merge commit: ${{ needs.prepare-next-snapshot.outputs.next_snapshot_merge_commit }}
             Workflow: ${{ env.RELEASE_RUN_URL }}
         run: bash .github/scripts/notify-telegram.sh
 
