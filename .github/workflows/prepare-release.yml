@@ -67,7 +67,7 @@ jobs:
           -DgenerateBackupPoms=false
 
       - name: Verify release build
-        run: mvn -B -ntp -Prelease -Dgpg.skip=true clean verify
+        run: mvn -B -ntp -T 2C -Prelease -Dgpg.skip=true clean verify
 
       - name: Create release PR
         id: pr
@@ -101,7 +101,7 @@ jobs:
 
           ## Validation
 
-          - \`mvn -B -ntp -Prelease -Dgpg.skip=true clean verify\`
+          - \`mvn -B -ntp -T 2C -Prelease -Dgpg.skip=true clean verify\`
           EOF
 
           if gh pr view "$RELEASE_BRANCH" >/dev/null 2>&1; then

@@ -6,12 +6,46 @@ on:
     branches:
       - main
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
 jobs:
   verify:
     name: Maven verify / JDK ${{ matrix.java }}
+    runs-on: ubuntu-24.04
+
+    strategy:
+      fail-fast: false
+      matrix:
+        java:
+          - '17'
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK ${{ matrix.java }}
+        uses: actions/setup-java@v4
+        with:
+          distribution: zulu
+          java-version: ${{ matrix.java }}
+          cache: maven
+
+      - name: Verify
+        run: |
+          mvn -B -ntp -T 2C clean verify \
+            -Djunit.jupiter.execution.parallel.enabled=true \
+            -Djunit.jupiter.execution.parallel.mode.default=concurrent \
+            -Djunit.jupiter.execution.parallel.mode.classes.default=concurrent \
+            -Djunit.jupiter.execution.parallel.config.strategy=fixed \
+            -Djunit.jupiter.execution.parallel.config.fixed.parallelism=4
+
+  heic-smoke:
+    name: HEIC native smoke / JDK ${{ matrix.java }}
     runs-on: ubuntu-24.04
 
     strategy:
@@ -39,12 +73,9 @@ jobs:
           test -x "$converter_path"
           echo "JAB4J_HEIF_CONVERT=$converter_path" >> "$GITHUB_ENV"
 
-      - name: Verify
+      - name: Run HEIC native smoke
         run: |
-          mvn -B -ntp -T 2C clean verify \
-            -Djab4j.heif.nativeSmoke=true \
-            -Djunit.jupiter.execution.parallel.enabled=true \
-            -Djunit.jupiter.execution.parallel.mode.default=concurrent \
-            -Djunit.jupiter.execution.parallel.mode.classes.default=concurrent \
-            -Djunit.jupiter.execution.parallel.config.strategy=fixed \
-            -Djunit.jupiter.execution.parallel.config.fixed.parallelism=4
+          mvn -B -ntp -pl modules/jab4j-reader -am test \
+            -Dtest=LibHeifCaptureMediaStillImageDecoderSmokeTest \
+            -Dsurefire.failIfNoSpecifiedTests=false \
+            -Djab4j.heif.nativeSmoke=true

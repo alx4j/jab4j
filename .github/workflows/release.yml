@@ -121,7 +121,7 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Verify release build without signing
-        run: mvn -B -ntp -Prelease -Dgpg.skip=true clean verify
+        run: mvn -B -ntp -T 2C -Prelease -Dgpg.skip=true clean verify
 
   publish:
     name: Publish to Maven Central
