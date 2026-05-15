@@ -1,7 +1,8 @@
-package com.alx4j.jab4j.reader.capture.media.normalize;
+package com.alx4j.jab4j.reader.capture.media.cv.legacy;
 
 import java.util.Objects;
 import com.alx4j.jab4j.api.model.LayoutProfile;
+import com.alx4j.jab4j.reader.capture.media.normalize.FrameCorners;
 
 /**
  * Ranked source-space JAB frame candidate emitted by the region detector.

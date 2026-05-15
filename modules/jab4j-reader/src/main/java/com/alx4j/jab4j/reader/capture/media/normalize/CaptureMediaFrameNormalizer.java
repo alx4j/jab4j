@@ -13,6 +13,8 @@ import com.alx4j.jab4j.reader.capture.media.cv.CaptureMediaCvBackend;
 import com.alx4j.jab4j.reader.capture.media.cv.CvDetectionResult;
 import com.alx4j.jab4j.reader.capture.media.cv.CvFrameCandidate;
 import com.alx4j.jab4j.reader.capture.media.cv.CvNormalizedFrame;
+import com.alx4j.jab4j.reader.capture.media.cv.PerspectiveTransform;
+import com.alx4j.jab4j.reader.capture.media.cv.legacy.LegacyCaptureMediaCvBackend;
 import com.alx4j.jab4j.reader.capture.media.input.MediaInputFrame;
 import com.alx4j.jab4j.reader.capture.qualify.CaptureRenderedLayoutCatalog;
 import com.alx4j.jab4j.render.layout.FixedLayoutPlan;
@@ -26,20 +28,7 @@ public final class CaptureMediaFrameNormalizer {
 
     private static final int WHITE = 0xFFFFFFFF;
     private static final int BLACK = 0xFF000000;
-    private static final int DARK_GRAY = 0xFF202020;
-    private static final int[] RENDERED_COLORS = {
-            0xFF000000,
-            0xFF0000FF,
-            0xFF00FF00,
-            0xFF00FFFF,
-            0xFFFF0000,
-            0xFFFF00FF,
-            0xFFFFFF00,
-            0xFFFFFFFF,
-            DARK_GRAY
-    };
     private static final double MIN_GENERATED_FRAME_COVERAGE_RATIO = 0.20d;
-    private static final double MAX_GENERATED_PERSPECTIVE_SKEW_SCORE = 0.35d;
     private static final double MIN_SYNC_BAND_CONTRAST_SCORE = 0.30d;
     private static final double MAX_GLARE_NEAR_WHITE_RATIO = 0.96d;
     private static final int GLARE_SAMPLE_STRIDE_PX = 4;
@@ -49,8 +38,7 @@ public final class CaptureMediaFrameNormalizer {
 
     private final CaptureRenderedLayoutCatalog layoutCatalog;
     private final FixedLayoutPlanner layoutPlanner;
-    private final JabFrameRegionDetector jabFrameRegionDetector;
-    private final Optional<CaptureMediaCvBackend> cvBackend;
+    private final CaptureMediaCvBackend cvBackend;
 
     /**
      * Creates a normalizer backed by the existing supported rendered layout catalog.
@@ -97,7 +85,7 @@ public final class CaptureMediaFrameNormalizer {
      * @param layoutPlanner fixed layout planner used for rendered-frame signatures
      */
     public CaptureMediaFrameNormalizer(CaptureRenderedLayoutCatalog layoutCatalog, FixedLayoutPlanner layoutPlanner) {
-        this(layoutCatalog, layoutPlanner, Optional.empty());
+        this(layoutCatalog, layoutPlanner, new LegacyCaptureMediaCvBackend(layoutCatalog, layoutPlanner));
     }
 
     /**
@@ -112,21 +100,8 @@ public final class CaptureMediaFrameNormalizer {
             FixedLayoutPlanner layoutPlanner,
             CaptureMediaCvBackend cvBackend
     ) {
-        this(
-                layoutCatalog,
-                layoutPlanner,
-                Optional.of(Objects.requireNonNull(cvBackend, "cvBackend must not be null"))
-        );
-    }
-
-    private CaptureMediaFrameNormalizer(
-            CaptureRenderedLayoutCatalog layoutCatalog,
-            FixedLayoutPlanner layoutPlanner,
-            Optional<CaptureMediaCvBackend> cvBackend
-    ) {
         this.layoutCatalog = Objects.requireNonNull(layoutCatalog, "layoutCatalog must not be null");
         this.layoutPlanner = Objects.requireNonNull(layoutPlanner, "layoutPlanner must not be null");
-        this.jabFrameRegionDetector = new JabFrameRegionDetector(this.layoutCatalog, this.layoutPlanner);
         this.cvBackend = Objects.requireNonNull(cvBackend, "cvBackend must not be null");
     }
 
@@ -339,67 +314,37 @@ public final class CaptureMediaFrameNormalizer {
     }
 
     private MediaNormalizationResult normalizeNonExactRegion(MediaInputFrame frame) {
-        Optional<MediaNormalizationResult> cvBackendResult = normalizeWithCvBackend(frame);
-        if (cvBackendResult.isPresent()) {
-            return cvBackendResult.orElseThrow();
-        }
-
-        Optional<MediaNormalizationResult> generatedPerspectiveResult = normalizePerspectiveCorrectedFrame(frame);
-        if (generatedPerspectiveResult.isPresent()) {
-            return generatedPerspectiveResult.orElseThrow();
-        }
-
-        JabFrameDetectionResult detectionResult = jabFrameRegionDetector.detect(frame);
-        return switch (detectionResult.status()) {
-            case ACCEPTED -> normalizeDetectedJabFrameCandidates(
-                    frame,
-                    detectionResult.rankedCandidates()
-            );
-            case AMBIGUOUS -> rejected(
-                    frame,
-                    CaptureMediaDiagnosticCode.AMBIGUOUS_SESSIONS,
-                    detectionResult.metrics(),
-                    "Media normalization found multiple plausible JAB frame regions"
-            );
-            case TOO_SMALL -> rejected(
-                    frame,
-                    CaptureMediaDiagnosticCode.MONITOR_TOO_SMALL,
-                    detectionResult.metrics(),
-                    "Detected JAB frame region is below the minimum generated coverage threshold"
-            );
-            case NOT_FOUND -> hasPartialAxisAlignedFrameEvidence(frame)
-                    ? rejected(
-                    frame,
-                    CaptureMediaDiagnosticCode.FRAME_PARTIALLY_OUTSIDE_IMAGE,
-                    "Media normalization found partial generated frame evidence at the image boundary"
-            )
-                    : rejected(
-                    frame,
-                    CaptureMediaDiagnosticCode.SCREEN_OR_FRAME_NOT_FOUND,
-                    detectionResult.metrics(),
-                    "Media normalization did not find a clean supported rendered frame region"
-            );
-        };
+        return normalizeWithCvBackend(frame);
     }
 
-    private Optional<MediaNormalizationResult> normalizeWithCvBackend(MediaInputFrame frame) {
-        if (cvBackend.isEmpty()) {
-            return Optional.empty();
-        }
+    private MediaNormalizationResult normalizeWithCvBackend(MediaInputFrame frame) {
         CvDetectionResult result;
         try {
             result = Objects.requireNonNull(
-                    cvBackend.orElseThrow().detect(frame),
+                    cvBackend.detect(frame),
                     "CV backend result must not be null"
             );
         } catch (RuntimeException exception) {
-            return Optional.of(rejected(
+            return rejected(
                     frame,
                     CaptureMediaDiagnosticCode.UNREADABLE_MEDIA,
                     "Capture-media CV backend failed while evaluating the frame"
-            ));
+            );
         }
-        return Optional.of(normalizeCvDetectionResult(frame, result));
+        if (isScreenOrFrameNotFound(result) && hasPartialAxisAlignedFrameEvidence(frame)) {
+            return rejected(
+                    frame,
+                    CaptureMediaDiagnosticCode.FRAME_PARTIALLY_OUTSIDE_IMAGE,
+                    "Media normalization found partial generated frame evidence at the image boundary"
+            );
+        }
+        return normalizeCvDetectionResult(frame, result);
+    }
+
+    private boolean isScreenOrFrameNotFound(CvDetectionResult result) {
+        return result.diagnosticCode()
+                .filter(code -> code == CaptureMediaDiagnosticCode.SCREEN_OR_FRAME_NOT_FOUND)
+                .isPresent();
     }
 
     private MediaNormalizationResult normalizeCvDetectionResult(MediaInputFrame frame, CvDetectionResult result) {
@@ -484,55 +429,6 @@ public final class CaptureMediaFrameNormalizer {
                 frame,
                 candidate.layoutProfile(),
                 candidate.frameCorners(),
-                candidate.score().frameCoverageRatio(),
-                candidate.score().skewScore(),
-                correctedPixels
-        ));
-    }
-
-    private MediaNormalizationResult normalizeDetectedJabFrameCandidates(
-            MediaInputFrame frame,
-            List<JabFrameCandidate> candidates
-    ) {
-        List<NormalizedCaptureFrame> normalizedCandidates = new ArrayList<>();
-        for (JabFrameCandidate candidate : candidates.stream()
-                .limit(MAX_JAB_CANDIDATES_TO_NORMALIZE)
-                .toList()) {
-            normalizeDetectedJabFrameCandidate(frame, candidate)
-                    .frame()
-                    .ifPresent(normalizedCandidates::add);
-        }
-        if (normalizedCandidates.isEmpty()) {
-            return rejected(
-                    frame,
-                    CaptureMediaDiagnosticCode.PERSPECTIVE_TOO_SEVERE,
-                    "Detected JAB frame region perspective is not invertible"
-            );
-        }
-        return MediaNormalizationResult.accepted(normalizedCandidates);
-    }
-
-    private MediaNormalizationResult normalizeDetectedJabFrameCandidate(
-            MediaInputFrame frame,
-            JabFrameCandidate candidate
-    ) {
-        PerspectiveTransform transform;
-        try {
-            transform = PerspectiveTransform.fromUnitSquareTo(candidate.corners());
-        } catch (IllegalArgumentException exception) {
-            return rejected(
-                    frame,
-                    CaptureMediaDiagnosticCode.PERSPECTIVE_TOO_SEVERE,
-                    candidate.score().metrics(),
-                    "Detected JAB frame region perspective is not invertible"
-            );
-        }
-
-        int[] correctedPixels = resamplePerspective(frame, candidate.profile(), transform);
-        return MediaNormalizationResult.accepted(NormalizedCaptureFrame.fromPerspectiveCorrectedFrame(
-                frame,
-                candidate.profile(),
-                candidate.corners(),
                 candidate.score().frameCoverageRatio(),
                 candidate.score().skewScore(),
                 correctedPixels
@@ -800,140 +696,6 @@ public final class CaptureMediaFrameNormalizer {
         return true;
     }
 
-    private Optional<MediaNormalizationResult> normalizePerspectiveCorrectedFrame(MediaInputFrame frame) {
-        Optional<FrameCorners> detectedCorners = detectRenderedColorQuadrilateral(frame);
-        if (detectedCorners.isEmpty()) {
-            return Optional.empty();
-        }
-        FrameCorners corners = detectedCorners.get();
-        double coverageRatio = quadrilateralArea(corners)
-                / ((double) frame.widthPixels() * frame.heightPixels());
-        if (coverageRatio < MIN_GENERATED_FRAME_COVERAGE_RATIO) {
-            return Optional.empty();
-        }
-
-        PerspectiveTransform transform;
-        try {
-            transform = PerspectiveTransform.fromUnitSquareTo(corners);
-        } catch (IllegalArgumentException exception) {
-            return Optional.empty();
-        }
-
-        double skewScore = perspectiveSkewScore(corners);
-        for (LayoutProfile profile : layoutCatalog.profiles()) {
-            int[] correctedPixels = resamplePerspective(frame, profile, transform);
-            if (!hasPerspectiveCorrectedFrameEvidence(frame, profile, correctedPixels)) {
-                continue;
-            }
-            if (skewScore > MAX_GENERATED_PERSPECTIVE_SKEW_SCORE) {
-                return Optional.of(rejected(
-                        frame,
-                        CaptureMediaDiagnosticCode.PERSPECTIVE_TOO_SEVERE,
-                        "Detected generated frame perspective exceeds the supported correction threshold"
-                ));
-            }
-            return Optional.of(MediaNormalizationResult.accepted(NormalizedCaptureFrame.fromPerspectiveCorrectedFrame(
-                    frame,
-                    profile,
-                    corners,
-                    coverageRatio,
-                    skewScore,
-                    correctedPixels
-            )));
-        }
-        return Optional.empty();
-    }
-
-    private Optional<FrameCorners> detectRenderedColorQuadrilateral(MediaInputFrame frame) {
-        ExtremePoint topLeft = null;
-        ExtremePoint topRight = null;
-        ExtremePoint bottomRight = null;
-        ExtremePoint bottomLeft = null;
-        int renderedColorPixels = 0;
-
-        for (int row = 0; row < frame.heightPixels(); row++) {
-            for (int col = 0; col < frame.widthPixels(); col++) {
-                if (!isRenderedColor(frame.argbPixelAt(row, col))) {
-                    continue;
-                }
-                renderedColorPixels++;
-                topLeft = minExtreme(topLeft, col + row, col, row);
-                topRight = maxExtreme(topRight, col - row, col, row);
-                bottomRight = maxExtreme(bottomRight, col + row, col, row);
-                bottomLeft = maxExtreme(bottomLeft, row - col, col, row);
-            }
-        }
-
-        if (renderedColorPixels < 1000
-                || topLeft == null
-                || topRight == null
-                || bottomRight == null
-                || bottomLeft == null) {
-            return Optional.empty();
-        }
-
-        FrameCorners corners = new FrameCorners(
-                topLeft.x(),
-                topLeft.y(),
-                topRight.x(),
-                topRight.y(),
-                bottomRight.x(),
-                bottomRight.y(),
-                bottomLeft.x(),
-                bottomLeft.y()
-        );
-        if (!cornersAreDistinct(corners)
-                || quadrilateralArea(corners) <= 0.0d
-                || !cornersInsideFrame(frame, corners)) {
-            return Optional.empty();
-        }
-        return Optional.of(corners);
-    }
-
-    private ExtremePoint minExtreme(ExtremePoint current, int score, int x, int y) {
-        if (current == null || score < current.score()) {
-            return new ExtremePoint(score, x, y);
-        }
-        return current;
-    }
-
-    private ExtremePoint maxExtreme(ExtremePoint current, int score, int x, int y) {
-        if (current == null || score > current.score()) {
-            return new ExtremePoint(score, x, y);
-        }
-        return current;
-    }
-
-    private boolean isRenderedColor(int argb) {
-        for (int renderedColor : RENDERED_COLORS) {
-            if (argb == renderedColor) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    private boolean cornersAreDistinct(FrameCorners corners) {
-        return distance(corners.topLeftX(), corners.topLeftY(), corners.topRightX(), corners.topRightY()) > 1.0d
-                && distance(corners.topRightX(), corners.topRightY(), corners.bottomRightX(), corners.bottomRightY()) > 1.0d
-                && distance(corners.bottomRightX(), corners.bottomRightY(), corners.bottomLeftX(), corners.bottomLeftY()) > 1.0d
-                && distance(corners.bottomLeftX(), corners.bottomLeftY(), corners.topLeftX(), corners.topLeftY()) > 1.0d;
-    }
-
-    private boolean cornersInsideFrame(MediaInputFrame frame, FrameCorners corners) {
-        return insideFrame(frame, corners.topLeftX(), corners.topLeftY())
-                && insideFrame(frame, corners.topRightX(), corners.topRightY())
-                && insideFrame(frame, corners.bottomRightX(), corners.bottomRightY())
-                && insideFrame(frame, corners.bottomLeftX(), corners.bottomLeftY());
-    }
-
-    private boolean insideFrame(MediaInputFrame frame, double x, double y) {
-        return x >= 0.0d
-                && x < frame.widthPixels()
-                && y >= 0.0d
-                && y < frame.heightPixels();
-    }
-
     private int[] resamplePerspective(
             MediaInputFrame frame,
             LayoutProfile profile,
@@ -968,74 +730,6 @@ public final class CaptureMediaFrameNormalizer {
 
     private int clamp(int value, int min, int max) {
         return Math.max(min, Math.min(max, value));
-    }
-
-    private boolean hasPerspectiveCorrectedFrameEvidence(
-            MediaInputFrame sourceFrame,
-            LayoutProfile profile,
-            int[] correctedPixels
-    ) {
-        MediaInputFrame correctedFrame = new MediaInputFrame(
-                sourceFrame.sourceId(),
-                sourceFrame.sourceKind(),
-                sourceFrame.callerOrder(),
-                profile.frameWidthPx(),
-                profile.frameHeightPx(),
-                sourceFrame.formatName(),
-                sourceFrame.pixelSha256(),
-                correctedPixels
-        );
-        FixedLayoutPlan layoutPlan = layoutPlanner.plan(profile);
-        int right = profile.frameWidthPx() - 1;
-        int bottom = profile.frameHeightPx() - 1;
-        int border = layoutPlan.separatorThicknessPx();
-        try {
-            return correctedFrame.argbPixelAt(0, 0) == WHITE
-                    && correctedFrame.argbPixelAt(0, right) == WHITE
-                    && correctedFrame.argbPixelAt(bottom, 0) == WHITE
-                    && correctedFrame.argbPixelAt(bottom, right) == WHITE
-                    && correctedFrame.argbPixelAt(border, border) == BLACK
-                    && hasExactSyncBandSample(correctedFrame, profile, layoutPlan, 0, 0)
-                    && hasExactTileSlotGridSample(correctedFrame, profile, layoutPlan, 0, 0);
-        } finally {
-            correctedFrame.releaseArgbPixels();
-        }
-    }
-
-    private double quadrilateralArea(FrameCorners corners) {
-        double doubledArea = (corners.topLeftX() * corners.topRightY())
-                - (corners.topLeftY() * corners.topRightX())
-                + (corners.topRightX() * corners.bottomRightY())
-                - (corners.topRightY() * corners.bottomRightX())
-                + (corners.bottomRightX() * corners.bottomLeftY())
-                - (corners.bottomRightY() * corners.bottomLeftX())
-                + (corners.bottomLeftX() * corners.topLeftY())
-                - (corners.bottomLeftY() * corners.topLeftX());
-        return Math.abs(doubledArea) / 2.0d;
-    }
-
-    private double perspectiveSkewScore(FrameCorners corners) {
-        double top = distance(corners.topLeftX(), corners.topLeftY(), corners.topRightX(), corners.topRightY());
-        double bottom = distance(corners.bottomLeftX(), corners.bottomLeftY(), corners.bottomRightX(), corners.bottomRightY());
-        double left = distance(corners.topLeftX(), corners.topLeftY(), corners.bottomLeftX(), corners.bottomLeftY());
-        double right = distance(corners.topRightX(), corners.topRightY(), corners.bottomRightX(), corners.bottomRightY());
-        double horizontalSkew = normalizedDifference(top, bottom);
-        double verticalSkew = normalizedDifference(left, right);
-        return Math.min(1.0d, Math.max(horizontalSkew, verticalSkew));
-    }
-
-    private double normalizedDifference(double first, double second) {
-        double denominator = Math.max(first, second);
-        if (denominator <= 0.0d) {
-            return 1.0d;
-        }
-        return Math.abs(first - second) / denominator;
-    }
-
-    private double distance(double firstX, double firstY, double secondX, double secondY) {
-        double deltaX = firstX - secondX;
-        double deltaY = firstY - secondY;
-        return Math.hypot(deltaX, deltaY);
     }
 
     private boolean hasPartialAxisAlignedFrameEvidence(MediaInputFrame frame) {
@@ -1229,9 +923,6 @@ public final class CaptureMediaFrameNormalizer {
     }
 
     private record DetectedInset(LayoutProfile profile, int leftPx, int topPx) {
-    }
-
-    private record ExtremePoint(int score, int x, int y) {
     }
 
     private record GridSample(int relativeX, int relativeY) {

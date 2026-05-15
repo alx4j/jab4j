@@ -1,6 +1,11 @@
-package com.alx4j.jab4j.reader.capture.media.normalize;
+package com.alx4j.jab4j.reader.capture.media.cv;
 
-final class PerspectiveTransform {
+import com.alx4j.jab4j.reader.capture.media.normalize.FrameCorners;
+
+/**
+ * Internal perspective transform used to map normalized frame coordinates into source-image coordinates.
+ */
+public final class PerspectiveTransform {
 
     private static final double EPSILON = 1.0e-9d;
 
@@ -36,7 +41,13 @@ final class PerspectiveTransform {
         this.h22 = h22;
     }
 
-    static PerspectiveTransform fromUnitSquareTo(FrameCorners corners) {
+    /**
+     * Builds a transform from the unit square to the supplied source-space quadrilateral.
+     *
+     * @param corners destination source-space quadrilateral corners
+     * @return perspective transform from normalized coordinates to source coordinates
+     */
+    public static PerspectiveTransform fromUnitSquareTo(FrameCorners corners) {
         double x0 = corners.topLeftX();
         double y0 = corners.topLeftY();
         double x1 = corners.topRightX();
@@ -86,7 +97,14 @@ final class PerspectiveTransform {
         );
     }
 
-    PerspectivePoint map(double x, double y) {
+    /**
+     * Maps one normalized coordinate through this transform.
+     *
+     * @param x normalized x coordinate
+     * @param y normalized y coordinate
+     * @return mapped source coordinate
+     */
+    public PerspectivePoint map(double x, double y) {
         double denominator = (h20 * x) + (h21 * y) + h22;
         if (Math.abs(denominator) < EPSILON) {
             throw new IllegalArgumentException("perspective mapping reached a degenerate point");
@@ -97,7 +115,12 @@ final class PerspectiveTransform {
         );
     }
 
-    PerspectiveTransform inverse() {
+    /**
+     * Returns the inverse transform.
+     *
+     * @return inverse perspective transform
+     */
+    public PerspectiveTransform inverse() {
         double determinant = (h00 * ((h11 * h22) - (h12 * h21)))
                 - (h01 * ((h10 * h22) - (h12 * h20)))
                 + (h02 * ((h10 * h21) - (h11 * h20)));
@@ -116,6 +139,12 @@ final class PerspectiveTransform {
         return new PerspectiveTransform(inv00, inv01, inv02, inv10, inv11, inv12, inv20, inv21, inv22);
     }
 
-    record PerspectivePoint(double x, double y) {
+    /**
+     * Mapped two-dimensional point.
+     *
+     * @param x mapped x coordinate
+     * @param y mapped y coordinate
+     */
+    public record PerspectivePoint(double x, double y) {
     }
 }
