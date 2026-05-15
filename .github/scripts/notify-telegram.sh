@@ -11,13 +11,19 @@ if [[ -z "${TELEGRAM_MESSAGE:-}" ]]; then
   exit 0
 fi
 
-curl -fsS \
-  --retry 3 \
-  --retry-delay 2 \
-  --connect-timeout 10 \
-  --max-time 30 \
-  -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
-  --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
-  --data-urlencode "text=${TELEGRAM_MESSAGE}" \
-  --data-urlencode "disable_web_page_preview=true" \
-  >/dev/null
+curl_args=(
+  --retry 3
+  --retry-delay 2
+  --connect-timeout 10
+  --max-time 30
+  -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage"
+  --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}"
+  --data-urlencode "text=${TELEGRAM_MESSAGE}"
+  --data-urlencode "disable_web_page_preview=true"
+)
+
+if [[ -n "${TELEGRAM_PARSE_MODE:-}" ]]; then
+  curl_args+=(--data-urlencode "parse_mode=${TELEGRAM_PARSE_MODE}")
+fi
+
+curl -fsS "${curl_args[@]}" >/dev/null

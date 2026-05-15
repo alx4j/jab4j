@@ -137,6 +137,18 @@ jobs:
           echo "next_snapshot=$NEXT_SNAPSHOT" >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
+      - name: Notify release started
+        continue-on-error: true
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_PARSE_MODE: HTML
+          TELEGRAM_MESSAGE: |
+            <b>jab4j release v${{ steps.release.outputs.version }} started.</b>
+
+            <a href="${{ env.RELEASE_RUN_URL }}">Open workflow run</a>
+        run: bash .github/scripts/notify-telegram.sh
+
       - name: Set release version
         env:
           RELEASE_VERSION: ${{ steps.release.outputs.version }}
@@ -208,19 +220,6 @@ jobs:
           GH_TOKEN: ${{ secrets.RELEASE_AUTOMATION_TOKEN || github.token }}
           PR_URL: ${{ steps.pr.outputs.url }}
         run: gh pr merge "$PR_URL" --squash --auto --delete-branch
-
-      - name: Notify release PR is waiting for merge
-        continue-on-error: true
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          TELEGRAM_MESSAGE: |
-            jab4j release v${{ steps.release.outputs.version }} is waiting for release PR auto-merge.
-
-            Release PR: ${{ steps.pr.outputs.url }}
-            Next snapshot: ${{ steps.release.outputs.next_snapshot }}
-            Workflow: ${{ env.RELEASE_RUN_URL }}
-        run: bash .github/scripts/notify-telegram.sh
 
       - name: Wait for release PR merge
         id: wait
@@ -612,22 +611,133 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
+      - name: Build release success message
+        if: needs.prepare-release.result == 'success' && needs.publish.result == 'success' && needs.prepare-next-snapshot.result == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.publish.outputs.tag }}
+          RELEASE_URL: ${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ needs.publish.outputs.tag }}
+          RELEASE_VERSION: ${{ needs.prepare-release.outputs.release_version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          gh release view "$RELEASE_TAG" --json body --jq '.body // ""' > /tmp/release-body.md
+
+          python3 <<'PY'
+          import os
+          import re
+          from html import escape
+          from pathlib import Path
+
+          release_version = os.environ["RELEASE_VERSION"]
+          release_url = os.environ["RELEASE_URL"]
+          body_lines = Path("/tmp/release-body.md").read_text(encoding="utf-8").splitlines()
+
+          link_pattern = re.compile(
+              r"\[([^\]]+)\]\((https?://[^)]+)\)"
+              r"|https://github\.com/[^\s)]+/pull/(\d+)"
+              r"|https?://\S+"
+          )
+
+          def html_text(text):
+              return escape(text, quote=False)
+
+          def html_link(url, label):
+              return f'<a href="{escape(url, quote=True)}">{html_text(label)}</a>'
+
+          def render_inline(text):
+              rendered = []
+              position = 0
+
+              for match in link_pattern.finditer(text):
+                  rendered.append(html_text(text[position:match.start()]))
+
+                  if match.group(1) and match.group(2):
+                      rendered.append(html_link(match.group(2), match.group(1)))
+                  elif match.group(3):
+                      rendered.append(html_link(match.group(0), f"#{match.group(3)}"))
+                  else:
+                      rendered.append(html_link(match.group(0), match.group(0)))
+
+                  position = match.end()
+
+              rendered.append(html_text(text[position:]))
+              return "".join(rendered)
+
+          def render_line(line):
+              stripped = line.strip()
+
+              if not stripped:
+                  return ""
+
+              if stripped.startswith("## "):
+                  return f"<b>{html_text(stripped[3:].strip())}</b>"
+
+              if stripped.startswith("* ") or stripped.startswith("- "):
+                  return render_inline(stripped[2:].strip())
+
+              if stripped.startswith("**Full Changelog**:"):
+                  return render_full_changelog(stripped)
+
+              return render_inline(stripped)
+
+          def render_full_changelog(line):
+              target = line.split(":", 1)[1].strip()
+              markdown_link = re.fullmatch(r"\[([^\]]+)\]\((https?://[^)]+)\)", target)
+
+              if markdown_link:
+                  label = markdown_link.group(1)
+                  url = markdown_link.group(2)
+              else:
+                  url = target
+                  label = target.rstrip("/").split("/compare/", 1)[-1]
+
+              return html_link(url, f"Full Changelog: {label}")
+
+          full_changelog = ""
+          body_without_changelog = []
+
+          for line in body_lines:
+              if line.strip().startswith("**Full Changelog**:"):
+                  full_changelog = render_full_changelog(line.strip())
+              else:
+                  body_without_changelog.append(line)
+
+          message_lines = [f"<b>jab4j release v{html_text(release_version)} completed.</b>"]
+
+          if full_changelog:
+              message_lines[0] = f"{message_lines[0]} {full_changelog}"
+
+          message_lines.append(html_link(release_url, "Open GitHub Release"))
+          message_lines.append("")
+
+          rendered_body = [render_line(line) for line in body_without_changelog]
+
+          while rendered_body and rendered_body[0] == "":
+              rendered_body.pop(0)
+          while rendered_body and rendered_body[-1] == "":
+              rendered_body.pop()
+
+          if rendered_body:
+              message_lines.extend(rendered_body)
+
+          Path("/tmp/release-success-message.html").write_text(
+              "\n".join(message_lines),
+              encoding="utf-8",
+          )
+          PY
+
       - name: Notify release success
         if: needs.prepare-release.result == 'success' && needs.publish.result == 'success' && needs.prepare-next-snapshot.result == 'success'
         continue-on-error: true
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          TELEGRAM_MESSAGE: |
-            jab4j release v${{ needs.prepare-release.outputs.release_version }} completed.
-
-            Published tag: ${{ needs.publish.outputs.tag }}
-            Release PR: ${{ needs.prepare-release.outputs.release_pr_url }}
-            Next snapshot: ${{ needs.prepare-next-snapshot.outputs.next_snapshot }}
-            Next snapshot PR: ${{ needs.prepare-next-snapshot.outputs.next_snapshot_pr_url }}
-            Next snapshot merge commit: ${{ needs.prepare-next-snapshot.outputs.next_snapshot_merge_commit }}
-            Workflow: ${{ env.RELEASE_RUN_URL }}
-        run: bash .github/scripts/notify-telegram.sh
+          TELEGRAM_PARSE_MODE: HTML
+        run: |
+          set -euo pipefail
+          TELEGRAM_MESSAGE="$(cat /tmp/release-success-message.html)" bash .github/scripts/notify-telegram.sh
 
       - name: Notify release attention needed
         if: needs.prepare-release.result != 'success' || needs.publish.result != 'success' || needs.prepare-next-snapshot.result != 'success'
