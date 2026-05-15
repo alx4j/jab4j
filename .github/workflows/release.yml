@@ -1,38 +1,52 @@
-name: "Release :: Step 2 :: Publish to Maven Central"
+name: Release
 
 on:
-  push:
-    tags:
-      - 'v*.*.*'
   workflow_dispatch:
     inputs:
-      version:
-        description: Release version without the leading v, for example 0.1.0.
-        required: true
+      release_version:
+        description: Optional release version without leading v, for example 0.1.0. Defaults to the current snapshot version without the suffix.
+        required: false
         type: string
 
 concurrency:
   group: release
   cancel-in-progress: false
 
+env:
+  RELEASE_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
 jobs:
-  validate:
-    name: Validate release tag
+  prepare-release:
+    name: Prepare and merge release PR
     runs-on: ubuntu-24.04
 
     permissions:
-      contents: read
+      contents: write
+      pull-requests: write
 
     outputs:
-      create_tag: ${{ steps.release.outputs.create_tag }}
-      tag: ${{ steps.release.outputs.tag }}
-      version: ${{ steps.release.outputs.version }}
+      current_version: ${{ steps.release.outputs.current_version }}
+      release_branch: ${{ steps.release.outputs.branch }}
+      release_pr_url: ${{ steps.pr.outputs.url }}
+      release_version: ${{ steps.release.outputs.version }}
+      release_merge_commit: ${{ steps.wait.outputs.merge_commit }}
+      next_snapshot: ${{ steps.release.outputs.next_snapshot }}
 
     steps:
+      - name: Check release automation token
+        env:
+          RELEASE_AUTOMATION_TOKEN: ${{ secrets.RELEASE_AUTOMATION_TOKEN }}
+        run: |
+          if [[ -z "${RELEASE_AUTOMATION_TOKEN:-}" ]]; then
+            echo "::warning::RELEASE_AUTOMATION_TOKEN is not configured. The fallback GITHUB_TOKEN may not trigger PR CI, so auto-merge can time out."
+          fi
+
       - name: Check out repository
         uses: actions/checkout@v4
         with:
+          ref: main
           fetch-depth: 0
+          token: ${{ secrets.RELEASE_AUTOMATION_TOKEN || github.token }}
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
@@ -41,101 +55,233 @@ jobs:
           java-version: '17'
           cache: maven
 
-      - name: Validate tag, version, and target commit
+      - name: Resolve release versions
         id: release
+        env:
+          REQUESTED_RELEASE_VERSION: ${{ inputs.release_version }}
         shell: bash
         run: |
           set -euo pipefail
 
-          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
-            VERSION="${{ inputs.version }}"
-            TAG="v$VERSION"
-            CREATE_TAG=true
+          CURRENT_VERSION="$(mvn -q -DforceStdout help:evaluate -Dexpression=project.version)"
+
+          if [[ "$CURRENT_VERSION" != *-SNAPSHOT ]]; then
+            echo "Current Maven version must be a SNAPSHOT version before preparing a release."
+            echo "Current Maven version is $CURRENT_VERSION."
+            exit 1
+          fi
+
+          if [[ -z "$REQUESTED_RELEASE_VERSION" ]]; then
+            VERSION="${CURRENT_VERSION%-SNAPSHOT}"
           else
-            TAG="${GITHUB_REF_NAME}"
-            VERSION="${TAG#v}"
-            CREATE_TAG=false
+            VERSION="$REQUESTED_RELEASE_VERSION"
           fi
 
-          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
-            echo "Invalid release tag: $TAG"
-            echo "Expected v1.2.3 or v1.2.3-rc.1."
+          if [[ "$VERSION" == v* ]]; then
+            echo "Release version must not include the leading v: $VERSION"
             exit 1
           fi
 
-          if [[ "$VERSION" == *-SNAPSHOT ]]; then
-            echo "Refusing to release a SNAPSHOT version: $VERSION"
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Release version must be a stable semantic version such as 1.2.3."
+            echo "Release version is $VERSION."
             exit 1
           fi
 
-          POM_VERSION="$(mvn -q -DforceStdout help:evaluate -Dexpression=project.version)"
+          git fetch --tags --force
 
-          if [[ "$POM_VERSION" != "$VERSION" ]]; then
-            echo "Tag version and pom.xml version do not match."
-            echo "Tag:      $TAG"
-            echo "Expected: $VERSION"
-            echo "pom.xml:  $POM_VERSION"
-            exit 1
-          fi
+          LATEST_RELEASE_TAG="$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1 || true)"
 
-          git fetch origin main:refs/remotes/origin/main --tags
+          semver_gt() {
+            local left_major left_minor left_patch
+            local right_major right_minor right_patch
 
-          MAIN_COMMIT="$(git rev-parse origin/main)"
+            IFS=. read -r left_major left_minor left_patch <<< "$1"
+            IFS=. read -r right_major right_minor right_patch <<< "$2"
 
-          if [[ "$CREATE_TAG" == "true" ]]; then
-            HEAD_COMMIT="$(git rev-parse HEAD)"
-
-            if [[ "$HEAD_COMMIT" != "$MAIN_COMMIT" ]]; then
-              echo "Manual release workflow must run from the current origin/main commit."
-              echo "HEAD commit: $HEAD_COMMIT"
-              echo "Main commit: $MAIN_COMMIT"
-              exit 1
+            if (( 10#$left_major != 10#$right_major )); then
+              (( 10#$left_major > 10#$right_major ))
+              return
             fi
 
-            if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
-              TAG_COMMIT="$(git rev-list -n 1 "$TAG")"
+            if (( 10#$left_minor != 10#$right_minor )); then
+              (( 10#$left_minor > 10#$right_minor ))
+              return
+            fi
 
-              if [[ "$TAG_COMMIT" != "$MAIN_COMMIT" ]]; then
-                echo "Release tag already exists but does not point at current origin/main."
-                echo "Tag commit:  $TAG_COMMIT"
-                echo "Main commit: $MAIN_COMMIT"
+            (( 10#$left_patch > 10#$right_patch ))
+          }
+
+          if [[ -n "$LATEST_RELEASE_TAG" ]]; then
+            LATEST_RELEASE_VERSION="${LATEST_RELEASE_TAG#v}"
+
+            if ! semver_gt "$VERSION" "$LATEST_RELEASE_VERSION"; then
+              echo "Release version must be greater than the latest stable release tag."
+              echo "Requested release version: $VERSION"
+              echo "Latest stable release tag: $LATEST_RELEASE_TAG"
+              exit 1
+            fi
+          fi
+
+          IFS=. read -r MAJOR MINOR PATCH <<< "$VERSION"
+          NEXT_SNAPSHOT="$MAJOR.$MINOR.$((PATCH + 1))-SNAPSHOT"
+
+          if [[ ! "$NEXT_SNAPSHOT" =~ ^[0-9]+\.[0-9]+\.[0-9]+-SNAPSHOT$ ]]; then
+            echo "Invalid next snapshot version: $NEXT_SNAPSHOT"
+            echo "Expected a snapshot version such as 1.2.4-SNAPSHOT."
+            exit 1
+          fi
+
+          echo "branch=release/v$VERSION" >> "$GITHUB_OUTPUT"
+          echo "current_version=$CURRENT_VERSION" >> "$GITHUB_OUTPUT"
+          echo "next_snapshot=$NEXT_SNAPSHOT" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Set release version
+        env:
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+        run: >
+          mvn -B -ntp versions:set
+          -DnewVersion="$RELEASE_VERSION"
+          -DprocessAllModules=true
+          -DgenerateBackupPoms=false
+
+      - name: Validate release project shape
+        run: mvn -B -ntp -DskipTests validate
+
+      - name: Create release PR
+        id: pr
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_AUTOMATION_TOKEN || github.token }}
+          CURRENT_VERSION: ${{ steps.release.outputs.current_version }}
+          RELEASE_BRANCH: ${{ steps.release.outputs.branch }}
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+          NEXT_SNAPSHOT: ${{ steps.release.outputs.next_snapshot }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git switch -C "$RELEASE_BRANCH"
+          git add pom.xml modules/*/pom.xml
+
+          if git diff --cached --quiet; then
+            echo "No Maven version changes to commit."
+            exit 1
+          fi
+
+          git commit -m "chore: release v$RELEASE_VERSION"
+          git push --force-with-lease origin "$RELEASE_BRANCH"
+
+          cat > /tmp/release-pr.md <<EOF
+          ## Summary
+
+          Prepares release \`v$RELEASE_VERSION\` by changing Maven project versions from \`$CURRENT_VERSION\` to \`$RELEASE_VERSION\`.
+
+          After this PR merges, the release workflow will publish \`v$RELEASE_VERSION\` to Maven Central and prepare \`$NEXT_SNAPSHOT\`.
+
+          ## Validation
+
+          - \`mvn -B -ntp -DskipTests validate\`
+          EOF
+
+          PR_URL="$(gh pr list --head "$RELEASE_BRANCH" --state open --json url --jq '.[0].url // ""')"
+
+          if [[ -n "$PR_URL" ]]; then
+            gh pr edit "$PR_URL" \
+              --title "Release v$RELEASE_VERSION" \
+              --body-file /tmp/release-pr.md
+          else
+            PR_URL="$(gh pr create \
+              --base main \
+              --head "$RELEASE_BRANCH" \
+              --title "Release v$RELEASE_VERSION" \
+              --body-file /tmp/release-pr.md)"
+          fi
+
+          echo "url=$PR_URL" >> "$GITHUB_OUTPUT"
+
+      - name: Enable release PR auto-merge
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_AUTOMATION_TOKEN || github.token }}
+          PR_URL: ${{ steps.pr.outputs.url }}
+        run: gh pr merge "$PR_URL" --squash --auto --delete-branch
+
+      - name: Notify release PR is waiting for merge
+        continue-on-error: true
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_MESSAGE: |
+            jab4j release v${{ steps.release.outputs.version }} is waiting for release PR auto-merge.
+
+            Release PR: ${{ steps.pr.outputs.url }}
+            Next snapshot: ${{ steps.release.outputs.next_snapshot }}
+            Workflow: ${{ env.RELEASE_RUN_URL }}
+        run: bash .github/scripts/notify-telegram.sh
+
+      - name: Wait for release PR merge
+        id: wait
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_AUTOMATION_TOKEN || github.token }}
+          PR_URL: ${{ steps.pr.outputs.url }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          deadline=$((SECONDS + 7200))
+
+          while true; do
+            STATE="$(gh pr view "$PR_URL" --json state --jq .state)"
+            MERGED_AT="$(gh pr view "$PR_URL" --json mergedAt --jq '.mergedAt // ""')"
+
+            if [[ -n "$MERGED_AT" ]]; then
+              MERGE_COMMIT="$(gh pr view "$PR_URL" --json mergeCommit --jq '.mergeCommit.oid // ""')"
+
+              if [[ -z "$MERGE_COMMIT" ]]; then
+                echo "Release PR is merged, but GitHub did not return a merge commit."
                 exit 1
               fi
 
-              echo "Release tag already exists at current origin/main: $TAG"
-              CREATE_TAG=false
+              echo "Release PR merged at $MERGED_AT as $MERGE_COMMIT."
+              echo "merge_commit=$MERGE_COMMIT" >> "$GITHUB_OUTPUT"
+              exit 0
             fi
-          else
-            TAG_COMMIT="$(git rev-list -n 1 "$TAG")"
 
-            if [[ "$TAG_COMMIT" != "$MAIN_COMMIT" ]]; then
-              echo "Release tag must point at the current origin/main commit."
-              echo "Tag commit:  $TAG_COMMIT"
-              echo "Main commit: $MAIN_COMMIT"
+            if [[ "$STATE" == "CLOSED" ]]; then
+              echo "Release PR was closed without being merged."
               exit 1
             fi
-          fi
 
-          echo "create_tag=$CREATE_TAG" >> "$GITHUB_OUTPUT"
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+            if (( SECONDS >= deadline )); then
+              echo "Timed out waiting for release PR auto-merge."
+              exit 1
+            fi
 
-      - name: Verify release build without signing
-        run: mvn -B -ntp -T 2C -Prelease -Dgpg.skip=true clean verify
+            echo "Waiting for release PR auto-merge..."
+            sleep 30
+          done
 
   publish:
     name: Publish to Maven Central
     runs-on: ubuntu-24.04
-    needs: validate
+    needs: prepare-release
     environment: maven-central
 
     permissions:
       contents: write
 
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+      version: ${{ steps.release.outputs.version }}
+
     steps:
-      - name: Check out repository
+      - name: Check out merged release commit
         uses: actions/checkout@v4
         with:
+          ref: main
           fetch-depth: 0
 
       - name: Set up JDK 17 and Maven publishing credentials
@@ -150,10 +296,77 @@ jobs:
           gpg-private-key: ${{ secrets.MAVEN_GPG_PRIVATE_KEY }}
           gpg-passphrase: MAVEN_GPG_PASSPHRASE
 
-      - name: Create release tag
-        if: needs.validate.outputs.create_tag == 'true'
+      - name: Validate release commit
+        id: release
         env:
-          RELEASE_TAG: ${{ needs.validate.outputs.tag }}
+          EXPECTED_MERGE_COMMIT: ${{ needs.prepare-release.outputs.release_merge_commit }}
+          RELEASE_VERSION: ${{ needs.prepare-release.outputs.release_version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ -z "$EXPECTED_MERGE_COMMIT" ]]; then
+            echo "Missing release PR merge commit."
+            exit 1
+          fi
+
+          if [[ -z "$RELEASE_VERSION" ]]; then
+            echo "Missing release version."
+            exit 1
+          fi
+
+          TAG="v$RELEASE_VERSION"
+
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Invalid release tag: $TAG"
+            echo "Expected v1.2.3."
+            exit 1
+          fi
+
+          git fetch origin main:refs/remotes/origin/main --tags
+          MAIN_COMMIT="$(git rev-parse origin/main)"
+          git checkout --detach "$MAIN_COMMIT"
+
+          if [[ "$MAIN_COMMIT" != "$EXPECTED_MERGE_COMMIT" ]]; then
+            echo "Current origin/main does not match the release PR merge commit."
+            echo "Main commit:    $MAIN_COMMIT"
+            echo "Release commit: $EXPECTED_MERGE_COMMIT"
+            exit 1
+          fi
+
+          POM_VERSION="$(mvn -q -DforceStdout help:evaluate -Dexpression=project.version)"
+
+          if [[ "$POM_VERSION" != "$RELEASE_VERSION" ]]; then
+            echo "Release version and pom.xml version do not match."
+            echo "Release version: $RELEASE_VERSION"
+            echo "pom.xml:         $POM_VERSION"
+            exit 1
+          fi
+
+          CREATE_TAG=true
+
+          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            TAG_COMMIT="$(git rev-list -n 1 "$TAG")"
+
+            if [[ "$TAG_COMMIT" != "$MAIN_COMMIT" ]]; then
+              echo "Release tag already exists but does not point at the release commit."
+              echo "Tag commit:     $TAG_COMMIT"
+              echo "Release commit: $MAIN_COMMIT"
+              exit 1
+            fi
+
+            echo "Release tag already exists at release commit: $TAG"
+            CREATE_TAG=false
+          fi
+
+          echo "create_tag=$CREATE_TAG" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$RELEASE_VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Create release tag
+        if: steps.release.outputs.create_tag == 'true'
+        env:
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
         run: |
           set -euo pipefail
 
@@ -176,9 +389,205 @@ jobs:
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ needs.validate.outputs.tag }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
         run: |
-          gh release create "$RELEASE_TAG" \
-            --verify-tag \
-            --title "$RELEASE_TAG" \
-            --generate-notes
+          set -euo pipefail
+
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "GitHub release already exists: $RELEASE_TAG"
+          else
+            gh release create "$RELEASE_TAG" \
+              --verify-tag \
+              --title "$RELEASE_TAG" \
+              --generate-notes
+          fi
+
+  prepare-next-snapshot:
+    name: Prepare next snapshot PR
+    runs-on: ubuntu-24.04
+    needs:
+      - prepare-release
+      - publish
+
+    permissions:
+      contents: write
+      pull-requests: write
+
+    outputs:
+      next_snapshot: ${{ steps.versions.outputs.next_snapshot }}
+      next_snapshot_pr_url: ${{ steps.pr.outputs.url }}
+
+    steps:
+      - name: Check out release commit
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ secrets.RELEASE_AUTOMATION_TOKEN || github.token }}
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: zulu
+          java-version: '17'
+          cache: maven
+
+      - name: Validate next snapshot version
+        id: versions
+        env:
+          EXPECTED_RELEASE_COMMIT: ${{ needs.prepare-release.outputs.release_merge_commit }}
+          RELEASE_VERSION: ${{ needs.prepare-release.outputs.release_version }}
+          NEXT_SNAPSHOT: ${{ needs.prepare-release.outputs.next_snapshot }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git fetch origin main:refs/remotes/origin/main
+          MAIN_COMMIT="$(git rev-parse origin/main)"
+          git checkout --detach "$MAIN_COMMIT"
+
+          if [[ "$MAIN_COMMIT" != "$EXPECTED_RELEASE_COMMIT" ]]; then
+            echo "Current origin/main changed after the release PR merge. Refusing to prepare the next snapshot from an unexpected commit."
+            echo "Main commit:    $MAIN_COMMIT"
+            echo "Release commit: $EXPECTED_RELEASE_COMMIT"
+            exit 1
+          fi
+
+          CURRENT_VERSION="$(mvn -q -DforceStdout help:evaluate -Dexpression=project.version)"
+
+          if [[ "$CURRENT_VERSION" != "$RELEASE_VERSION" ]]; then
+            echo "Current Maven version must still be the released stable version before preparing the next snapshot."
+            echo "Expected: $RELEASE_VERSION"
+            echo "Actual:   $CURRENT_VERSION"
+            exit 1
+          fi
+
+          if [[ ! "$NEXT_SNAPSHOT" =~ ^[0-9]+\.[0-9]+\.[0-9]+-SNAPSHOT$ ]]; then
+            echo "Invalid next snapshot version: $NEXT_SNAPSHOT"
+            echo "Expected a snapshot version such as 1.2.4-SNAPSHOT."
+            exit 1
+          fi
+
+          SAFE_BRANCH_VERSION="${NEXT_SNAPSHOT//./-}"
+          echo "branch=release/next-snapshot-$SAFE_BRANCH_VERSION" >> "$GITHUB_OUTPUT"
+          echo "next_snapshot=$NEXT_SNAPSHOT" >> "$GITHUB_OUTPUT"
+          echo "released_version=$CURRENT_VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Set next snapshot version
+        env:
+          NEXT_SNAPSHOT: ${{ steps.versions.outputs.next_snapshot }}
+        run: >
+          mvn -B -ntp versions:set
+          -DnewVersion="$NEXT_SNAPSHOT"
+          -DprocessAllModules=true
+          -DgenerateBackupPoms=false
+
+      - name: Validate next snapshot project shape
+        run: mvn -B -ntp -DskipTests validate
+
+      - name: Create next snapshot PR
+        id: pr
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_AUTOMATION_TOKEN || github.token }}
+          NEXT_SNAPSHOT: ${{ steps.versions.outputs.next_snapshot }}
+          RELEASED_VERSION: ${{ steps.versions.outputs.released_version }}
+          SNAPSHOT_BRANCH: ${{ steps.versions.outputs.branch }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git switch -C "$SNAPSHOT_BRANCH"
+          git add pom.xml modules/*/pom.xml
+
+          if git diff --cached --quiet; then
+            echo "No Maven version changes to commit."
+            exit 1
+          fi
+
+          git commit -m "chore: start $NEXT_SNAPSHOT"
+          git push --force-with-lease origin "$SNAPSHOT_BRANCH"
+
+          cat > /tmp/next-snapshot-pr.md <<EOF
+          ## Summary
+
+          Starts the next development cycle by changing Maven project versions from \`$RELEASED_VERSION\` to \`$NEXT_SNAPSHOT\`.
+
+          ## Validation
+
+          - \`mvn -B -ntp -DskipTests validate\`
+          EOF
+
+          PR_URL="$(gh pr list --head "$SNAPSHOT_BRANCH" --state open --json url --jq '.[0].url // ""')"
+
+          if [[ -n "$PR_URL" ]]; then
+            gh pr edit "$PR_URL" \
+              --title "Start $NEXT_SNAPSHOT" \
+              --body-file /tmp/next-snapshot-pr.md
+          else
+            PR_URL="$(gh pr create \
+              --base main \
+              --head "$SNAPSHOT_BRANCH" \
+              --title "Start $NEXT_SNAPSHOT" \
+              --body-file /tmp/next-snapshot-pr.md)"
+          fi
+
+          echo "url=$PR_URL" >> "$GITHUB_OUTPUT"
+
+      - name: Enable next snapshot PR auto-merge
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_AUTOMATION_TOKEN || github.token }}
+          PR_URL: ${{ steps.pr.outputs.url }}
+        run: gh pr merge "$PR_URL" --squash --auto --delete-branch
+
+  notify-release-result:
+    name: Notify release result
+    runs-on: ubuntu-24.04
+    continue-on-error: true
+    needs:
+      - prepare-release
+      - publish
+      - prepare-next-snapshot
+    if: always()
+
+    permissions:
+      contents: read
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Notify release success
+        if: needs.prepare-release.result == 'success' && needs.publish.result == 'success' && needs.prepare-next-snapshot.result == 'success'
+        continue-on-error: true
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_MESSAGE: |
+            jab4j release v${{ needs.prepare-release.outputs.release_version }} completed.
+
+            Published tag: ${{ needs.publish.outputs.tag }}
+            Release PR: ${{ needs.prepare-release.outputs.release_pr_url }}
+            Next snapshot: ${{ needs.prepare-next-snapshot.outputs.next_snapshot }}
+            Next snapshot PR: ${{ needs.prepare-next-snapshot.outputs.next_snapshot_pr_url }}
+            Workflow: ${{ env.RELEASE_RUN_URL }}
+        run: bash .github/scripts/notify-telegram.sh
+
+      - name: Notify release attention needed
+        if: needs.prepare-release.result != 'success' || needs.publish.result != 'success' || needs.prepare-next-snapshot.result != 'success'
+        continue-on-error: true
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_MESSAGE: |
+            jab4j release workflow needs attention.
+
+            prepare-release: ${{ needs.prepare-release.result }}
+            publish: ${{ needs.publish.result }}
+            prepare-next-snapshot: ${{ needs.prepare-next-snapshot.result }}
+            Release version: ${{ needs.prepare-release.outputs.release_version }}
+            Release PR: ${{ needs.prepare-release.outputs.release_pr_url }}
+            Workflow: ${{ env.RELEASE_RUN_URL }}
+        run: bash .github/scripts/notify-telegram.sh
