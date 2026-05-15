@@ -9,6 +9,10 @@ import com.alx4j.jab4j.api.model.LayoutProfile;
 import com.alx4j.jab4j.reader.capture.media.CaptureMediaDiagnostic;
 import com.alx4j.jab4j.reader.capture.media.CaptureMediaDiagnosticCode;
 import com.alx4j.jab4j.reader.capture.media.CaptureMediaDiagnosticSeverity;
+import com.alx4j.jab4j.reader.capture.media.cv.CaptureMediaCvBackend;
+import com.alx4j.jab4j.reader.capture.media.cv.CvDetectionResult;
+import com.alx4j.jab4j.reader.capture.media.cv.CvFrameCandidate;
+import com.alx4j.jab4j.reader.capture.media.cv.CvNormalizedFrame;
 import com.alx4j.jab4j.reader.capture.media.input.MediaInputFrame;
 import com.alx4j.jab4j.reader.capture.qualify.CaptureRenderedLayoutCatalog;
 import com.alx4j.jab4j.render.layout.FixedLayoutPlan;
@@ -46,6 +50,7 @@ public final class CaptureMediaFrameNormalizer {
     private final CaptureRenderedLayoutCatalog layoutCatalog;
     private final FixedLayoutPlanner layoutPlanner;
     private final JabFrameRegionDetector jabFrameRegionDetector;
+    private final Optional<CaptureMediaCvBackend> cvBackend;
 
     /**
      * Creates a normalizer backed by the existing supported rendered layout catalog.
@@ -64,15 +69,65 @@ public final class CaptureMediaFrameNormalizer {
     }
 
     /**
+     * Creates a normalizer with an explicit CV backend for non-exact media normalization.
+     *
+     * @param cvBackend backend-neutral CV backend
+     */
+    public CaptureMediaFrameNormalizer(CaptureMediaCvBackend cvBackend) {
+        this(new CaptureRenderedLayoutCatalog(), new FixedLayoutPlanner(), cvBackend);
+    }
+
+    /**
+     * Creates a normalizer with explicit rendered layouts and a CV backend.
+     *
+     * @param layoutCatalog supported rendered layout catalog
+     * @param cvBackend backend-neutral CV backend
+     */
+    public CaptureMediaFrameNormalizer(
+            CaptureRenderedLayoutCatalog layoutCatalog,
+            CaptureMediaCvBackend cvBackend
+    ) {
+        this(layoutCatalog, new FixedLayoutPlanner(), cvBackend);
+    }
+
+    /**
      * Creates a normalizer with explicit rendered-layout collaborators.
      *
      * @param layoutCatalog supported rendered layout catalog
      * @param layoutPlanner fixed layout planner used for rendered-frame signatures
      */
     public CaptureMediaFrameNormalizer(CaptureRenderedLayoutCatalog layoutCatalog, FixedLayoutPlanner layoutPlanner) {
+        this(layoutCatalog, layoutPlanner, Optional.empty());
+    }
+
+    /**
+     * Creates a normalizer with explicit rendered-layout collaborators and a CV backend.
+     *
+     * @param layoutCatalog supported rendered layout catalog
+     * @param layoutPlanner fixed layout planner used for rendered-frame signatures
+     * @param cvBackend backend-neutral CV backend
+     */
+    public CaptureMediaFrameNormalizer(
+            CaptureRenderedLayoutCatalog layoutCatalog,
+            FixedLayoutPlanner layoutPlanner,
+            CaptureMediaCvBackend cvBackend
+    ) {
+        this(
+                layoutCatalog,
+                layoutPlanner,
+                Optional.of(Objects.requireNonNull(cvBackend, "cvBackend must not be null"))
+        );
+    }
+
+    private CaptureMediaFrameNormalizer(
+            CaptureRenderedLayoutCatalog layoutCatalog,
+            FixedLayoutPlanner layoutPlanner,
+            Optional<CaptureMediaCvBackend> cvBackend
+    ) {
         this.layoutCatalog = Objects.requireNonNull(layoutCatalog, "layoutCatalog must not be null");
         this.layoutPlanner = Objects.requireNonNull(layoutPlanner, "layoutPlanner must not be null");
         this.jabFrameRegionDetector = new JabFrameRegionDetector(this.layoutCatalog, this.layoutPlanner);
+        this.cvBackend = Objects.requireNonNull(cvBackend, "cvBackend must not be null");
     }
 
     /**
@@ -284,6 +339,11 @@ public final class CaptureMediaFrameNormalizer {
     }
 
     private MediaNormalizationResult normalizeNonExactRegion(MediaInputFrame frame) {
+        Optional<MediaNormalizationResult> cvBackendResult = normalizeWithCvBackend(frame);
+        if (cvBackendResult.isPresent()) {
+            return cvBackendResult.orElseThrow();
+        }
+
         Optional<MediaNormalizationResult> generatedPerspectiveResult = normalizePerspectiveCorrectedFrame(frame);
         if (generatedPerspectiveResult.isPresent()) {
             return generatedPerspectiveResult.orElseThrow();
@@ -320,6 +380,114 @@ public final class CaptureMediaFrameNormalizer {
                     "Media normalization did not find a clean supported rendered frame region"
             );
         };
+    }
+
+    private Optional<MediaNormalizationResult> normalizeWithCvBackend(MediaInputFrame frame) {
+        if (cvBackend.isEmpty()) {
+            return Optional.empty();
+        }
+        CvDetectionResult result;
+        try {
+            result = Objects.requireNonNull(
+                    cvBackend.orElseThrow().detect(frame),
+                    "CV backend result must not be null"
+            );
+        } catch (RuntimeException exception) {
+            return Optional.of(rejected(
+                    frame,
+                    CaptureMediaDiagnosticCode.UNREADABLE_MEDIA,
+                    "Capture-media CV backend failed while evaluating the frame"
+            ));
+        }
+        return Optional.of(normalizeCvDetectionResult(frame, result));
+    }
+
+    private MediaNormalizationResult normalizeCvDetectionResult(MediaInputFrame frame, CvDetectionResult result) {
+        return switch (result.status()) {
+            case ACCEPTED -> normalizeAcceptedCvDetectionResult(frame, result);
+            case REJECTED, TOO_SMALL, AMBIGUOUS, BACKEND_FAILURE -> rejected(
+                    frame,
+                    result.diagnosticCode().orElseThrow(),
+                    result.diagnosticMetrics(),
+                    result.message()
+            );
+        };
+    }
+
+    private MediaNormalizationResult normalizeAcceptedCvDetectionResult(
+            MediaInputFrame frame,
+            CvDetectionResult result
+    ) {
+        if (!result.normalizedFrames().isEmpty()) {
+            return MediaNormalizationResult.accepted(result.normalizedFrames().stream()
+                    .map(normalizedFrame -> normalizeCvNormalizedFrame(frame, normalizedFrame))
+                    .toList());
+        }
+        return normalizeCvFrameCandidates(frame, result.candidates());
+    }
+
+    private NormalizedCaptureFrame normalizeCvNormalizedFrame(MediaInputFrame frame, CvNormalizedFrame normalizedFrame) {
+        LayoutProfile profile = normalizedFrame.layoutProfile();
+        return new NormalizedCaptureFrame(
+                frame.sourceId(),
+                frame.sourceKind(),
+                frame.callerOrder(),
+                frame.widthPixels(),
+                frame.heightPixels(),
+                profile.frameWidthPx(),
+                profile.frameHeightPx(),
+                frame.formatName(),
+                frame.pixelSha256(),
+                profile.profileId(),
+                frame.timestampMillis(),
+                frame.frameNumber(),
+                normalizedFrame.frameCorners(),
+                normalizedFrame.qualityMetrics(),
+                normalizedFrame.argbPixels()
+        );
+    }
+
+    private MediaNormalizationResult normalizeCvFrameCandidates(MediaInputFrame frame, List<CvFrameCandidate> candidates) {
+        List<NormalizedCaptureFrame> normalizedCandidates = new ArrayList<>();
+        for (CvFrameCandidate candidate : candidates.stream()
+                .limit(MAX_JAB_CANDIDATES_TO_NORMALIZE)
+                .toList()) {
+            normalizeCvFrameCandidate(frame, candidate)
+                    .frame()
+                    .ifPresent(normalizedCandidates::add);
+        }
+        if (normalizedCandidates.isEmpty()) {
+            return rejected(
+                    frame,
+                    CaptureMediaDiagnosticCode.PERSPECTIVE_TOO_SEVERE,
+                    "Detected JAB frame region perspective is not invertible"
+            );
+        }
+        return MediaNormalizationResult.accepted(normalizedCandidates);
+    }
+
+    private MediaNormalizationResult normalizeCvFrameCandidate(MediaInputFrame frame, CvFrameCandidate candidate) {
+        PerspectiveTransform transform;
+        try {
+            transform = PerspectiveTransform.fromUnitSquareTo(candidate.frameCorners());
+        } catch (IllegalArgumentException exception) {
+            return rejected(
+                    frame,
+                    CaptureMediaDiagnosticCode.PERSPECTIVE_TOO_SEVERE,
+                    candidate.score().metrics(),
+                    "Detected JAB frame region perspective is not invertible"
+            );
+        }
+
+        int[] correctedPixels = resamplePerspective(frame, candidate.layoutProfile(), transform);
+        return MediaNormalizationResult.accepted(NormalizedCaptureFrame.fromPerspectiveCorrectedFrame(
+                frame,
+                candidate.layoutProfile(),
+                candidate.frameCorners(),
+                candidate.score().frameCoverageRatio(),
+                candidate.score().skewScore(),
+                correctedPixels
+        ));
     }
 
     private MediaNormalizationResult normalizeDetectedJabFrameCandidates(
