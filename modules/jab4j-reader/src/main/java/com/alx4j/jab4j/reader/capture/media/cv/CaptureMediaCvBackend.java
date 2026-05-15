@@ -8,6 +8,15 @@ import com.alx4j.jab4j.reader.capture.media.input.MediaInputFrame;
 public interface CaptureMediaCvBackend {
 
     /**
+     * Returns stable backend identity metadata for diagnostics, tests, and developer smoke selection.
+     *
+     * @return backend identity metadata
+     */
+    default CvBackendIdentity identity() {
+        return CvBackendIdentity.unspecified("unknown");
+    }
+
+    /**
      * Detects or normalizes plausible JAB frame evidence in one decoded media frame.
      *
      * <p>Implementations must not release or mutate the supplied frame. Backend-specific failures should be returned as

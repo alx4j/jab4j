@@ -1,4 +1,4 @@
-package com.alx4j.jab4j.reader.capture.media.normalize;
+package com.alx4j.jab4j.reader.capture.media.cv.legacy;
 
 import java.util.LinkedHashMap;
 import java.util.Map;

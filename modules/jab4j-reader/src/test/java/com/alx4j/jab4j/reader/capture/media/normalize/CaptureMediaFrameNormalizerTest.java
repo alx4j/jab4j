@@ -24,6 +24,10 @@ import org.junit.jupiter.params.provider.MethodSource;
 import com.alx4j.jab4j.reader.capture.media.CaptureMediaDiagnostic;
 import com.alx4j.jab4j.reader.capture.media.CaptureMediaDiagnosticCode;
 import com.alx4j.jab4j.reader.capture.media.CaptureMediaSourceKind;
+import com.alx4j.jab4j.reader.capture.media.cv.CvDetectionResult;
+import com.alx4j.jab4j.reader.capture.media.cv.CvDetectionStatus;
+import com.alx4j.jab4j.reader.capture.media.cv.PerspectiveTransform;
+import com.alx4j.jab4j.reader.capture.media.cv.legacy.LegacyCaptureMediaCvBackend;
 import com.alx4j.jab4j.reader.capture.media.debug.CaptureMediaCandidateDebugExporter;
 import com.alx4j.jab4j.reader.capture.media.input.MediaInputFrame;
 import com.alx4j.jab4j.reader.capture.media.quality.CaptureMediaQualityMetrics;
@@ -336,6 +340,39 @@ class CaptureMediaFrameNormalizerTest {
     }
 
     @Test
+    @DisplayName("Legacy backend preserves generated perspective correction through the CV boundary")
+    void legacyBackendPreservesGeneratedPerspectiveCorrectionThroughCvBoundary() {
+        int canvasWidth = 1600;
+        int canvasHeight = 900;
+        FrameCorners expectedCorners = new FrameCorners(150, 80, 1370, 110, 1280, 790, 230, 760);
+        int[] renderedFrame = renderedDebugFramePixels();
+        int[] canvas = perspectiveProject(renderedFrame, canvasWidth, canvasHeight, expectedCorners);
+        MediaInputFrame inputFrame = mediaFrame("legacy-moderate-perspective.png", canvasWidth, canvasHeight, canvas);
+
+        CvDetectionResult result = new LegacyCaptureMediaCvBackend().detect(inputFrame);
+
+        var normalizedFrame = result.normalizedFrames().get(0);
+        CaptureMediaQualityMetrics metrics = normalizedFrame.qualityMetrics();
+        assertAll(
+                () -> assertEquals(CvDetectionStatus.ACCEPTED, result.status()),
+                () -> assertTrue(result.candidates().isEmpty()),
+                () -> assertEquals(1, result.normalizedFrames().size()),
+                () -> assertEquals("debug-low-density", normalizedFrame.layoutProfile().profileId()),
+                () -> assertCornersNear(expectedCorners, normalizedFrame.frameCorners(), 6.0d),
+                () -> assertTrue(metrics.frameCoverageRatio() > 0.20d),
+                () -> assertTrue(metrics.skewScore() > 0.0d),
+                () -> assertTrue(metrics.skewScore() <= 0.35d),
+                () -> assertEquals(WHITE, normalizedFrame.argbPixels()[
+                        (OUTER_MARGIN + (TOP_SYNC_BAND / 2)) * DEBUG_FRAME_WIDTH + OUTER_MARGIN + 8
+                ]),
+                () -> assertEquals(BLACK, normalizedFrame.argbPixels()[
+                        (GRID_ORIGIN_Y + (TILE_SLOT_HEIGHT / 2)) * DEBUG_FRAME_WIDTH
+                                + GRID_ORIGIN_X + (TILE_SLOT_WIDTH / 2)
+                ])
+        );
+    }
+
+    @Test
     @DisplayName("Generated camera-like PNG with shifted JAB evidence is detected and normalized")
     void generatedCameraLikePngWithShiftedJabEvidenceIsDetectedAndNormalized() {
         int canvasWidth = 1700;
@@ -529,6 +566,57 @@ class CaptureMediaFrameNormalizerTest {
                         .allMatch(frame -> frame.normalizedWidthPixels() == DEBUG_FRAME_WIDTH)),
                 () -> assertTrue(result.frames().stream()
                         .allMatch(frame -> frame.normalizedHeightPixels() == DEBUG_FRAME_HEIGHT))
+        );
+    }
+
+    @Test
+    @DisplayName("Legacy backend preserves camera-like candidate counts ranking and metrics")
+    void legacyBackendPreservesCameraLikeCandidateCountsRankingAndMetrics() {
+        int canvasWidth = 2920;
+        int canvasHeight = 1000;
+        int[] renderedFrame = shiftPaletteColors(renderedDebugFramePixels(), 18);
+        int[] canvas = blankCanvas(canvasWidth, canvasHeight);
+        fillRect(canvas, canvasWidth, 48, 42, canvasWidth - 96, canvasHeight - 84, 0xFF15191D);
+        paste(renderedFrame, canvas, canvasWidth, canvasHeight, 120, 140);
+        paste(renderedFrame, canvas, canvasWidth, canvasHeight, 1520, 140);
+        MediaInputFrame inputFrame = mediaFrame("legacy-ambiguous-camera-like-monitor.png", canvasWidth, canvasHeight, canvas);
+
+        CvDetectionResult result = new LegacyCaptureMediaCvBackend().detect(inputFrame);
+
+        assertAll(
+                () -> assertEquals(CvDetectionStatus.ACCEPTED, result.status()),
+                () -> assertEquals(2, result.candidates().size()),
+                () -> assertTrue(result.normalizedFrames().isEmpty()),
+                () -> assertTrue(result.candidates().get(0).score().totalScore()
+                        >= result.candidates().get(1).score().totalScore()),
+                () -> assertEquals(2.0d, result.diagnosticMetrics().get("detectedCandidateCount")),
+                () -> assertTrue(result.diagnosticMetrics().containsKey("candidateScore")),
+                () -> assertTrue(result.diagnosticMetrics().containsKey("frameCoverageRatio")),
+                () -> assertTrue(result.diagnosticMetrics().containsKey("syncBandScore")),
+                () -> assertTrue(result.diagnosticMetrics().containsKey("gridScore"))
+        );
+    }
+
+    @Test
+    @DisplayName("Legacy backend preserves rejected candidate diagnostics")
+    void legacyBackendPreservesRejectedCandidateDiagnostics() {
+        int canvasWidth = 1700;
+        int canvasHeight = 1000;
+        int[] uiLikeFrame = renderedDebugFramePixels(true, false);
+        int[] canvas = cameraLikeCanvas(uiLikeFrame, canvasWidth, canvasHeight, 210, 140);
+        MediaInputFrame inputFrame = mediaFrame("legacy-ui-like-monitor.png", canvasWidth, canvasHeight, canvas);
+
+        CvDetectionResult result = new LegacyCaptureMediaCvBackend().detect(inputFrame);
+
+        assertAll(
+                () -> assertEquals(CvDetectionStatus.REJECTED, result.status()),
+                () -> assertEquals(CaptureMediaDiagnosticCode.SCREEN_OR_FRAME_NOT_FOUND,
+                        result.diagnosticCode().orElseThrow()),
+                () -> assertTrue(result.candidates().isEmpty()),
+                () -> assertTrue(result.normalizedFrames().isEmpty()),
+                () -> assertTrue(result.diagnosticMetrics().containsKey("detectedCandidateCount")),
+                () -> assertTrue(result.diagnosticMetrics().containsKey("candidateScore")),
+                () -> assertTrue(result.message().contains("clean supported rendered frame region"))
         );
     }
 

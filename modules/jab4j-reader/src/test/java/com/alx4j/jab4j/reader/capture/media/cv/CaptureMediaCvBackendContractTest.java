@@ -24,6 +24,7 @@ import com.alx4j.jab4j.reader.capture.media.CaptureMediaDiagnostic;
 import com.alx4j.jab4j.reader.capture.media.CaptureMediaDiagnosticCode;
 import com.alx4j.jab4j.reader.capture.media.CaptureMediaSourceKind;
 import com.alx4j.jab4j.reader.capture.media.input.MediaInputFrame;
+import com.alx4j.jab4j.reader.capture.media.cv.legacy.LegacyCaptureMediaCvBackend;
 import com.alx4j.jab4j.reader.capture.media.normalize.CaptureMediaFrameNormalizer;
 import com.alx4j.jab4j.reader.capture.media.normalize.FrameCorners;
 import com.alx4j.jab4j.reader.capture.media.normalize.MediaNormalizationResult;
@@ -292,11 +293,28 @@ class CaptureMediaCvBackendContractTest {
     }
 
     @Test
+    @DisplayName("Legacy backend exposes stable identity metadata")
+    void legacyBackendExposesStableIdentityMetadata() {
+        CvBackendIdentity identity = new LegacyCaptureMediaCvBackend().identity();
+
+        assertAll(
+                () -> assertEquals("legacy", identity.backendId()),
+                () -> assertEquals(Optional.of("com.alx4j:jab4j-reader"), identity.implementationArtifact()),
+                () -> assertTrue(identity.featureFlags().contains("generated-perspective-detection")),
+                () -> assertTrue(identity.featureFlags().contains("camera-like-candidate-ranking")),
+                () -> assertTrue(identity.featureFlags().contains("legacy-perspective-resampling"))
+        );
+    }
+
+    @Test
     @DisplayName("Reader module does not export internal CV packages")
     void readerModuleDoesNotExportInternalCvPackages() throws IOException {
         String moduleInfo = Files.readString(mainSourceRoot().resolve("module-info.java"));
 
-        assertFalse(moduleInfo.contains("exports " + CV_PACKAGE), moduleInfo);
+        assertAll(
+                () -> assertFalse(moduleInfo.contains("exports " + CV_PACKAGE), moduleInfo),
+                () -> assertFalse(moduleInfo.contains("exports " + CV_PACKAGE + "."), moduleInfo)
+        );
     }
 
     @Test

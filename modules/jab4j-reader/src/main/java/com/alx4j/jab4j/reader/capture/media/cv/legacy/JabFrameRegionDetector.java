@@ -1,4 +1,4 @@
-package com.alx4j.jab4j.reader.capture.media.normalize;
+package com.alx4j.jab4j.reader.capture.media.cv.legacy;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -8,6 +8,7 @@ import java.util.Objects;
 import java.util.Optional;
 import com.alx4j.jab4j.api.model.LayoutProfile;
 import com.alx4j.jab4j.reader.capture.media.input.MediaInputFrame;
+import com.alx4j.jab4j.reader.capture.media.normalize.FrameCorners;
 import com.alx4j.jab4j.reader.capture.qualify.CaptureRenderedLayoutCatalog;
 import com.alx4j.jab4j.render.layout.FixedLayoutPlan;
 import com.alx4j.jab4j.render.layout.FixedLayoutPlanner;
