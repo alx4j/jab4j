@@ -246,8 +246,18 @@ class ReaderCliParserTest {
                 ReaderCliException.class,
                 () -> parser.parse(new String[] {"--input", "/tmp/export", "--output", "/tmp/out", "--verbose"})
         );
+        ReaderCliException backendSelection = assertThrows(
+                ReaderCliException.class,
+                () -> parser.parse(new String[] {
+                        "--capture-media-input", "/tmp/media",
+                        "--capture-media-cv-backend", "boofcv"
+                })
+        );
 
-        assertEquals("Unknown argument: --verbose", exception.getMessage());
+        assertAll(
+                () -> assertEquals("Unknown argument: --verbose", exception.getMessage()),
+                () -> assertEquals("Unknown argument: --capture-media-cv-backend", backendSelection.getMessage())
+        );
     }
 
     @Test
