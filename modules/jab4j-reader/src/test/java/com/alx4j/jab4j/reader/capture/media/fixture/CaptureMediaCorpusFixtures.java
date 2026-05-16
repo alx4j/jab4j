@@ -17,7 +17,6 @@ import java.util.UUID;
 import javax.imageio.ImageIO;
 import com.alx4j.jab4j.api.model.CodecProfile;
 import com.alx4j.jab4j.api.model.FrameDescriptor;
-import com.alx4j.jab4j.api.model.FrameType;
 import com.alx4j.jab4j.api.model.LayoutProfile;
 import com.alx4j.jab4j.api.model.Manifest;
 import com.alx4j.jab4j.api.model.ParityGroupSizingStrategy;
@@ -56,6 +55,10 @@ final class CaptureMediaCorpusFixtures {
     static final String DUPLICATE_FRAMES = "CM-MVP3-DUPLICATE-FRAMES";
     static final String MISSING_UNIQUE_FRAMES = "CM-MVP3-MISSING-UNIQUE-FRAMES";
     static final String NO_JAB_FRAME = "CM-MVP3-NO-JAB-FRAME";
+    static final String BRIGHT_MONITOR_WITHOUT_JAB = "CM-MVP4-GENERATED-BRIGHT-MONITOR-WITHOUT-JAB";
+    static final String UI_CHROME_WITHOUT_JAB = "CM-MVP4-GENERATED-UI-CHROME-WITHOUT-JAB";
+    static final String REPEATED_STRIPES_WITHOUT_JAB = "CM-MVP4-GENERATED-REPEATED-STRIPES-WITHOUT-JAB";
+    static final String PARTIAL_CROPPED_FRAME = "CM-MVP4-GENERATED-PARTIAL-CROPPED-FRAME";
     static final String UNSUPPORTED_HEIC_PLACEHOLDER = "CM-MVP3-UNSUPPORTED-HEIC-PLACEHOLDER";
     static final String CORRUPTED_UNREADABLE_IMAGE = "CM-MVP3-CORRUPTED-UNREADABLE-IMAGE";
     static final String EXTERNAL_IPHONE_STILLS = "CM-MVP3-EXTERNAL-IPHONE-STILLS";
@@ -254,6 +257,75 @@ final class CaptureMediaCorpusFixtures {
     }
 
     /**
+     * Generates a bright monitor-like rectangle with no JAB border, sync band, or tile-grid evidence.
+     *
+     * @param workspace parent directory for temporary scenario files
+     * @return generated media fixture
+     * @throws IOException if fixture files cannot be written
+     */
+    static GeneratedCaptureMediaFixture brightMonitorWithoutJab(Path workspace) throws IOException {
+        return generatedSinglePng(
+                workspace,
+                BRIGHT_MONITOR_WITHOUT_JAB,
+                "bright-monitor-without-jab.png",
+                brightMonitorWithoutJabImage()
+        );
+    }
+
+    /**
+     * Generates a monitor-like application UI with chrome and panels but no JAB tile-grid evidence.
+     *
+     * @param workspace parent directory for temporary scenario files
+     * @return generated media fixture
+     * @throws IOException if fixture files cannot be written
+     */
+    static GeneratedCaptureMediaFixture uiChromeWithoutJab(Path workspace) throws IOException {
+        return generatedSinglePng(
+                workspace,
+                UI_CHROME_WITHOUT_JAB,
+                "ui-chrome-without-jab.png",
+                uiChromeWithoutJabImage()
+        );
+    }
+
+    /**
+     * Generates repeated medium-contrast stripes that resemble sync-band evidence but not a valid JAB frame.
+     *
+     * @param workspace parent directory for temporary scenario files
+     * @return generated media fixture
+     * @throws IOException if fixture files cannot be written
+     */
+    static GeneratedCaptureMediaFixture repeatedStripesWithoutJab(Path workspace) throws IOException {
+        return generatedSinglePng(
+                workspace,
+                REPEATED_STRIPES_WITHOUT_JAB,
+                "repeated-stripes-without-jab.png",
+                repeatedStripesWithoutJabImage()
+        );
+    }
+
+    /**
+     * Generates a media image with clipped JAB-like evidence that must not be accepted as a complete frame.
+     *
+     * @param workspace parent directory for temporary scenario files
+     * @return generated media fixture
+     * @throws IOException if fixture files cannot be written
+     */
+    static GeneratedCaptureMediaFixture partialCroppedFrame(Path workspace) throws IOException {
+        GeneratedFrameSet frameSet = generateFrameSet(workspace, PARTIAL_CROPPED_FRAME);
+        Path mediaDirectory = Files.createDirectories(frameSet.scenarioDirectory().resolve("media"));
+        Path image = mediaDirectory.resolve("partial-cropped-frame.png");
+        writePng(image, partialCroppedFrameImage(frameSet.renderedFrames().get(0)));
+        return new GeneratedCaptureMediaFixture(
+                PARTIAL_CROPPED_FRAME,
+                frameSet.scenarioDirectory(),
+                mediaDirectory,
+                List.of(image),
+                0
+        );
+    }
+
+    /**
      * Generates a tiny `.heic` placeholder for unsupported-format diagnostics.
      *
      * @param workspace parent directory for temporary scenario files
@@ -392,6 +464,10 @@ final class CaptureMediaCorpusFixtures {
                 DUPLICATE_FRAMES,
                 MISSING_UNIQUE_FRAMES,
                 NO_JAB_FRAME,
+                BRIGHT_MONITOR_WITHOUT_JAB,
+                UI_CHROME_WITHOUT_JAB,
+                REPEATED_STRIPES_WITHOUT_JAB,
+                PARTIAL_CROPPED_FRAME,
                 UNSUPPORTED_HEIC_PLACEHOLDER,
                 CORRUPTED_UNREADABLE_IMAGE,
                 EXTERNAL_IPHONE_STILLS,
@@ -525,6 +601,124 @@ final class CaptureMediaCorpusFixtures {
             graphics.fillRect(120, 140, 400, 44);
             graphics.fillRect(120, 216, 300, 36);
             graphics.fillRect(120, 284, 360, 36);
+        } finally {
+            graphics.dispose();
+        }
+        return image;
+    }
+
+    private static GeneratedCaptureMediaFixture generatedSinglePng(
+            Path workspace,
+            String scenarioId,
+            String fileName,
+            BufferedImage image
+    ) throws IOException {
+        Path scenarioDirectory = createScenarioDirectory(workspace, scenarioId);
+        Path mediaDirectory = Files.createDirectories(scenarioDirectory.resolve("media"));
+        Path path = mediaDirectory.resolve(fileName);
+        writePng(path, image);
+        return new GeneratedCaptureMediaFixture(scenarioId, scenarioDirectory, mediaDirectory, List.of(path), 0);
+    }
+
+    private static BufferedImage brightMonitorWithoutJabImage() {
+        BufferedImage image = monitorCanvas();
+        Graphics2D graphics = image.createGraphics();
+        try {
+            graphics.setColor(new Color(0xFFF4F7FA, true));
+            graphics.fillRect(290, 220, 1100, 520);
+            graphics.setColor(new Color(0xFFDCE3EA, true));
+            graphics.fillRect(340, 280, 1000, 72);
+            graphics.setColor(new Color(0xFFCAD3DC, true));
+            graphics.fillRect(340, 410, 460, 220);
+            graphics.fillRect(870, 410, 460, 220);
+            graphics.setColor(new Color(0xFFEEF2F5, true));
+            graphics.fillRect(390, 460, 360, 42);
+            graphics.fillRect(920, 460, 360, 42);
+        } finally {
+            graphics.dispose();
+        }
+        return image;
+    }
+
+    private static BufferedImage uiChromeWithoutJabImage() {
+        BufferedImage image = monitorCanvas();
+        Graphics2D graphics = image.createGraphics();
+        try {
+            graphics.setColor(new Color(0xFFEEF2F5, true));
+            graphics.fillRect(210, 140, 1280, 720);
+            graphics.setColor(new Color(0xFF26313A, true));
+            graphics.fillRect(210, 140, 1280, 56);
+            graphics.setColor(new Color(0xFF52606D, true));
+            graphics.fillRect(250, 158, 180, 20);
+            graphics.fillRect(470, 158, 120, 20);
+            graphics.setColor(new Color(0xFFB9C4CE, true));
+            for (int row = 0; row < 4; row++) {
+                int top = 240 + (row * 128);
+                graphics.fillRect(270, top, 1040, 54);
+                graphics.fillRect(270, top + 76, 760, 22);
+            }
+            graphics.setColor(new Color(0xFFE4E9EE, true));
+            graphics.fillRect(1330, 240, 96, 560);
+        } finally {
+            graphics.dispose();
+        }
+        return image;
+    }
+
+    private static BufferedImage repeatedStripesWithoutJabImage() {
+        int canvasWidth = 900;
+        int canvasHeight = 600;
+        BufferedImage image = new BufferedImage(canvasWidth, canvasHeight, BufferedImage.TYPE_INT_ARGB);
+        Graphics2D graphics = image.createGraphics();
+        try {
+            graphics.setColor(new Color(0xFF303840, true));
+            graphics.fillRect(0, 0, canvasWidth, canvasHeight);
+            graphics.setColor(new Color(0xFF15191D, true));
+            graphics.fillRect(40, 36, canvasWidth - 80, canvasHeight - 72);
+            graphics.setColor(new Color(0xFF11161B, true));
+            graphics.fillRect(96, 92, 700, 380);
+            for (int col = 0; col < 42; col++) {
+                graphics.setColor(new Color(col % 2 == 0 ? 0xFF9EA7B0 : 0xFF69727C, true));
+                graphics.fillRect(128 + (col * 14), 136, 9, 280);
+            }
+            graphics.setColor(new Color(0xFF87909A, true));
+            for (int row = 0; row < 5; row++) {
+                graphics.fillRect(128, 146 + (row * 52), 590, 6);
+            }
+        } finally {
+            graphics.dispose();
+        }
+        return image;
+    }
+
+    private static BufferedImage partialCroppedFrameImage(RenderedFrame frame) {
+        BufferedImage frameImage = toImage(frame);
+        int canvasWidth = 900;
+        int canvasHeight = frame.heightPixels() + 120;
+        BufferedImage image = new BufferedImage(canvasWidth, canvasHeight, BufferedImage.TYPE_INT_ARGB);
+        Graphics2D graphics = image.createGraphics();
+        try {
+            graphics.setColor(new Color(0xFF303840, true));
+            graphics.fillRect(0, 0, canvasWidth, canvasHeight);
+            graphics.drawImage(frameImage, -900, 60, null);
+        } finally {
+            graphics.dispose();
+        }
+        return image;
+    }
+
+    private static BufferedImage monitorCanvas() {
+        int canvasWidth = 1700;
+        int canvasHeight = 1000;
+        BufferedImage image = new BufferedImage(canvasWidth, canvasHeight, BufferedImage.TYPE_INT_ARGB);
+        Graphics2D graphics = image.createGraphics();
+        try {
+            graphics.setColor(new Color(0xFF303840, true));
+            graphics.fillRect(0, 0, canvasWidth, canvasHeight);
+            graphics.setColor(new Color(0xFF15191D, true));
+            graphics.fillRect(48, 42, canvasWidth - 96, canvasHeight - 84);
+            graphics.setColor(new Color(0xFF242A31, true));
+            graphics.fillRect(78, 70, canvasWidth - 156, canvasHeight - 140);
         } finally {
             graphics.dispose();
         }

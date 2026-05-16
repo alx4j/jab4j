@@ -22,13 +22,11 @@ import com.alx4j.jab4j.render.layout.FixedLayoutPlan;
 import com.alx4j.jab4j.render.layout.FixedLayoutPlanner;
 import com.alx4j.jab4j.render.layout.TilePlacement;
 import com.alx4j.jab4j.tile.LogicalTile;
-import com.alx4j.jab4j.tile.TileCodecException;
 import com.alx4j.jab4j.tile.TileCodecProfile;
 import com.alx4j.jab4j.tile.TileCodecProfiles;
 import com.alx4j.jab4j.tile.TileCodecs;
 import com.alx4j.jab4j.tile.TileDecoder;
 import com.alx4j.jab4j.transfer.TilePayloadEnvelopeCodec;
-import com.alx4j.jab4j.transfer.TransportException;
 
 /**
  * Samples normalized media frames with bounded palette tolerance and accepts content only after tile and envelope
@@ -258,6 +256,7 @@ public final class CaptureMediaTilePayloadSampler {
             return new FrameInspection(
                     frame.sourceId(),
                     frame.layoutProfileId(),
+                    Optional.empty(),
                     List.of(),
                     0,
                     0,
@@ -292,6 +291,7 @@ public final class CaptureMediaTilePayloadSampler {
         return new FrameInspection(
                 frame.sourceId(),
                 frame.layoutProfileId(),
+                samplingEvidence,
                 slots,
                 candidateAttemptCount,
                 noFinderAttemptCount,
@@ -868,8 +868,6 @@ public final class CaptureMediaTilePayloadSampler {
             byte[] envelope = tileDecoder.decode(candidate, tileCodecProfile);
             TilePayload payload = envelopeCodec.parse(envelope, SUPPORTED_PROTOCOL_COMPATIBILITY_VERSION);
             return validPayloadForSlot(layoutPlan, tileIndex, payload) ? payload : null;
-        } catch (TileCodecException | TransportException exception) {
-            return null;
         } catch (RuntimeException exception) {
             return null;
         }
@@ -957,7 +955,7 @@ public final class CaptureMediaTilePayloadSampler {
             Objects.requireNonNull(status, "status must not be null");
             payloads = List.copyOf(Objects.requireNonNull(payloads, "payloads must not be null"));
             diagnostics = List.copyOf(Objects.requireNonNull(diagnostics, "diagnostics must not be null"));
-            paletteConfidence = Objects.requireNonNull(paletteConfidence, "paletteConfidence must not be null");
+            Objects.requireNonNull(paletteConfidence, "paletteConfidence must not be null");
             if (payloads.stream().anyMatch(Objects::isNull)) {
                 throw new IllegalArgumentException("payloads must not contain null values");
             }
@@ -1012,6 +1010,7 @@ public final class CaptureMediaTilePayloadSampler {
      *
      * @param sourceId source identifier of the normalized frame
      * @param layoutProfileId normalized layout profile id
+     * @param samplingEvidence backend-neutral grid-phase and tile sampling evidence used by the sampler, when available
      * @param slots per-slot sampler evidence
      * @param candidateAttemptCount side-version attempts across all signed slots
      * @param noFinderAttemptCount attempts that failed finder-pattern checks
@@ -1021,6 +1020,7 @@ public final class CaptureMediaTilePayloadSampler {
     public record FrameInspection(
             String sourceId,
             String layoutProfileId,
+            Optional<CvSamplingEvidence> samplingEvidence,
             List<SlotInspection> slots,
             int candidateAttemptCount,
             int noFinderAttemptCount,
@@ -1038,6 +1038,7 @@ public final class CaptureMediaTilePayloadSampler {
             if (layoutProfileId == null || layoutProfileId.isBlank()) {
                 throw new IllegalArgumentException("layoutProfileId must not be blank");
             }
+            Objects.requireNonNull(samplingEvidence, "samplingEvidence must not be null");
             slots = List.copyOf(Objects.requireNonNull(slots, "slots must not be null"));
             if (slots.stream().anyMatch(Objects::isNull)) {
                 throw new IllegalArgumentException("slots must not contain null values");
@@ -1110,7 +1111,7 @@ public final class CaptureMediaTilePayloadSampler {
             }
             Objects.requireNonNull(status, "status must not be null");
             Objects.requireNonNull(decodeStatus, "decodeStatus must not be null");
-            paletteConfidence = Objects.requireNonNull(paletteConfidence, "paletteConfidence must not be null");
+            Objects.requireNonNull(paletteConfidence, "paletteConfidence must not be null");
         }
     }
 
@@ -1248,8 +1249,8 @@ public final class CaptureMediaTilePayloadSampler {
 
         private SlotSample {
             Objects.requireNonNull(status, "status must not be null");
-            payload = Objects.requireNonNull(payload, "payload must not be null");
-            paletteConfidence = Objects.requireNonNull(paletteConfidence, "paletteConfidence must not be null");
+            Objects.requireNonNull(payload, "payload must not be null");
+            Objects.requireNonNull(paletteConfidence, "paletteConfidence must not be null");
         }
 
         private static SlotSample empty() {
@@ -1290,8 +1291,8 @@ public final class CaptureMediaTilePayloadSampler {
 
         private CandidateSample {
             Objects.requireNonNull(status, "status must not be null");
-            logicalTile = Objects.requireNonNull(logicalTile, "logicalTile must not be null");
-            optionalPaletteConfidence = Objects.requireNonNull(
+            Objects.requireNonNull(logicalTile, "logicalTile must not be null");
+            Objects.requireNonNull(
                     optionalPaletteConfidence,
                     "optionalPaletteConfidence must not be null"
             );
@@ -1491,7 +1492,7 @@ public final class CaptureMediaTilePayloadSampler {
 
         private BorderSample {
             Objects.requireNonNull(status, "status must not be null");
-            paletteConfidence = Objects.requireNonNull(paletteConfidence, "paletteConfidence must not be null");
+            Objects.requireNonNull(paletteConfidence, "paletteConfidence must not be null");
         }
 
         private static BorderSample signature() {

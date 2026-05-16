@@ -6,9 +6,16 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import javax.imageio.ImageIO;
+import com.alx4j.jab4j.reader.capture.media.CaptureMediaDiagnosticCode;
+import com.alx4j.jab4j.reader.capture.media.cv.CvGridPhase;
+import com.alx4j.jab4j.reader.capture.media.cv.CvSamplingEvidence;
+import com.alx4j.jab4j.reader.capture.media.cv.CvTileSamplingEvidence;
 import com.alx4j.jab4j.reader.capture.media.normalize.FrameCorners;
 import com.alx4j.jab4j.reader.capture.media.normalize.NormalizedCaptureFrame;
 import com.alx4j.jab4j.reader.capture.media.sample.CaptureMediaTilePayloadSampler;
@@ -23,6 +30,8 @@ import com.alx4j.jab4j.reader.capture.media.sample.CaptureMediaTilePayloadSample
 public final class CaptureMediaCandidateDebugExporter {
 
     private final CaptureMediaTilePayloadSampler tilePayloadSampler;
+    private final String cvBackendId;
+    private final String cvBackendVersion;
 
     /**
      * Creates a debug exporter with the default media sampler inspection logic.
@@ -37,7 +46,25 @@ public final class CaptureMediaCandidateDebugExporter {
      * @param tilePayloadSampler sampler used to inspect normalized candidates
      */
     public CaptureMediaCandidateDebugExporter(CaptureMediaTilePayloadSampler tilePayloadSampler) {
+        this(tilePayloadSampler, "legacy", "");
+    }
+
+    /**
+     * Creates a debug exporter with explicit sampler and CV backend metadata.
+     *
+     * @param tilePayloadSampler sampler used to inspect normalized candidates
+     * @param cvBackendId selected backend identifier
+     * @param cvBackendVersion selected backend implementation version, or blank when unavailable
+     */
+    public CaptureMediaCandidateDebugExporter(
+            CaptureMediaTilePayloadSampler tilePayloadSampler,
+            String cvBackendId,
+            String cvBackendVersion
+    ) {
         this.tilePayloadSampler = Objects.requireNonNull(tilePayloadSampler, "tilePayloadSampler");
+        requireBackendId(cvBackendId);
+        this.cvBackendId = cvBackendId;
+        this.cvBackendVersion = Objects.requireNonNull(cvBackendVersion, "cvBackendVersion must not be null");
     }
 
     /**
@@ -54,6 +81,26 @@ public final class CaptureMediaCandidateDebugExporter {
     }
 
     /**
+     * Exports one normalized candidate with explicit CV backend metadata.
+     *
+     * @param frame the normalized candidate to export
+     * @param outputDirectory destination directory, created when missing
+     * @param cvBackendId selected backend identifier
+     * @param cvBackendVersion selected backend implementation version, or blank when unavailable
+     * @return paths written for the candidate
+     * @throws IOException when the destination cannot be written
+     */
+    public CandidateDebugExport export(
+            NormalizedCaptureFrame frame,
+            Path outputDirectory,
+            String cvBackendId,
+            String cvBackendVersion
+    ) throws IOException {
+        Objects.requireNonNull(frame, "frame");
+        return export(List.of(frame), outputDirectory, cvBackendId, cvBackendVersion).get(0);
+    }
+
+    /**
      * Exports normalized candidates as PNG images plus metadata text files.
      *
      * @param frames normalized candidates to export in input order
@@ -63,19 +110,49 @@ public final class CaptureMediaCandidateDebugExporter {
      */
     public List<CandidateDebugExport> export(List<NormalizedCaptureFrame> frames, Path outputDirectory)
             throws IOException {
+        return export(frames, outputDirectory, cvBackendId, cvBackendVersion);
+    }
+
+    /**
+     * Exports normalized candidates as PNG images plus metadata text files with explicit CV backend metadata.
+     *
+     * @param frames normalized candidates to export in input order
+     * @param outputDirectory destination directory, created when missing
+     * @param cvBackendId selected backend identifier
+     * @param cvBackendVersion selected backend implementation version, or blank when unavailable
+     * @return paths written for each candidate, in input order
+     * @throws IOException when the destination cannot be written
+     */
+    public List<CandidateDebugExport> export(
+            List<NormalizedCaptureFrame> frames,
+            Path outputDirectory,
+            String cvBackendId,
+            String cvBackendVersion
+    ) throws IOException {
         Objects.requireNonNull(frames, "frames");
         Objects.requireNonNull(outputDirectory, "outputDirectory");
+        requireBackendId(cvBackendId);
+        Objects.requireNonNull(cvBackendVersion, "cvBackendVersion must not be null");
         Files.createDirectories(outputDirectory);
 
         List<CandidateDebugExport> exports = new ArrayList<>(frames.size());
+        Map<CandidateSourceKey, Integer> candidateRanks = new LinkedHashMap<>();
         for (int index = 0; index < frames.size(); index++) {
             NormalizedCaptureFrame frame = Objects.requireNonNull(frames.get(index), "frames[" + index + "]");
-            exports.add(exportCandidate(frame, outputDirectory, index));
+            CandidateSourceKey sourceKey = new CandidateSourceKey(frame.sourceId(), frame.callerOrder());
+            int rank = candidateRanks.merge(sourceKey, 1, Integer::sum);
+            CandidateDebugContext debugContext = new CandidateDebugContext(cvBackendId, cvBackendVersion, rank);
+            exports.add(exportCandidate(frame, outputDirectory, index, debugContext));
         }
         return List.copyOf(exports);
     }
 
-    private CandidateDebugExport exportCandidate(NormalizedCaptureFrame frame, Path outputDirectory, int index)
+    private CandidateDebugExport exportCandidate(
+            NormalizedCaptureFrame frame,
+            Path outputDirectory,
+            int index,
+            CandidateDebugContext debugContext
+    )
             throws IOException {
         String baseName = "candidate-%04d".formatted(index);
         Path imagePath = outputDirectory.resolve(baseName + ".png");
@@ -97,16 +174,25 @@ public final class CaptureMediaCandidateDebugExporter {
         );
         ImageIO.write(image, "PNG", imagePath.toFile());
 
-        Files.writeString(metadataPath, metadata(frame, tilePayloadSampler.inspect(frame)), StandardCharsets.UTF_8);
+        Files.writeString(
+                metadataPath,
+                metadata(frame, tilePayloadSampler.inspect(frame), debugContext),
+                StandardCharsets.UTF_8
+        );
         return new CandidateDebugExport(imagePath, metadataPath);
     }
 
-    private String metadata(NormalizedCaptureFrame frame, FrameInspection inspection) {
+    private String metadata(NormalizedCaptureFrame frame, FrameInspection inspection, CandidateDebugContext debugContext) {
         FrameCorners corners = frame.frameCorners();
         List<String> lines = new ArrayList<>();
         lines.add("sourceId=" + frame.sourceId());
         lines.add("sourceKind=" + frame.sourceKind());
         lines.add("callerOrder=" + frame.callerOrder());
+        lines.add("cv.backendId=" + debugContext.cvBackendId());
+        lines.add("cv.backendVersion=" + debugContext.cvBackendVersion());
+        lines.add("candidate.rank=" + debugContext.rank());
+        addCandidateSourceBounds(lines, corners);
+        addCandidateCorners(lines, corners);
         lines.add("formatName=" + frame.formatName());
         lines.add("originalWidthPixels=" + frame.originalWidthPixels());
         lines.add("originalHeightPixels=" + frame.originalHeightPixels());
@@ -122,6 +208,8 @@ public final class CaptureMediaCandidateDebugExporter {
         lines.add("frameCorners.bottomRightY=" + corners.bottomRightY());
         lines.add("frameCorners.bottomLeftX=" + corners.bottomLeftX());
         lines.add("frameCorners.bottomLeftY=" + corners.bottomLeftY());
+        lines.add("perspective.frameCoverageRatio=" + frame.qualityMetrics().frameCoverageRatio());
+        lines.add("perspective.skewScore=" + frame.qualityMetrics().skewScore());
         lines.add("quality.frameCoverageRatio=" + frame.qualityMetrics().frameCoverageRatio());
         lines.add("quality.skewScore=" + frame.qualityMetrics().skewScore());
         lines.add("quality.blurScore=" + frame.qualityMetrics().blurScore());
@@ -133,9 +221,62 @@ public final class CaptureMediaCandidateDebugExporter {
         lines.add("sampler.paletteRejectedAttemptCount=" + inspection.paletteRejectedAttemptCount());
         lines.add("sampler.decodedPayloadCount=" + inspection.decodedPayloadCount());
         lines.add("sampler.slotCount=" + inspection.slots().size());
+        lines.add("sampler.tileDecode.attemptCount=" + tileDecodeAttemptCount(inspection));
+        lines.add("sampler.envelope.acceptedPayloadCount=" + inspection.decodedPayloadCount());
+        lines.add("sampler.envelope.rejectedAttemptCount=" + envelopeRejectedAttemptCount(inspection));
+        addSamplingEvidence(lines, inspection);
         addSlotInspection(lines, inspection);
+        lines.add("diagnostic.selectedPublicCode=" + selectedPublicDiagnosticCode(inspection)
+                .map(CaptureMediaDiagnosticCode::name)
+                .orElse(""));
         lines.add("");
         return String.join(System.lineSeparator(), lines);
+    }
+
+    private void addCandidateSourceBounds(List<String> lines, FrameCorners corners) {
+        lines.add("candidate.sourceBounds.leftPx=" + min(
+                corners.topLeftX(),
+                corners.topRightX(),
+                corners.bottomRightX(),
+                corners.bottomLeftX()
+        ));
+        lines.add("candidate.sourceBounds.topPx=" + min(
+                corners.topLeftY(),
+                corners.topRightY(),
+                corners.bottomRightY(),
+                corners.bottomLeftY()
+        ));
+        lines.add("candidate.sourceBounds.rightExclusivePx=" + max(
+                corners.topLeftX(),
+                corners.topRightX(),
+                corners.bottomRightX(),
+                corners.bottomLeftX()
+        ));
+        lines.add("candidate.sourceBounds.bottomExclusivePx=" + max(
+                corners.topLeftY(),
+                corners.topRightY(),
+                corners.bottomRightY(),
+                corners.bottomLeftY()
+        ));
+    }
+
+    private void addCandidateCorners(List<String> lines, FrameCorners corners) {
+        lines.add("candidate.corners.topLeftX=" + corners.topLeftX());
+        lines.add("candidate.corners.topLeftY=" + corners.topLeftY());
+        lines.add("candidate.corners.topRightX=" + corners.topRightX());
+        lines.add("candidate.corners.topRightY=" + corners.topRightY());
+        lines.add("candidate.corners.bottomRightX=" + corners.bottomRightX());
+        lines.add("candidate.corners.bottomRightY=" + corners.bottomRightY());
+        lines.add("candidate.corners.bottomLeftX=" + corners.bottomLeftX());
+        lines.add("candidate.corners.bottomLeftY=" + corners.bottomLeftY());
+    }
+
+    private double min(double first, double second, double third, double fourth) {
+        return Math.min(Math.min(first, second), Math.min(third, fourth));
+    }
+
+    private double max(double first, double second, double third, double fourth) {
+        return Math.max(Math.max(first, second), Math.max(third, fourth));
     }
 
     private void addSlotInspection(List<String> lines, FrameInspection inspection) {
@@ -149,6 +290,8 @@ public final class CaptureMediaCandidateDebugExporter {
                 lines.add(candidatePrefix + ".dimension=" + candidate.dimension());
                 lines.add(candidatePrefix + ".status=" + candidate.status());
                 lines.add(candidatePrefix + ".decodeStatus=" + candidate.decodeStatus());
+                lines.add(candidatePrefix + ".tileDecode.status=" + candidate.decodeStatus());
+                lines.add(candidatePrefix + ".envelopeValidation.status=" + candidate.decodeStatus());
                 candidate.paletteConfidence()
                         .ifPresent(confidence -> addPaletteConfidence(lines, candidatePrefix, confidence));
             }
@@ -169,6 +312,102 @@ public final class CaptureMediaCandidateDebugExporter {
         lines.add(candidatePrefix + ".palette.maximumRgbDistance=" + confidence.maximumRgbDistance());
     }
 
+    private void addSamplingEvidence(List<String> lines, FrameInspection inspection) {
+        Optional<CvSamplingEvidence> samplingEvidence = inspection.samplingEvidence();
+        if (samplingEvidence.isEmpty()) {
+            lines.add("sampler.evidence.available=false");
+            lines.add("sampler.gridPhase.available=false");
+            lines.add("sampler.evidence.tileCount=0");
+            return;
+        }
+        CvSamplingEvidence evidence = samplingEvidence.orElseThrow();
+        lines.add("sampler.evidence.available=true");
+        lines.add("sampler.evidence.backendId=" + evidence.backendId());
+        lines.add("sampler.evidence.confidence=" + evidence.confidence());
+        lines.add("sampler.evidence.moduleCenterOffsetXPx=" + evidence.moduleCenterOffsetXPx());
+        lines.add("sampler.evidence.moduleCenterOffsetYPx=" + evidence.moduleCenterOffsetYPx());
+        evidence.metrics().forEach((name, value) -> lines.add("sampler.evidence.metric." + name + "=" + value));
+        if (evidence.gridPhase().isEmpty()) {
+            lines.add("sampler.gridPhase.available=false");
+        } else {
+            addGridPhase(lines, evidence.gridPhase().orElseThrow());
+        }
+        lines.add("sampler.evidence.tileCount=" + evidence.tileEvidence().size());
+        for (CvTileSamplingEvidence tileEvidence : evidence.tileEvidence()) {
+            String prefix = "sampler.evidence.tile." + tileEvidence.tileIndex();
+            lines.add(prefix + ".moduleCenterOffsetXPx=" + tileEvidence.moduleCenterOffsetXPx());
+            lines.add(prefix + ".moduleCenterOffsetYPx=" + tileEvidence.moduleCenterOffsetYPx());
+            lines.add(prefix + ".confidence=" + tileEvidence.confidence());
+            lines.add(prefix + ".localContrast=" + tileEvidence.localContrast());
+            tileEvidence.localWhiteReferenceArgb()
+                    .ifPresent(value -> lines.add(prefix + ".localWhiteReferenceArgb=" + argb(value)));
+            tileEvidence.localBlackReferenceArgb()
+                    .ifPresent(value -> lines.add(prefix + ".localBlackReferenceArgb=" + argb(value)));
+            tileEvidence.metrics().forEach((name, value) -> lines.add(prefix + ".metric." + name + "=" + value));
+        }
+    }
+
+    private void addGridPhase(List<String> lines, CvGridPhase phase) {
+        lines.add("sampler.gridPhase.available=true");
+        lines.add("sampler.gridPhase.offsetXPx=" + phase.offsetXPx());
+        lines.add("sampler.gridPhase.offsetYPx=" + phase.offsetYPx());
+        lines.add("sampler.gridPhase.confidence=" + phase.confidence());
+        lines.add("sampler.gridPhase.localContrast=" + phase.localContrast());
+        phase.localWhiteReferenceArgb()
+                .ifPresent(value -> lines.add("sampler.gridPhase.localWhiteReferenceArgb=" + argb(value)));
+        phase.localBlackReferenceArgb()
+                .ifPresent(value -> lines.add("sampler.gridPhase.localBlackReferenceArgb=" + argb(value)));
+    }
+
+    private String argb(int value) {
+        return "0x%08X".formatted(value);
+    }
+
+    private int tileDecodeAttemptCount(FrameInspection inspection) {
+        int attemptCount = 0;
+        for (SlotInspection slot : inspection.slots()) {
+            for (CandidateInspection candidate : slot.candidates()) {
+                if (candidate.decodeStatus() != CaptureMediaTilePayloadSampler.DecodeInspectionStatus.NOT_ATTEMPTED) {
+                    attemptCount++;
+                }
+            }
+        }
+        return attemptCount;
+    }
+
+    private int envelopeRejectedAttemptCount(FrameInspection inspection) {
+        int rejectedCount = 0;
+        for (SlotInspection slot : inspection.slots()) {
+            for (CandidateInspection candidate : slot.candidates()) {
+                if (candidate.decodeStatus()
+                        == CaptureMediaTilePayloadSampler.DecodeInspectionStatus.REJECTED_BY_TILE_OR_ENVELOPE) {
+                    rejectedCount++;
+                }
+            }
+        }
+        return rejectedCount;
+    }
+
+    private Optional<CaptureMediaDiagnosticCode> selectedPublicDiagnosticCode(FrameInspection inspection) {
+        if (inspection.decodedPayloadCount() > 0) {
+            return Optional.empty();
+        }
+        if (inspection.candidateAttemptCount() > 0
+                || inspection.paletteRejectedAttemptCount() > 0
+                || inspection.noFinderAttemptCount() > 0
+                || inspection.slots().stream()
+                .anyMatch(slot -> slot.borderStatus() == CaptureMediaTilePayloadSampler.BorderInspectionStatus.PALETTE_REJECTED)) {
+            return Optional.of(CaptureMediaDiagnosticCode.COLOR_OR_COMPRESSION_SHIFT);
+        }
+        return Optional.of(CaptureMediaDiagnosticCode.SCREEN_OR_FRAME_NOT_FOUND);
+    }
+
+    private void requireBackendId(String cvBackendId) {
+        if (cvBackendId == null || cvBackendId.isBlank()) {
+            throw new IllegalArgumentException("cvBackendId must not be blank");
+        }
+    }
+
     /**
      * Paths produced for one exported normalized candidate.
      */
@@ -176,6 +415,29 @@ public final class CaptureMediaCandidateDebugExporter {
         public CandidateDebugExport {
             Objects.requireNonNull(imagePath, "imagePath");
             Objects.requireNonNull(metadataPath, "metadataPath");
+        }
+    }
+
+    private record CandidateDebugContext(String cvBackendId, String cvBackendVersion, int rank) {
+        CandidateDebugContext {
+            if (cvBackendId == null || cvBackendId.isBlank()) {
+                throw new IllegalArgumentException("cvBackendId must not be blank");
+            }
+            Objects.requireNonNull(cvBackendVersion, "cvBackendVersion must not be null");
+            if (rank <= 0) {
+                throw new IllegalArgumentException("rank must be positive");
+            }
+        }
+    }
+
+    private record CandidateSourceKey(String sourceId, int callerOrder) {
+        CandidateSourceKey {
+            if (sourceId == null || sourceId.isBlank()) {
+                throw new IllegalArgumentException("sourceId must not be blank");
+            }
+            if (callerOrder < 0) {
+                throw new IllegalArgumentException("callerOrder must be non-negative");
+            }
         }
     }
 }

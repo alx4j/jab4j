@@ -106,6 +106,24 @@ public final class CaptureMediaFrameNormalizer {
     }
 
     /**
+     * Returns the selected backend identifier without exposing internal CV DTOs to caller packages.
+     *
+     * @return backend identifier
+     */
+    public String normalizationBackendId() {
+        return cvBackend.identity().backendId();
+    }
+
+    /**
+     * Returns the selected backend implementation version when available.
+     *
+     * @return optional backend implementation version
+     */
+    public Optional<String> normalizationBackendVersion() {
+        return cvBackend.identity().implementationVersion();
+    }
+
+    /**
      * Normalizes one frame when it is an exact supported render or a clean generated axis-aligned inset.
      *
      * @param frame decoded media input frame
@@ -127,14 +145,6 @@ public final class CaptureMediaFrameNormalizer {
 
     private MediaNormalizationResult accepted(MediaInputFrame frame, LayoutProfile profile) {
         return MediaNormalizationResult.accepted(NormalizedCaptureFrame.fromExactRenderedFrame(frame, profile));
-    }
-
-    private MediaNormalizationResult rejectedUnsupportedDimensions(MediaInputFrame frame) {
-        return rejected(
-                frame,
-                CaptureMediaDiagnosticCode.SCREEN_OR_FRAME_NOT_FOUND,
-                "Media normalization did not find a clean supported rendered frame region"
-        );
     }
 
     private MediaNormalizationResult rejected(
@@ -514,8 +524,8 @@ public final class CaptureMediaFrameNormalizer {
         int width = profile.frameWidthPx();
         int height = profile.frameHeightPx();
         for (int row = 0; row < border; row++) {
-            if (!rowIsWhite(frame, top + row, left, width)
-                    || !rowIsWhite(frame, top + height - border + row, left, width)) {
+            if (rowHasNonWhite(frame, top + row, left, width)
+                    || rowHasNonWhite(frame, top + height - border + row, left, width)) {
                 return false;
             }
         }
@@ -619,7 +629,7 @@ public final class CaptureMediaFrameNormalizer {
         for (int col = 0; col < profile.cols() - 1; col++) {
             TilePlacement leftPlacement = layoutPlan.tilePlacements().get(col);
             TilePlacement rightPlacement = layoutPlan.tilePlacements().get(col + 1);
-            if (!rectangleIsWhite(
+            if (rectangleHasNonWhite(
                     frame,
                     left + leftPlacement.xPx() + leftPlacement.widthPx(),
                     top + layoutPlan.gridOriginYPx(),
@@ -634,7 +644,7 @@ public final class CaptureMediaFrameNormalizer {
         for (int row = 0; row < profile.rows() - 1; row++) {
             TilePlacement upperPlacement = layoutPlan.tilePlacements().get(row * profile.cols());
             TilePlacement lowerPlacement = layoutPlan.tilePlacements().get((row + 1) * profile.cols());
-            if (!rectangleIsWhite(
+            if (rectangleHasNonWhite(
                     frame,
                     left + layoutPlan.gridOriginXPx(),
                     top + upperPlacement.yPx() + upperPlacement.heightPx(),
@@ -660,7 +670,7 @@ public final class CaptureMediaFrameNormalizer {
                 + ((profile.rows() - 1) * profile.tileGapPx());
     }
 
-    private boolean rectangleIsWhite(
+    private boolean rectangleHasNonWhite(
             MediaInputFrame frame,
             int left,
             int top,
@@ -670,20 +680,20 @@ public final class CaptureMediaFrameNormalizer {
         for (int row = top; row < bottomExclusive; row++) {
             for (int col = left; col < rightExclusive; col++) {
                 if (frame.argbPixelAt(row, col) != WHITE) {
-                    return false;
+                    return true;
                 }
             }
         }
-        return true;
+        return false;
     }
 
-    private boolean rowIsWhite(MediaInputFrame frame, int row, int left, int width) {
+    private boolean rowHasNonWhite(MediaInputFrame frame, int row, int left, int width) {
         for (int col = 0; col < width; col++) {
             if (frame.argbPixelAt(row, left + col) != WHITE) {
-                return false;
+                return true;
             }
         }
-        return true;
+        return false;
     }
 
     private boolean columnsAreWhite(MediaInputFrame frame, int row, int left, int width, int border) {
@@ -723,13 +733,13 @@ public final class CaptureMediaFrameNormalizer {
     }
 
     private int nearestPixel(MediaInputFrame frame, double x, double y) {
-        int sourceX = clamp((int) Math.round(x), 0, frame.widthPixels() - 1);
-        int sourceY = clamp((int) Math.round(y), 0, frame.heightPixels() - 1);
+        int sourceX = clampToUpperBound((int) Math.round(x), frame.widthPixels() - 1);
+        int sourceY = clampToUpperBound((int) Math.round(y), frame.heightPixels() - 1);
         return frame.argbPixelAt(sourceY, sourceX);
     }
 
-    private int clamp(int value, int min, int max) {
-        return Math.max(min, Math.min(max, value));
+    private int clampToUpperBound(int value, int max) {
+        return Math.max(0, Math.min(max, value));
     }
 
     private boolean hasPartialAxisAlignedFrameEvidence(MediaInputFrame frame) {
@@ -843,39 +853,36 @@ public final class CaptureMediaFrameNormalizer {
             int top
     ) {
         int border = layoutPlan.separatorThicknessPx();
-        return visibleRectangleHasColorSamples(frame, left, top, 0, 0, profile.frameWidthPx(), border, WHITE)
-                || visibleRectangleHasColorSamples(
+        return visibleRectangleHasWhiteSamples(frame, left, top, 0, 0, profile.frameWidthPx(), border)
+                || visibleRectangleHasWhiteSamples(
                         frame,
                         left,
                         top,
                         0,
                         profile.frameHeightPx() - border,
                         profile.frameWidthPx(),
-                        profile.frameHeightPx(),
-                        WHITE
+                        profile.frameHeightPx()
                 )
-                || visibleRectangleHasColorSamples(frame, left, top, 0, 0, border, profile.frameHeightPx(), WHITE)
-                || visibleRectangleHasColorSamples(
+                || visibleRectangleHasWhiteSamples(frame, left, top, 0, 0, border, profile.frameHeightPx())
+                || visibleRectangleHasWhiteSamples(
                         frame,
                         left,
                         top,
                         profile.frameWidthPx() - border,
                         0,
                         profile.frameWidthPx(),
-                        profile.frameHeightPx(),
-                        WHITE
+                        profile.frameHeightPx()
                 );
     }
 
-    private boolean visibleRectangleHasColorSamples(
+    private boolean visibleRectangleHasWhiteSamples(
             MediaInputFrame frame,
             int candidateLeft,
             int candidateTop,
             int relativeLeft,
             int relativeTop,
             int relativeRightExclusive,
-            int relativeBottomExclusive,
-            int expectedColor
+            int relativeBottomExclusive
     ) {
         int startX = Math.max(relativeLeft, -candidateLeft);
         int endX = Math.min(relativeRightExclusive, frame.widthPixels() - candidateLeft);
@@ -886,9 +893,9 @@ public final class CaptureMediaFrameNormalizer {
         }
         int middleX = startX + ((endX - startX) / 2);
         int middleY = startY + ((endY - startY) / 2);
-        return frame.argbPixelAt(candidateTop + startY, candidateLeft + startX) == expectedColor
-                && frame.argbPixelAt(candidateTop + middleY, candidateLeft + middleX) == expectedColor
-                && frame.argbPixelAt(candidateTop + endY - 1, candidateLeft + endX - 1) == expectedColor;
+        return frame.argbPixelAt(candidateTop + startY, candidateLeft + startX) == WHITE
+                && frame.argbPixelAt(candidateTop + middleY, candidateLeft + middleX) == WHITE
+                && frame.argbPixelAt(candidateTop + endY - 1, candidateLeft + endX - 1) == WHITE;
     }
 
     private double frameCoverageRatio(MediaInputFrame frame, LayoutProfile profile) {

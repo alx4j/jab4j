@@ -8,7 +8,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import com.alx4j.jab4j.reader.capture.CaptureDiagnosticCode;
 import com.alx4j.jab4j.reader.capture.CaptureFrameDiagnostic;
 import com.alx4j.jab4j.reader.capture.CaptureReceiverRequest;
@@ -39,6 +42,8 @@ import com.alx4j.jab4j.reader.restore.ReaderRestoreStatus;
  * service only after decoded content is complete and internally consistent.</p>
  */
 public final class CaptureMediaReceiverService {
+
+    private static final Logger LOGGER = LoggerFactory.getLogger(CaptureMediaReceiverService.class);
 
     private final CaptureMediaInputIntake mediaInputIntake;
     private final CaptureMediaFrameNormalizer frameNormalizer;
@@ -183,6 +188,29 @@ public final class CaptureMediaReceiverService {
 
     private CaptureMediaReceiverResult process(CaptureMediaReceiverRequest request, boolean restoreRequested) {
         Objects.requireNonNull(request, "request must not be null");
+        long startedAtNanos = System.nanoTime();
+        String backendId = frameNormalizer.normalizationBackendId();
+        String backendVersion = frameNormalizer.normalizationBackendVersion().orElse("");
+        LOGGER.info(
+                "Capture media receiver starting mode={} sourceKind={} inputSources={} backendId={} debugOutputRequested={}",
+                restoreRequested ? "restore" : "evaluate",
+                request.sourceKind(),
+                request.inputSources().size(),
+                backendId,
+                request.debugOutputDirectory().isPresent()
+        );
+        CaptureMediaReceiverResult result = processInternal(request, restoreRequested, backendId, backendVersion);
+        logCompletion(request, result, backendId, startedAtNanos);
+        return result;
+    }
+
+    private CaptureMediaReceiverResult processInternal(
+            CaptureMediaReceiverRequest request,
+            boolean restoreRequested,
+            String backendId,
+            String backendVersion
+    ) {
+        Objects.requireNonNull(request, "request must not be null");
         MediaIntakeResult intakeResult = mediaInputIntake.read(request);
         List<CaptureMediaDiagnostic> diagnostics = new ArrayList<>(intakeResult.diagnostics());
         List<NormalizedCaptureFrame> normalizedFrames = normalizeReadableFrames(intakeResult, diagnostics);
@@ -191,7 +219,6 @@ public final class CaptureMediaReceiverService {
                     intakeResult,
                     normalizedFrames,
                     diagnostics,
-                    0,
                     0,
                     0,
                     0,
@@ -208,7 +235,7 @@ public final class CaptureMediaReceiverService {
                         "Capture media input does not contain any normalized frame candidates"
                 ));
                 return CaptureMediaReceiverResult.incomplete(
-                        mediaSummary(intakeResult, normalizedFrames, diagnostics, 0, 0, 0, 0, 0),
+                        mediaSummary(intakeResult, normalizedFrames, diagnostics, 0, 0, 0, 0),
                         diagnostics,
                         "Capture media input is missing required unique frame content"
                 );
@@ -217,7 +244,9 @@ public final class CaptureMediaReceiverService {
                     request,
                     intakeResult,
                     normalizedFrames,
-                    diagnostics
+                    diagnostics,
+                    backendId,
+                    backendVersion
             );
             if (debugFailure.isPresent()) {
                 return debugFailure.orElseThrow();
@@ -243,8 +272,7 @@ public final class CaptureMediaReceiverService {
                     assemblyResult.acceptedCandidateCount(),
                     assemblyResult.duplicateFrameCount(),
                     decodeResult.rejectedCandidateCount(),
-                    assemblyResult.decodedTileCount(),
-                    0
+                    assemblyResult.decodedTileCount()
             );
 
             if (assemblyResult.rejected()) {
@@ -275,8 +303,7 @@ public final class CaptureMediaReceiverService {
                                 assemblyResult.acceptedCandidateCount(),
                                 assemblyResult.duplicateFrameCount(),
                                 decodeResult.rejectedCandidateCount(),
-                                assemblyResult.decodedTileCount(),
-                                0
+                                assemblyResult.decodedTileCount()
                         ),
                         diagnostics,
                         "Capture media input is missing required unique frame content"
@@ -291,8 +318,7 @@ public final class CaptureMediaReceiverService {
                     assemblyResult.acceptedCandidateCount(),
                     assemblyResult.duplicateFrameCount(),
                     decodeResult.rejectedCandidateCount(),
-                    assemblyResult.decodedTileCount(),
-                    0
+                    assemblyResult.decodedTileCount()
             );
             if (successfulDiagnostics.stream().anyMatch(CaptureMediaDiagnostic::blocking)) {
                 return failedFromMediaDiagnostics(successfulSummary, successfulDiagnostics);
@@ -315,18 +341,80 @@ public final class CaptureMediaReceiverService {
         }
     }
 
+    private void logCompletion(
+            CaptureMediaReceiverRequest request,
+            CaptureMediaReceiverResult result,
+            String backendId,
+            long startedAtNanos
+    ) {
+        long durationMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedAtNanos);
+        CaptureMediaSummary summary = result.summary();
+        String primaryDiagnosticCode = primaryDiagnosticCode(result.diagnostics())
+                .map(CaptureMediaDiagnosticCode::name)
+                .orElse("none");
+        if (result.failed()) {
+            LOGGER.warn(
+                    "Capture media receiver completed status={} sourceKind={} backendId={} primaryDiagnosticCode={} submittedMedia={} readableMedia={} acceptedCandidates={} rejectedCandidates={} duplicateFrames={} decodedTiles={} restoredFiles={} durationMillis={}",
+                    result.status(),
+                    request.sourceKind(),
+                    backendId,
+                    primaryDiagnosticCode,
+                    summary.submittedMediaCount(),
+                    summary.readableMediaCount(),
+                    summary.acceptedCandidateCount(),
+                    summary.rejectedCandidateCount(),
+                    summary.duplicateMediaFrameCount(),
+                    summary.decodedTileCount(),
+                    summary.restoredFileCount(),
+                    durationMillis
+            );
+            return;
+        }
+        LOGGER.info(
+                "Capture media receiver completed status={} sourceKind={} backendId={} submittedMedia={} readableMedia={} acceptedCandidates={} rejectedCandidates={} duplicateFrames={} decodedTiles={} restoredFiles={} durationMillis={}",
+                result.status(),
+                request.sourceKind(),
+                backendId,
+                summary.submittedMediaCount(),
+                summary.readableMediaCount(),
+                summary.acceptedCandidateCount(),
+                summary.rejectedCandidateCount(),
+                summary.duplicateMediaFrameCount(),
+                summary.decodedTileCount(),
+                summary.restoredFileCount(),
+                durationMillis
+        );
+    }
+
+    private Optional<CaptureMediaDiagnosticCode> primaryDiagnosticCode(List<CaptureMediaDiagnostic> diagnostics) {
+        Optional<CaptureMediaDiagnosticCode> blockingCode = diagnostics.stream()
+                .filter(CaptureMediaDiagnostic::blocking)
+                .map(CaptureMediaDiagnostic::code)
+                .findFirst();
+        return blockingCode.or(() -> diagnostics.stream()
+                .map(CaptureMediaDiagnostic::code)
+                .findFirst());
+    }
+
     private Optional<CaptureMediaReceiverResult> exportDebugCandidates(
             CaptureMediaReceiverRequest request,
             MediaIntakeResult intakeResult,
             List<NormalizedCaptureFrame> normalizedFrames,
-            List<CaptureMediaDiagnostic> diagnostics
+            List<CaptureMediaDiagnostic> diagnostics,
+            String backendId,
+            String backendVersion
     ) {
         Optional<Path> debugOutputDirectory = request.debugOutputDirectory();
         if (debugOutputDirectory.isEmpty()) {
             return Optional.empty();
         }
         try {
-            debugExporter.export(normalizedFrames, debugOutputDirectory.orElseThrow());
+            debugExporter.export(
+                    normalizedFrames,
+                    debugOutputDirectory.orElseThrow(),
+                    backendId,
+                    backendVersion
+            );
             return Optional.empty();
         } catch (IOException exception) {
             diagnostics.add(CaptureMediaDiagnostic.forMediaSet(
@@ -342,7 +430,6 @@ public final class CaptureMediaReceiverService {
                             0,
                             0,
                             normalizedFrames.size(),
-                            0,
                             0
                     ),
                     diagnostics,
@@ -485,10 +572,10 @@ public final class CaptureMediaReceiverService {
                         .map(framesBySourceContext::get));
         Optional<String> sourceId = normalizedFrame
                 .map(NormalizedCaptureFrame::sourceId)
-                .or(() -> diagnostic.sourceId());
+                .or(diagnostic::sourceId);
         Optional<Integer> callerOrder = normalizedFrame
                 .map(NormalizedCaptureFrame::callerOrder)
-                .or(() -> diagnostic.callerOrder());
+                .or(diagnostic::callerOrder);
         Optional<Long> timestampMillis = normalizedFrame
                 .flatMap(NormalizedCaptureFrame::timestampMillis);
         Optional<Long> frameNumber = normalizedFrame
@@ -538,8 +625,7 @@ public final class CaptureMediaReceiverService {
             int acceptedCandidateCount,
             int duplicateFrameCount,
             int decodeRejectedCandidateCount,
-            int decodedTileCount,
-            long restoredFileCount
+            int decodedTileCount
     ) {
         int rejectedCandidateCount = rejectedCandidateCount(
                 intakeResult,
@@ -556,7 +642,7 @@ public final class CaptureMediaReceiverService {
                 duplicateFrameCount,
                 acceptedCandidateCount,
                 decodedTileCount,
-                restoredFileCount
+                0
         );
     }
 
