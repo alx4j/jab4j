@@ -39,6 +39,7 @@ import com.alx4j.jab4j.reader.capture.media.sample.CaptureMediaTilePayloadSample
 import com.alx4j.jab4j.reader.capture.media.sample.CaptureMediaTilePayloadSampler.FrameSampleStatus;
 import com.alx4j.jab4j.reader.capture.media.sample.CaptureMediaTilePayloadSampler.BorderInspectionStatus;
 import com.alx4j.jab4j.reader.capture.media.sample.CaptureMediaTilePayloadSampler.CandidateInspection;
+import com.alx4j.jab4j.reader.capture.media.sample.CaptureMediaTilePayloadSampler.CandidateInspectionStatus;
 import com.alx4j.jab4j.reader.capture.media.sample.CaptureMediaTilePayloadSampler.DecodeInspectionStatus;
 import com.alx4j.jab4j.reader.capture.media.sample.CaptureMediaTilePayloadSampler.FrameInspection;
 import com.alx4j.jab4j.reader.capture.media.sample.CaptureMediaTilePayloadSampler.ModuleSamplingInspectionSource;
@@ -79,6 +80,20 @@ class CaptureMediaTilePayloadSamplerTest {
             "solidWhite",
             48,
             24,
+            "black",
+            "preserveAspect"
+    );
+    private static final LayoutProfile DESKTOP_1080P_SAFE_LAYOUT = new LayoutProfile(
+            "desktop-1080p-safe",
+            2,
+            2,
+            1920,
+            1080,
+            24,
+            48,
+            "solidWhite",
+            64,
+            32,
             "black",
             "preserveAspect"
     );
@@ -227,6 +242,30 @@ class CaptureMediaTilePayloadSamplerTest {
     }
 
     @Test
+    @DisplayName("Camera-derived sparse rejected module samples can pass the observed phone-photo boundary")
+    void cameraDerivedSparseRejectedModuleSamplesCanPassObservedPhonePhotoBoundary() {
+        RenderedTileFixture fixture = renderedTileFixture(0);
+        int[] pixels = fixture.frame().copyArgbPixels();
+        mutateSparseLogicalModuleCentersBeyondCameraThreshold(pixels, fixture.logicalTile(), 20);
+        NormalizedCaptureFrame cameraFrame = cameraDerivedFrame(pixels);
+
+        FrameSample sample = sampler.sample(cameraFrame);
+        FrameInspection inspection = sampler.inspect(cameraFrame);
+        CandidateInspection acceptedCandidate = inspection.slots().get(0).candidates().stream()
+                .filter(candidate -> candidate.decodeStatus() == DecodeInspectionStatus.ACCEPTED_PAYLOAD)
+                .findFirst()
+                .orElseThrow();
+
+        assertAll(
+                () -> assertEquals(FrameSampleStatus.ACCEPTED, sample.status()),
+                () -> assertEquals(List.of(fixture.payload()), sample.payloads()),
+                () -> assertEquals(CaptureMediaDiagnosticSeverity.WARNING, sample.diagnostics().get(0).severity()),
+                () -> assertEquals(23, acceptedCandidate.paletteConfidence().orElseThrow().rejectedSampleCount()),
+                () -> assertEquals(1, inspection.decodedPayloadCount())
+        );
+    }
+
+    @Test
     @DisplayName("Exact sparse rejected module samples remain rejected")
     void exactSparseRejectedModuleSamplesRemainRejected() {
         RenderedTileFixture fixture = renderedTileFixture(0);
@@ -351,6 +390,66 @@ class CaptureMediaTilePayloadSamplerTest {
     }
 
     @Test
+    @DisplayName("Camera-derived finder phase fallback reaches tile decode for shifted inner content")
+    void cameraDerivedFinderPhaseFallbackReachesTileDecodeForShiftedInnerContent() {
+        RenderedTileFixture fixture = finderPhaseShiftedTileFixture();
+        NormalizedCaptureFrame exactFrame = frame(fixture.frame().copyArgbPixels());
+        NormalizedCaptureFrame cameraFrame = cameraDerivedFrame(fixture.frame().copyArgbPixels());
+
+        FrameSample exactSample = sampler.sample(exactFrame);
+        FrameSample cameraSample = sampler.sample(cameraFrame);
+        FrameInspection exactInspection = sampler.inspect(exactFrame);
+        FrameInspection cameraInspection = sampler.inspect(cameraFrame);
+        CandidateInspection tileDecodeAttempt = cameraInspection.slots().get(0).candidates().stream()
+                .filter(candidate -> candidate.decodeStatus() == DecodeInspectionStatus.REJECTED_BY_TILE_OR_ENVELOPE)
+                .findFirst()
+                .orElseThrow();
+
+        assertAll(
+                () -> assertTrue(exactSample.payloads().isEmpty()),
+                () -> assertTrue(exactInspection.slots().get(0).candidates().stream()
+                        .noneMatch(candidate ->
+                                candidate.decodeStatus() == DecodeInspectionStatus.REJECTED_BY_TILE_OR_ENVELOPE)),
+                () -> assertEquals(FrameSampleStatus.REJECTED, cameraSample.status()),
+                () -> assertTrue(cameraSample.payloads().isEmpty()),
+                () -> assertEquals(ModuleSamplingInspectionSource.FALLBACK_SEARCH,
+                        tileDecodeAttempt.moduleSamplingOffsetSource()),
+                () -> assertEquals(0, cameraInspection.decodedPayloadCount())
+        );
+    }
+
+    @Test
+    @DisplayName("Camera-derived recoverable finder evidence canonicalizes finder modules before decode")
+    void cameraDerivedRecoverableFinderEvidenceCanonicalizesFinderModulesBeforeDecode() {
+        RenderedTileFixture fixture = renderedTileFixture(0);
+        int[] pixels = fixture.frame().copyArgbPixels();
+        int lastFinderStart = fixture.logicalTile().widthModules() - 3;
+        mutateFinder(pixels, fixture.logicalTile(), lastFinderStart, lastFinderStart, 1);
+        NormalizedCaptureFrame exactFrame = frame(pixels);
+        NormalizedCaptureFrame cameraFrame = cameraDerivedFrame(pixels);
+
+        FrameSample cameraSample = sampler.sample(cameraFrame);
+        FrameInspection exactInspection = sampler.inspect(exactFrame);
+        FrameInspection cameraInspection = sampler.inspect(cameraFrame);
+        CandidateInspection acceptedCandidate = cameraInspection.slots().get(0).candidates().stream()
+                .filter(candidate -> candidate.decodeStatus() == DecodeInspectionStatus.ACCEPTED_PAYLOAD)
+                .findFirst()
+                .orElseThrow();
+
+        assertAll(
+                () -> assertEquals(FrameSampleStatus.ACCEPTED, cameraSample.status()),
+                () -> assertEquals(List.of(fixture.payload()), cameraSample.payloads()),
+                () -> assertTrue(exactInspection.slots().get(0).candidates().stream()
+                        .noneMatch(candidate ->
+                                candidate.decodeStatus() == DecodeInspectionStatus.REJECTED_BY_TILE_OR_ENVELOPE)),
+                () -> assertEquals(CandidateInspectionStatus.FINDER_CANDIDATE, acceptedCandidate.status()),
+                () -> assertEquals("true", acceptedCandidate.samplingDiagnostics().get("finderCanonicalized")),
+                () -> assertEquals("3", acceptedCandidate.samplingDiagnostics().get("finderRecoverableCount")),
+                () -> assertEquals(1, cameraInspection.decodedPayloadCount())
+        );
+    }
+
+    @Test
     @DisplayName("Camera-derived scaled display frames can use the encoded layout profile")
     void cameraDerivedScaledDisplayFramesCanUseEncodedLayoutProfile() {
         RenderedTileFixture fixture = renderedTileFixture(18);
@@ -368,6 +467,34 @@ class CaptureMediaTilePayloadSamplerTest {
                 () -> assertEquals(FrameSampleStatus.ACCEPTED, sample.status()),
                 () -> assertEquals(List.of(fixture.payload()), sample.payloads()),
                 () -> assertEquals("debug-low-density", inspection.layoutProfileId()),
+                () -> assertEquals(1, inspection.decodedPayloadCount())
+        );
+    }
+
+    @Test
+    @DisplayName("Camera-derived proportionally scaled display frames can use the encoded layout profile")
+    void cameraDerivedProportionallyScaledDisplayFramesCanUseEncodedLayoutProfile() {
+        RenderedTileFixture fixture = renderedTileFixture(DESKTOP_1080P_SAFE_LAYOUT, 0, 18);
+        NormalizedCaptureFrame scaledFrame = cameraDerivedFrame(
+                scaleNearestTo(
+                        fixture.frame().copyArgbPixels(),
+                        DESKTOP_1080P_SAFE_LAYOUT.frameWidthPx(),
+                        DESKTOP_1080P_SAFE_LAYOUT.frameHeightPx(),
+                        2560,
+                        1440
+                ),
+                2560,
+                1440,
+                "desktop-1440p-balanced"
+        );
+
+        FrameSample sample = sampler.sample(scaledFrame);
+        FrameInspection inspection = sampler.inspect(scaledFrame);
+
+        assertAll(
+                () -> assertEquals(FrameSampleStatus.ACCEPTED, sample.status()),
+                () -> assertEquals(List.of(fixture.payload()), sample.payloads()),
+                () -> assertEquals("desktop-1080p-safe", inspection.layoutProfileId()),
                 () -> assertEquals(1, inspection.decodedPayloadCount())
         );
     }
@@ -471,16 +598,52 @@ class CaptureMediaTilePayloadSamplerTest {
         return new RenderedTileFixture(frame(framePixels), payload, logicalTile);
     }
 
+    private RenderedTileFixture renderedTileFixture(LayoutProfile layoutProfile, int tileIndex, int colorShift) {
+        FixedLayoutPlan layoutPlan = new FixedLayoutPlanner().plan(layoutProfile);
+        TilePayload payload = payload(layoutProfile, tileIndex);
+        byte[] envelope = envelopeCodec.serialize(payload);
+        LogicalTile logicalTile = TileCodecs.defaultEncoder().encode(envelope, TILE_PROFILE);
+        RenderedTile renderedTile = new TileRasterRenderer().render(logicalTile, layoutPlan);
+        int[] framePixels = new int[layoutProfile.frameWidthPx() * layoutProfile.frameHeightPx()];
+        Arrays.fill(framePixels, 0xFF000000);
+        pasteTile(framePixels, layoutProfile.frameWidthPx(), layoutPlan.tilePlacements().get(tileIndex), renderedTile, colorShift);
+        return new RenderedTileFixture(frame(framePixels, layoutProfile), payload, logicalTile);
+    }
+
+    private RenderedTileFixture finderPhaseShiftedTileFixture() {
+        TilePayload payload = payload();
+        byte[] envelope = envelopeCodec.serialize(payload);
+        LogicalTile logicalTile = TileCodecs.defaultEncoder().encode(envelope, TILE_PROFILE);
+        int[] framePixels = new int[CAPTURE_LAYOUT.frameWidthPx() * CAPTURE_LAYOUT.frameHeightPx()];
+        Arrays.fill(framePixels, 0xFF000000);
+        int baseModuleSize = renderedModuleSize(logicalTile);
+        int moduleSizeStep = Math.max(1, baseModuleSize / 12);
+        int compactModuleSize = baseModuleSize - (2 * moduleSizeStep);
+        paintTileBorder(framePixels);
+        paintShiftedTileContent(
+                framePixels,
+                logicalTile,
+                compactModuleSize,
+                -compactModuleSize,
+                2 * compactModuleSize
+        );
+        return new RenderedTileFixture(frame(framePixels), payload, logicalTile);
+    }
+
     private TilePayload payload() {
+        return payload(CAPTURE_LAYOUT, 0);
+    }
+
+    private TilePayload payload(LayoutProfile layoutProfile, int tileIndex) {
         byte[] body = "media-tile-payload".getBytes(StandardCharsets.UTF_8);
         return new TilePayload(
                 1,
                 new SessionId(UUID.fromString("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")),
                 FrameType.DATA,
                 0,
-                new TileIndex(0),
-                CAPTURE_LAYOUT.rows() * CAPTURE_LAYOUT.cols(),
-                CAPTURE_LAYOUT.profileId(),
+                new TileIndex(tileIndex),
+                layoutProfile.rows() * layoutProfile.cols(),
+                layoutProfile.profileId(),
                 PayloadKind.FILE_CHUNK,
                 0,
                 body.length,
@@ -504,13 +667,131 @@ class CaptureMediaTilePayloadSamplerTest {
             int offsetY
     ) {
         TilePlacement placement = LAYOUT_PLAN.tilePlacements().get(0);
-        int destinationX = placement.xPx() + offsetX;
-        int destinationY = placement.yPx() + offsetY;
+        pasteTile(
+                framePixels,
+                CAPTURE_LAYOUT.frameWidthPx(),
+                new TilePlacement(
+                        placement.row(),
+                        placement.col(),
+                        placement.xPx() + offsetX,
+                        placement.yPx() + offsetY,
+                        placement.widthPx(),
+                        placement.heightPx()
+                ),
+                renderedTile,
+                colorShift
+        );
+    }
+
+    private void pasteTile(
+            int[] framePixels,
+            int frameWidthPx,
+            TilePlacement placement,
+            RenderedTile renderedTile,
+            int colorShift
+    ) {
         for (int row = 0; row < renderedTile.heightPixels(); row++) {
             for (int col = 0; col < renderedTile.widthPixels(); col++) {
                 int source = renderedTile.argbPixels().get((row * renderedTile.widthPixels()) + col);
-                framePixels[((destinationY + row) * CAPTURE_LAYOUT.frameWidthPx()) + destinationX + col] =
+                framePixels[((placement.yPx() + row) * frameWidthPx) + placement.xPx() + col] =
                         shiftPaletteColor(source, colorShift);
+            }
+        }
+    }
+
+    private void paintTileBorder(int[] framePixels) {
+        TilePlacement placement = LAYOUT_PLAN.tilePlacements().get(0);
+        int border = LAYOUT_PLAN.separatorThicknessPx();
+        for (int row = 0; row < placement.heightPx(); row++) {
+            for (int col = 0; col < placement.widthPx(); col++) {
+                if (row < border || row >= placement.heightPx() - border
+                        || col < border || col >= placement.widthPx() - border) {
+                    framePixels[((placement.yPx() + row) * CAPTURE_LAYOUT.frameWidthPx()) + placement.xPx() + col] =
+                            0xFFFFFFFF;
+                }
+            }
+        }
+    }
+
+    private void paintShiftedTileContent(
+            int[] framePixels,
+            LogicalTile logicalTile,
+            int moduleSize,
+            int offsetX,
+            int offsetY
+    ) {
+        TilePlacement placement = LAYOUT_PLAN.tilePlacements().get(0);
+        int[] contentOffset = compactContentOffset(logicalTile, moduleSize);
+        int logicalSide = logicalTile.widthModules() + (2 * logicalTile.quietZoneModules());
+        fillRect(
+                framePixels,
+                placement.xPx() + contentOffset[0] + offsetX,
+                placement.yPx() + contentOffset[1] + offsetY,
+                logicalSide * moduleSize,
+                logicalSide * moduleSize,
+                0xFFFFFFFF
+        );
+        for (int row = 0; row < logicalTile.heightModules(); row++) {
+            for (int col = 0; col < logicalTile.widthModules(); col++) {
+                fillRect(
+                        framePixels,
+                        placement.xPx()
+                                + contentOffset[0]
+                                + offsetX
+                                + ((col + logicalTile.quietZoneModules()) * moduleSize),
+                        placement.yPx()
+                                + contentOffset[1]
+                                + offsetY
+                                + ((row + logicalTile.quietZoneModules()) * moduleSize),
+                        moduleSize,
+                        moduleSize,
+                        PALETTE.get(logicalTile.moduleColorAt(row, col))
+                );
+            }
+        }
+    }
+
+    private int[] compactContentOffset(LogicalTile logicalTile, int moduleSize) {
+        int baseModuleSize = renderedModuleSize(logicalTile);
+        int[] baseOffset = centeredContentOffset(logicalTile, baseModuleSize);
+        int logicalSide = logicalTile.widthModules() + (2 * logicalTile.quietZoneModules());
+        double contentCenterX = baseOffset[0] + ((double) logicalSide * baseModuleSize / 2.0d);
+        double contentCenterY = baseOffset[1] + ((double) logicalSide * baseModuleSize / 2.0d);
+        return new int[] {
+                Math.max(0, (int) Math.round(contentCenterX - ((double) logicalSide * moduleSize / 2.0d))),
+                Math.max(0, (int) Math.round(contentCenterY - ((double) logicalSide * moduleSize / 2.0d)))
+        };
+    }
+
+    private int renderedModuleSize(LogicalTile logicalTile) {
+        int border = LAYOUT_PLAN.separatorThicknessPx();
+        int innerWidth = LAYOUT_PLAN.tileSlotWidthPx() - (2 * border);
+        int innerHeight = LAYOUT_PLAN.tileSlotHeightPx() - (2 * border);
+        int logicalSide = logicalTile.widthModules() + (2 * logicalTile.quietZoneModules());
+        return Math.min(innerWidth / logicalSide, innerHeight / logicalSide);
+    }
+
+    private int[] centeredContentOffset(LogicalTile logicalTile, int moduleSize) {
+        int border = LAYOUT_PLAN.separatorThicknessPx();
+        int innerWidth = LAYOUT_PLAN.tileSlotWidthPx() - (2 * border);
+        int innerHeight = LAYOUT_PLAN.tileSlotHeightPx() - (2 * border);
+        int logicalSide = logicalTile.widthModules() + (2 * logicalTile.quietZoneModules());
+        int contentWidth = logicalSide * moduleSize;
+        int contentHeight = logicalSide * moduleSize;
+        return new int[] {
+                border + ((innerWidth - contentWidth) / 2),
+                border + ((innerHeight - contentHeight) / 2)
+        };
+    }
+
+    private void fillRect(int[] framePixels, int startX, int startY, int width, int height, int color) {
+        int left = Math.max(0, startX);
+        int top = Math.max(0, startY);
+        int rightExclusive = Math.min(CAPTURE_LAYOUT.frameWidthPx(), startX + width);
+        int bottomExclusive = Math.min(CAPTURE_LAYOUT.frameHeightPx(), startY + height);
+        for (int y = top; y < bottomExclusive; y++) {
+            for (int x = left; x < rightExclusive; x++) {
+                framePixels[(y * CAPTURE_LAYOUT.frameWidthPx()) + x] = color;
             }
         }
     }
@@ -554,6 +835,44 @@ class CaptureMediaTilePayloadSamplerTest {
                 framePixels[(y * CAPTURE_LAYOUT.frameWidthPx()) + x] = replacementColor;
             }
         }
+    }
+
+    private void mutateFinder(
+            int[] framePixels,
+            LogicalTile logicalTile,
+            int startModuleRow,
+            int startModuleCol,
+            int replacementColorIndex
+    ) {
+        for (int row = startModuleRow; row < startModuleRow + 3; row++) {
+            for (int col = startModuleCol; col < startModuleCol + 3; col++) {
+                paintLogicalModule(framePixels, logicalTile, row, col, PALETTE.get(replacementColorIndex));
+            }
+        }
+    }
+
+    private void paintLogicalModule(
+            int[] framePixels,
+            LogicalTile logicalTile,
+            int moduleRow,
+            int moduleCol,
+            int color
+    ) {
+        TilePlacement placement = LAYOUT_PLAN.tilePlacements().get(0);
+        int moduleSize = renderedModuleSize(logicalTile);
+        int[] contentOffset = centeredContentOffset(logicalTile, moduleSize);
+        fillRect(
+                framePixels,
+                placement.xPx()
+                        + contentOffset[0]
+                        + ((moduleCol + logicalTile.quietZoneModules()) * moduleSize),
+                placement.yPx()
+                        + contentOffset[1]
+                        + ((moduleRow + logicalTile.quietZoneModules()) * moduleSize),
+                moduleSize,
+                moduleSize,
+                color
+        );
     }
 
     private void mutateLogicalModuleCenters(int[] framePixels, LogicalTile logicalTile, int replacementColor) {
@@ -719,18 +1038,22 @@ class CaptureMediaTilePayloadSamplerTest {
     }
 
     private NormalizedCaptureFrame frame(int[] pixels) {
+        return frame(pixels, CAPTURE_LAYOUT);
+    }
+
+    private NormalizedCaptureFrame frame(int[] pixels, LayoutProfile layoutProfile) {
         return new NormalizedCaptureFrame(
                 "tile-source.png",
                 CaptureMediaSourceKind.STILL_IMAGE_FILE,
                 0,
-                CAPTURE_LAYOUT.frameWidthPx(),
-                CAPTURE_LAYOUT.frameHeightPx(),
-                CAPTURE_LAYOUT.frameWidthPx(),
-                CAPTURE_LAYOUT.frameHeightPx(),
+                layoutProfile.frameWidthPx(),
+                layoutProfile.frameHeightPx(),
+                layoutProfile.frameWidthPx(),
+                layoutProfile.frameHeightPx(),
                 "png",
                 "abc123",
-                CAPTURE_LAYOUT.profileId(),
-                FrameCorners.exactFrame(CAPTURE_LAYOUT.frameWidthPx(), CAPTURE_LAYOUT.frameHeightPx()),
+                layoutProfile.profileId(),
+                FrameCorners.exactFrame(layoutProfile.frameWidthPx(), layoutProfile.frameHeightPx()),
                 CaptureMediaQualityMetrics.exactRenderedFrame(),
                 pixels
         );
@@ -781,6 +1104,24 @@ class CaptureMediaTilePayloadSamplerTest {
                         scaledPixels[((targetBaseY + offsetY) * scaledWidth) + targetBaseX + offsetX] = argb;
                     }
                 }
+            }
+        }
+        return scaledPixels;
+    }
+
+    private int[] scaleNearestTo(
+            int[] sourcePixels,
+            int sourceWidth,
+            int sourceHeight,
+            int targetWidth,
+            int targetHeight
+    ) {
+        int[] scaledPixels = new int[targetWidth * targetHeight];
+        for (int targetY = 0; targetY < targetHeight; targetY++) {
+            int sourceY = (int) (((long) targetY * sourceHeight) / targetHeight);
+            for (int targetX = 0; targetX < targetWidth; targetX++) {
+                int sourceX = (int) (((long) targetX * sourceWidth) / targetWidth);
+                scaledPixels[(targetY * targetWidth) + targetX] = sourcePixels[(sourceY * sourceWidth) + sourceX];
             }
         }
         return scaledPixels;

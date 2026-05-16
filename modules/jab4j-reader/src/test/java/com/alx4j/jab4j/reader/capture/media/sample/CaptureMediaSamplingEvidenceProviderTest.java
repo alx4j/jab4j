@@ -36,7 +36,23 @@ class CaptureMediaSamplingEvidenceProviderTest {
             "black",
             "preserveAspect"
     );
+    private static final LayoutProfile SCALED_DESKTOP_1080P_SAFE_LAYOUT = new LayoutProfile(
+            "desktop-1080p-safe",
+            2,
+            2,
+            1280,
+            720,
+            16,
+            32,
+            "solidWhite",
+            43,
+            21,
+            "black",
+            "preserveAspect"
+    );
     private static final FixedLayoutPlan LAYOUT_PLAN = new FixedLayoutPlanner().plan(CAPTURE_LAYOUT);
+    private static final FixedLayoutPlan SCALED_DESKTOP_PLAN =
+            new FixedLayoutPlanner().plan(SCALED_DESKTOP_1080P_SAFE_LAYOUT);
 
     private final CaptureMediaSamplingEvidenceProvider provider = new CaptureMediaSamplingEvidenceProvider();
 
@@ -74,6 +90,22 @@ class CaptureMediaSamplingEvidenceProviderTest {
         Optional<CvSamplingEvidence> evidence = provider.evidenceFor(frame, LAYOUT_PLAN);
 
         assertTrue(evidence.isEmpty());
+    }
+
+    @Test
+    @DisplayName("Camera-derived frames can return evidence for supported alternate scaled layouts")
+    void cameraDerivedFramesCanReturnEvidenceForSupportedAlternateScaledLayouts() {
+        NormalizedCaptureFrame frame = cameraDerivedFrame(
+                syncBandPixels(SCALED_DESKTOP_1080P_SAFE_LAYOUT, SCALED_DESKTOP_PLAN)
+        );
+
+        CvSamplingEvidence evidence = provider.evidenceFor(frame, SCALED_DESKTOP_PLAN).orElseThrow();
+
+        assertAll(
+                () -> assertEquals("reader-normalized-argb", evidence.backendId()),
+                () -> assertTrue(evidence.gridPhase().isPresent()),
+                () -> assertTrue(evidence.confidence() >= 0.55d)
+        );
     }
 
     @Test
@@ -129,17 +161,21 @@ class CaptureMediaSamplingEvidenceProviderTest {
     }
 
     private int[] syncBandPixels() {
-        int[] pixels = new int[CAPTURE_LAYOUT.frameWidthPx() * CAPTURE_LAYOUT.frameHeightPx()];
+        return syncBandPixels(CAPTURE_LAYOUT, LAYOUT_PLAN);
+    }
+
+    private int[] syncBandPixels(LayoutProfile profile, FixedLayoutPlan layoutPlan) {
+        int[] pixels = new int[profile.frameWidthPx() * profile.frameHeightPx()];
         Arrays.fill(pixels, 0xFF000000);
-        int cellWidth = Math.max(8, LAYOUT_PLAN.separatorThicknessPx() * 2);
-        int top = CAPTURE_LAYOUT.outerMarginPx();
-        int bottomExclusive = top + CAPTURE_LAYOUT.topSyncBandPx();
-        int left = CAPTURE_LAYOUT.outerMarginPx();
-        int rightExclusive = CAPTURE_LAYOUT.frameWidthPx() - CAPTURE_LAYOUT.outerMarginPx();
+        int cellWidth = Math.max(8, layoutPlan.separatorThicknessPx() * 2);
+        int top = profile.outerMarginPx();
+        int bottomExclusive = top + profile.topSyncBandPx();
+        int left = profile.outerMarginPx();
+        int rightExclusive = profile.frameWidthPx() - profile.outerMarginPx();
         for (int row = top; row < bottomExclusive; row++) {
             for (int col = left; col < rightExclusive; col++) {
                 int segment = (col - left) / cellWidth;
-                pixels[(row * CAPTURE_LAYOUT.frameWidthPx()) + col] =
+                pixels[(row * profile.frameWidthPx()) + col] =
                         segment % 2 == 0 ? 0xFFFFFFFF : 0xFF000000;
             }
         }

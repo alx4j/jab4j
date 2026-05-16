@@ -32,7 +32,7 @@ final class BoofCvJabEvidenceScorer {
     private static final double MIN_PLAUSIBLE_TOTAL_SCORE = 0.325d;
     private static final double MIN_PLAUSIBLE_BORDER_SCORE = 0.12d;
     private static final double MIN_PLAUSIBLE_SYNC_SCORE = 0.20d;
-    private static final double MIN_PLAUSIBLE_GRID_SCORE = 0.12d;
+    private static final double MIN_PLAUSIBLE_GRID_SCORE = 0.115d;
     private static final double MIN_PLAUSIBLE_STRONG_EVIDENCE_SCORE = 0.28d;
     private static final double MAX_PLAUSIBLE_SKEW_SCORE = 0.65d;
     private static final int MIN_PLAUSIBLE_SOURCE_SHORT_EDGE_PX = 120;

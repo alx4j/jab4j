@@ -84,6 +84,7 @@ class CaptureMediaCandidateDebugExporterTest {
                 () -> assertTrue(metadata.contains("sampler.evidence.tile.0.moduleCenterOffsetXPx=0.5")),
                 () -> assertTrue(metadata.contains("sampler.evidence.metric.gridSharpness=0.73")),
                 () -> assertTrue(metadata.contains("sampler.tileDecode.attemptCount=")),
+                () -> assertTrue(metadata.contains("sampler.layoutProfileId=debug-low-density")),
                 () -> assertTrue(metadata.contains("sampler.envelope.rejectedAttemptCount=")),
                 () -> assertTrue(metadata.contains("sampler.reason.borderNoSignatureSlotCount=2")),
                 () -> assertTrue(metadata.contains("sampler.reason.finderCandidateAttemptCount=0")),

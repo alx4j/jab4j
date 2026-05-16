@@ -254,6 +254,7 @@ public final class CaptureMediaCandidateDebugExporter {
         lines.add("quality.exposureScore=" + frame.qualityMetrics().exposureScore());
         lines.add("quality.colorDistanceScore=" + frame.qualityMetrics().colorDistanceScore());
         lines.add("sampler.candidateAttemptCount=" + inspection.candidateAttemptCount());
+        lines.add("sampler.layoutProfileId=" + inspection.layoutProfileId());
         lines.add("sampler.noFinderAttemptCount=" + inspection.noFinderAttemptCount());
         lines.add("sampler.paletteRejectedAttemptCount=" + inspection.paletteRejectedAttemptCount());
         lines.add("sampler.decodedPayloadCount=" + inspection.decodedPayloadCount());
@@ -371,6 +372,10 @@ public final class CaptureMediaCandidateDebugExporter {
                 lines.add(candidatePrefix + ".decodeStatus=" + candidate.decodeStatus());
                 lines.add(candidatePrefix + ".tileDecode.status=" + candidate.decodeStatus());
                 lines.add(candidatePrefix + ".envelopeValidation.status=" + candidate.decodeStatus());
+                candidate.decodeFailureReason()
+                        .ifPresent(reason -> lines.add(candidatePrefix + ".decodeFailureReason=" + reason));
+                candidate.samplingDiagnostics().forEach((name, value) ->
+                        lines.add(candidatePrefix + ".diagnostic." + name + "=" + value));
                 candidate.paletteConfidence()
                         .ifPresent(confidence -> addPaletteConfidence(lines, candidatePrefix, confidence));
             }

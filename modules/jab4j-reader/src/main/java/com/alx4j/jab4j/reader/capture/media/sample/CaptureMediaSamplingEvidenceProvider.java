@@ -13,6 +13,7 @@ import com.alx4j.jab4j.reader.capture.media.cv.CvSamplingEvidenceProvider;
 import com.alx4j.jab4j.reader.capture.media.normalize.FrameCorners;
 import com.alx4j.jab4j.reader.capture.media.normalize.NormalizedCaptureFrame;
 import com.alx4j.jab4j.reader.capture.media.quality.CaptureMediaQualityMetrics;
+import com.alx4j.jab4j.reader.capture.qualify.CaptureRenderedLayoutCatalog;
 import com.alx4j.jab4j.render.layout.FixedLayoutPlan;
 
 /**
@@ -27,6 +28,24 @@ public final class CaptureMediaSamplingEvidenceProvider implements CvSamplingEvi
     private static final double CAMERA_FRAME_COVERAGE_LIMIT = 0.99d;
     private static final double MIN_EVIDENCE_CONFIDENCE = 0.55d;
     private static final int MAX_PHASE_OFFSET_PX = 8;
+
+    private final CaptureRenderedLayoutCatalog layoutCatalog;
+
+    /**
+     * Creates a reader-owned evidence provider for the current supported capture layout catalog.
+     */
+    public CaptureMediaSamplingEvidenceProvider() {
+        this(new CaptureRenderedLayoutCatalog());
+    }
+
+    /**
+     * Creates a provider with an explicit layout catalog, primarily for focused evidence tests.
+     *
+     * @param layoutCatalog supported rendered layout catalog
+     */
+    public CaptureMediaSamplingEvidenceProvider(CaptureRenderedLayoutCatalog layoutCatalog) {
+        this.layoutCatalog = Objects.requireNonNull(layoutCatalog, "layoutCatalog must not be null");
+    }
 
     /**
      * Estimates sync-band grid phase and local black/white references for one camera-derived normalized frame.
@@ -85,9 +104,17 @@ public final class CaptureMediaSamplingEvidenceProvider implements CvSamplingEvi
 
     private boolean supportedLayout(NormalizedCaptureFrame frame, FixedLayoutPlan layoutPlan) {
         LayoutProfile profile = layoutPlan.profile();
-        return frame.normalizedWidthPixels() == profile.frameWidthPx()
-                && frame.normalizedHeightPixels() == profile.frameHeightPx()
-                && frame.layoutProfileId().equals(profile.profileId());
+        if (frame.normalizedWidthPixels() != profile.frameWidthPx()
+                || frame.normalizedHeightPixels() != profile.frameHeightPx()) {
+            return false;
+        }
+        return supportedCatalogProfile(profile.profileId())
+                && (frame.layoutProfileId().equals(profile.profileId())
+                || supportedCatalogProfile(frame.layoutProfileId()));
+    }
+
+    private boolean supportedCatalogProfile(String profileId) {
+        return layoutCatalog.profiles().stream().anyMatch(profile -> profile.profileId().equals(profileId));
     }
 
     private boolean cameraDerived(NormalizedCaptureFrame frame) {
