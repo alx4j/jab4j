@@ -28,11 +28,12 @@ import com.alx4j.jab4j.reader.capture.media.sample.CaptureMediaTilePayloadSample
 import com.alx4j.jab4j.reader.capture.media.sample.CaptureMediaTilePayloadSampler.SlotInspection;
 
 /**
- * Writes normalized capture candidates and sidecar metadata for visual diagnostics.
+ * Writes normalized capture candidates, module-grid overlays, and sidecar metadata for visual diagnostics.
  */
 public final class CaptureMediaCandidateDebugExporter {
 
     private final CaptureMediaTilePayloadSampler tilePayloadSampler;
+    private final CaptureMediaModuleGridOverlayRenderer overlayRenderer;
     private final String cvBackendId;
     private final String cvBackendVersion;
 
@@ -64,14 +65,29 @@ public final class CaptureMediaCandidateDebugExporter {
             String cvBackendId,
             String cvBackendVersion
     ) {
+        this(
+                tilePayloadSampler,
+                cvBackendId,
+                cvBackendVersion,
+                new CaptureMediaModuleGridOverlayRenderer()
+        );
+    }
+
+    CaptureMediaCandidateDebugExporter(
+            CaptureMediaTilePayloadSampler tilePayloadSampler,
+            String cvBackendId,
+            String cvBackendVersion,
+            CaptureMediaModuleGridOverlayRenderer overlayRenderer
+    ) {
         this.tilePayloadSampler = Objects.requireNonNull(tilePayloadSampler, "tilePayloadSampler");
+        this.overlayRenderer = Objects.requireNonNull(overlayRenderer, "overlayRenderer must not be null");
         requireBackendId(cvBackendId);
         this.cvBackendId = cvBackendId;
         this.cvBackendVersion = Objects.requireNonNull(cvBackendVersion, "cvBackendVersion must not be null");
     }
 
     /**
-     * Exports one normalized candidate as a PNG plus a metadata text file.
+     * Exports one normalized candidate as a PNG, module-grid overlay PNG, and metadata text file.
      *
      * @param frame the normalized candidate to export
      * @param outputDirectory destination directory, created when missing
@@ -104,7 +120,7 @@ public final class CaptureMediaCandidateDebugExporter {
     }
 
     /**
-     * Exports normalized candidates as PNG images plus metadata text files.
+     * Exports normalized candidates as PNG images, module-grid overlay PNGs, and metadata text files.
      *
      * @param frames normalized candidates to export in input order
      * @param outputDirectory destination directory, created when missing
@@ -117,7 +133,8 @@ public final class CaptureMediaCandidateDebugExporter {
     }
 
     /**
-     * Exports normalized candidates as PNG images plus metadata text files with explicit CV backend metadata.
+     * Exports normalized candidates as PNG images, module-grid overlay PNGs, and metadata text files with explicit CV
+     * backend metadata.
      *
      * @param frames normalized candidates to export in input order
      * @param outputDirectory destination directory, created when missing
@@ -160,6 +177,7 @@ public final class CaptureMediaCandidateDebugExporter {
         String baseName = "candidate-%04d".formatted(index);
         Path imagePath = outputDirectory.resolve(baseName + ".png");
         Path metadataPath = outputDirectory.resolve(baseName + ".txt");
+        Path overlayPath = outputDirectory.resolve(baseName + "-grid-overlay.png");
 
         BufferedImage image = new BufferedImage(
                 frame.normalizedWidthPixels(),
@@ -175,17 +193,31 @@ public final class CaptureMediaCandidateDebugExporter {
                 0,
                 frame.normalizedWidthPixels()
         );
-        ImageIO.write(image, "PNG", imagePath.toFile());
+        writePng(image, imagePath);
+
+        FrameInspection inspection = tilePayloadSampler.inspect(frame);
+        writePng(overlayRenderer.render(frame, inspection), overlayPath);
 
         Files.writeString(
                 metadataPath,
-                metadata(frame, tilePayloadSampler.inspect(frame), debugContext),
+                metadata(frame, inspection, debugContext, overlayPath),
                 StandardCharsets.UTF_8
         );
-        return new CandidateDebugExport(imagePath, metadataPath);
+        return new CandidateDebugExport(imagePath, metadataPath, Optional.of(overlayPath));
     }
 
-    private String metadata(NormalizedCaptureFrame frame, FrameInspection inspection, CandidateDebugContext debugContext) {
+    private void writePng(BufferedImage image, Path outputPath) throws IOException {
+        if (!ImageIO.write(image, "PNG", outputPath.toFile())) {
+            throw new IOException("No PNG writer is available for " + outputPath);
+        }
+    }
+
+    private String metadata(
+            NormalizedCaptureFrame frame,
+            FrameInspection inspection,
+            CandidateDebugContext debugContext,
+            Path overlayPath
+    ) {
         FrameCorners corners = frame.frameCorners();
         List<String> lines = new ArrayList<>();
         lines.add("sourceId=" + frame.sourceId());
@@ -194,6 +226,8 @@ public final class CaptureMediaCandidateDebugExporter {
         lines.add("cv.backendId=" + debugContext.cvBackendId());
         lines.add("cv.backendVersion=" + debugContext.cvBackendVersion());
         lines.add("candidate.rank=" + debugContext.rank());
+        lines.add("debug.gridOverlayPath=" + overlayPath.getFileName());
+        addOverlayCounts(lines, inspection);
         addCandidateSourceBounds(lines, corners);
         addCandidateCorners(lines, corners);
         lines.add("formatName=" + frame.formatName());
@@ -244,6 +278,19 @@ public final class CaptureMediaCandidateDebugExporter {
                 .orElse(""));
         lines.add("");
         return String.join(System.lineSeparator(), lines);
+    }
+
+    private void addOverlayCounts(List<String> lines, FrameInspection inspection) {
+        lines.add("overlay.tileSlotCount=" + inspection.slots().size());
+        lines.add("overlay.sideVersionAttemptCount=" + inspection.candidateAttemptCount());
+        lines.add("overlay.candidateAttemptCount=" + inspection.candidateAttemptCount());
+        lines.add("overlay.noFinderAttemptCount=" + inspection.noFinderAttemptCount());
+        lines.add("overlay.paletteRejectedAttemptCount=" + inspection.paletteRejectedAttemptCount());
+        lines.add("overlay.finderCandidateAttemptCount="
+                + candidateStatusCount(inspection, CandidateInspectionStatus.FINDER_CANDIDATE));
+        lines.add("overlay.tileDecodeAttemptCount=" + tileDecodeAttemptCount(inspection));
+        lines.add("overlay.envelope.acceptedPayloadCount=" + inspection.decodedPayloadCount());
+        lines.add("overlay.envelope.rejectedAttemptCount=" + envelopeRejectedAttemptCount(inspection));
     }
 
     private void addCandidateSourceBounds(List<String> lines, FrameCorners corners) {
@@ -479,11 +526,20 @@ public final class CaptureMediaCandidateDebugExporter {
 
     /**
      * Paths produced for one exported normalized candidate.
+     *
+     * @param imagePath normalized candidate PNG path
+     * @param metadataPath sidecar metadata path
+     * @param overlayPath optional module-grid overlay PNG path
      */
-    public record CandidateDebugExport(Path imagePath, Path metadataPath) {
+    public record CandidateDebugExport(Path imagePath, Path metadataPath, Optional<Path> overlayPath) {
+        public CandidateDebugExport(Path imagePath, Path metadataPath) {
+            this(imagePath, metadataPath, Optional.empty());
+        }
+
         public CandidateDebugExport {
             Objects.requireNonNull(imagePath, "imagePath");
             Objects.requireNonNull(metadataPath, "metadataPath");
+            Objects.requireNonNull(overlayPath, "overlayPath");
         }
     }
 

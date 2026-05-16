@@ -20,12 +20,23 @@ import com.alx4j.jab4j.render.layout.TilePlacement;
  */
 final class BoofCvJabEvidenceScorer {
 
+    static final double MIN_FRAME_COVERAGE_RATIO = 0.20d;
+
     private static final double MIN_ASPECT_SCORE = 0.70d;
     private static final double MIN_SIZE_SCORE = 0.45d;
     private static final double MIN_TOTAL_SCORE = 0.395d;
     private static final double MIN_BORDER_SCORE = 0.20d;
     private static final double MIN_SYNC_SCORE = 0.395d;
     private static final double MIN_GRID_SCORE = 0.20d;
+    private static final double MIN_PLAUSIBLE_ASPECT_SCORE = 0.80d;
+    private static final double MIN_PLAUSIBLE_TOTAL_SCORE = 0.325d;
+    private static final double MIN_PLAUSIBLE_BORDER_SCORE = 0.12d;
+    private static final double MIN_PLAUSIBLE_SYNC_SCORE = 0.20d;
+    private static final double MIN_PLAUSIBLE_GRID_SCORE = 0.12d;
+    private static final double MIN_PLAUSIBLE_STRONG_EVIDENCE_SCORE = 0.28d;
+    private static final double MAX_PLAUSIBLE_SKEW_SCORE = 0.65d;
+    private static final int MIN_PLAUSIBLE_SOURCE_SHORT_EDGE_PX = 120;
+    private static final int MIN_PLAUSIBLE_EVIDENCE_FAMILIES = 3;
     private static final double SAME_REGION_IOU = 0.80d;
     private static final int MAX_SYNC_SAMPLES = 48;
     private static final int LIGHT_CONFIDENCE_FLOOR = 160;
@@ -83,8 +94,84 @@ final class BoofCvJabEvidenceScorer {
     List<CvFrameCandidate> distinctEvidenceCandidates(List<CvFrameCandidate> candidates) {
         Objects.requireNonNull(candidates, "candidates must not be null");
         return distinctRegions(candidates.stream()
-                .filter(this::hasMinimumJabEvidence)
+                .filter(this::isStrictEvidence)
                 .toList());
+    }
+
+    /**
+     * Filters candidates to distinct near-miss regions worth validating downstream.
+     *
+     * @param candidates score-ranked source-space candidates
+     * @param strictCandidates already selected strict regions used for IoU suppression
+     * @param limit maximum plausible candidates to return
+     * @return distinct plausible validation candidates
+     */
+    List<CvFrameCandidate> distinctPlausibleValidationCandidates(
+            List<CvFrameCandidate> candidates,
+            List<CvFrameCandidate> strictCandidates,
+            int limit
+    ) {
+        Objects.requireNonNull(candidates, "candidates must not be null");
+        Objects.requireNonNull(strictCandidates, "strictCandidates must not be null");
+        if (limit < 0) {
+            throw new IllegalArgumentException("limit must be non-negative");
+        }
+        List<CvFrameCandidate> distinct = new ArrayList<>();
+        for (CvFrameCandidate candidate : candidates) {
+            if (distinct.size() >= limit) {
+                break;
+            }
+            if (!isPlausibleValidation(candidate)) {
+                continue;
+            }
+            if (overlapsAny(candidate, strictCandidates) || overlapsAny(candidate, distinct)) {
+                continue;
+            }
+            distinct.add(candidate);
+        }
+        return List.copyOf(distinct);
+    }
+
+    /**
+     * Classifies a scored source-space candidate into the BoofCV admission taxonomy.
+     *
+     * @param candidate scored source-space candidate
+     * @return admission band used for diagnostics and candidate selection
+     */
+    AdmissionBand admissionBand(CvFrameCandidate candidate) {
+        Objects.requireNonNull(candidate, "candidate must not be null");
+        if (isStrictEvidence(candidate)) {
+            return AdmissionBand.STRICT_EVIDENCE;
+        }
+        if (isPlausibleValidation(candidate)) {
+            return AdmissionBand.PLAUSIBLE_VALIDATION;
+        }
+        return AdmissionBand.REJECTED;
+    }
+
+    /**
+     * Returns the primary deterministic rejection reason for one scored candidate.
+     *
+     * @param candidate scored source-space candidate
+     * @return rejection reason, or {@link RejectionReason#NONE} when the candidate is admitted
+     */
+    RejectionReason rejectionReason(CvFrameCandidate candidate) {
+        Objects.requireNonNull(candidate, "candidate must not be null");
+        CvCandidateScore score = candidate.score();
+        if (score.frameCoverageRatio() < MIN_FRAME_COVERAGE_RATIO
+                || Math.min(candidate.widthPx(), candidate.heightPx()) < MIN_PLAUSIBLE_SOURCE_SHORT_EDGE_PX) {
+            return RejectionReason.TOO_SMALL;
+        }
+        if (score.layoutAspectScore() < MIN_PLAUSIBLE_ASPECT_SCORE) {
+            return RejectionReason.BAD_ASPECT;
+        }
+        if (score.skewScore() > MAX_PLAUSIBLE_SKEW_SCORE) {
+            return RejectionReason.BAD_PERSPECTIVE;
+        }
+        if (admissionBand(candidate) != AdmissionBand.REJECTED) {
+            return RejectionReason.NONE;
+        }
+        return weakestEvidenceReason(score);
     }
 
     private Optional<ProfileMatch> bestProfileMatch(BoofCvCandidateRegionProposer.CandidateRegion region) {
@@ -269,7 +356,7 @@ final class BoofCvJabEvidenceScorer {
                 placement.xPx() + placement.widthPx() - 1.0d - (border / 2.0d), centerY));
     }
 
-    private boolean hasMinimumJabEvidence(CvFrameCandidate candidate) {
+    private boolean isStrictEvidence(CvFrameCandidate candidate) {
         CvCandidateScore score = candidate.score();
         return score.totalScore() >= MIN_TOTAL_SCORE
                 && score.borderContrastScore() >= MIN_BORDER_SCORE
@@ -278,14 +365,75 @@ final class BoofCvJabEvidenceScorer {
                 && score.layoutAspectScore() >= MIN_ASPECT_SCORE;
     }
 
+    private boolean isPlausibleValidation(CvFrameCandidate candidate) {
+        if (isStrictEvidence(candidate)) {
+            return false;
+        }
+        CvCandidateScore score = candidate.score();
+        return score.totalScore() >= MIN_PLAUSIBLE_TOTAL_SCORE
+                && score.frameCoverageRatio() >= MIN_FRAME_COVERAGE_RATIO
+                && Math.min(candidate.widthPx(), candidate.heightPx()) >= MIN_PLAUSIBLE_SOURCE_SHORT_EDGE_PX
+                && score.layoutAspectScore() >= MIN_PLAUSIBLE_ASPECT_SCORE
+                && score.skewScore() <= MAX_PLAUSIBLE_SKEW_SCORE
+                && plausibleEvidenceFamilyCount(score) >= MIN_PLAUSIBLE_EVIDENCE_FAMILIES
+                && strongestEvidenceFamilyScore(score) >= MIN_PLAUSIBLE_STRONG_EVIDENCE_SCORE;
+    }
+
+    private int plausibleEvidenceFamilyCount(CvCandidateScore score) {
+        int evidenceFamilies = 0;
+        if (score.borderContrastScore() >= MIN_PLAUSIBLE_BORDER_SCORE) {
+            evidenceFamilies++;
+        }
+        if (score.syncBandScore() >= MIN_PLAUSIBLE_SYNC_SCORE) {
+            evidenceFamilies++;
+        }
+        if (score.gridScore() >= MIN_PLAUSIBLE_GRID_SCORE) {
+            evidenceFamilies++;
+        }
+        return evidenceFamilies;
+    }
+
+    private double strongestEvidenceFamilyScore(CvCandidateScore score) {
+        return Math.max(score.borderContrastScore(), Math.max(score.syncBandScore(), score.gridScore()));
+    }
+
+    private RejectionReason weakestEvidenceReason(CvCandidateScore score) {
+        boolean weakBorder = score.borderContrastScore() < MIN_PLAUSIBLE_BORDER_SCORE;
+        boolean weakSync = score.syncBandScore() < MIN_PLAUSIBLE_SYNC_SCORE;
+        boolean weakGrid = score.gridScore() < MIN_PLAUSIBLE_GRID_SCORE;
+        if (weakBorder && score.borderContrastScore() <= score.syncBandScore()
+                && score.borderContrastScore() <= score.gridScore()) {
+            return RejectionReason.WEAK_BORDER;
+        }
+        if (weakSync && score.syncBandScore() <= score.borderContrastScore()
+                && score.syncBandScore() <= score.gridScore()) {
+            return RejectionReason.WEAK_SYNC;
+        }
+        if (weakGrid) {
+            return RejectionReason.WEAK_GRID;
+        }
+        if (score.syncBandScore() < MIN_SYNC_SCORE) {
+            return RejectionReason.WEAK_SYNC;
+        }
+        if (score.gridScore() < MIN_GRID_SCORE) {
+            return RejectionReason.WEAK_GRID;
+        }
+        return RejectionReason.WEAK_BORDER;
+    }
+
     private List<CvFrameCandidate> distinctRegions(List<CvFrameCandidate> candidates) {
         List<CvFrameCandidate> distinct = new ArrayList<>();
         for (CvFrameCandidate candidate : candidates) {
-            if (distinct.stream().noneMatch(existing -> intersectionOverUnion(existing, candidate) >= SAME_REGION_IOU)) {
+            if (!overlapsAny(candidate, distinct)) {
                 distinct.add(candidate);
             }
         }
         return List.copyOf(distinct);
+    }
+
+    private boolean overlapsAny(CvFrameCandidate candidate, List<CvFrameCandidate> existingCandidates) {
+        return existingCandidates.stream()
+                .anyMatch(existing -> intersectionOverUnion(existing, candidate) >= SAME_REGION_IOU);
     }
 
     private double intersectionOverUnion(CvFrameCandidate first, CvFrameCandidate second) {
@@ -390,6 +538,50 @@ final class BoofCvJabEvidenceScorer {
     }
 
     private record SyncScore(double score, double contrastScore) {
+    }
+
+    /**
+     * Numeric BoofCV admission bands exposed through detection metrics.
+     */
+    enum AdmissionBand {
+        REJECTED(0.0d),
+        STRICT_EVIDENCE(1.0d),
+        PLAUSIBLE_VALIDATION(2.0d);
+
+        private final double code;
+
+        AdmissionBand(double code) {
+            this.code = code;
+        }
+
+        double code() {
+            return code;
+        }
+    }
+
+    /**
+     * Numeric BoofCV candidate rejection reasons exposed through detection metrics.
+     */
+    enum RejectionReason {
+        NONE(0.0d),
+        TOO_SMALL(10.0d),
+        WEAK_BORDER(20.0d),
+        WEAK_SYNC(30.0d),
+        WEAK_GRID(40.0d),
+        BAD_ASPECT(50.0d),
+        BAD_PERSPECTIVE(60.0d),
+        DUPLICATE_REGION(70.0d),
+        NO_PLAUSIBLE_PROPOSAL(80.0d);
+
+        private final double code;
+
+        RejectionReason(double code) {
+            this.code = code;
+        }
+
+        double code() {
+            return code;
+        }
     }
 
     private final class EvidenceAccumulator {

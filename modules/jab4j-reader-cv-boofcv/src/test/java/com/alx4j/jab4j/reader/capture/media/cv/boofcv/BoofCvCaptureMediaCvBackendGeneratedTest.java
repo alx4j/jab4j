@@ -63,7 +63,7 @@ class BoofCvCaptureMediaCvBackendGeneratedTest {
                 () -> assertEquals(
                         CvDetectionStatus.REJECTED,
                         result.status(),
-                        scenarioId + " must reject non-JAB generated evidence"
+                        scenarioId + " must reject non-JAB generated evidence: " + result.metrics()
                 ),
                 () -> assertEquals(
                         CaptureMediaDiagnosticCode.SCREEN_OR_FRAME_NOT_FOUND,
@@ -75,6 +75,30 @@ class BoofCvCaptureMediaCvBackendGeneratedTest {
                         scenarioId + " must not expose backend-normalized frames"
                 ),
                 () -> assertAcceptedCandidateCountMetric(scenarioId, result, 0),
+                () -> assertEquals(
+                        0.0d,
+                        result.metrics().get("boofCvStrictEvidenceCandidateCount"),
+                        scenarioId + " must not report strict evidence for non-JAB fixtures"
+                ),
+                () -> assertEquals(
+                        0.0d,
+                        result.metrics().get("boofCvPlausibleValidationCandidateCount"),
+                        scenarioId + " must not admit plausible validation candidates for non-JAB fixtures"
+                ),
+                () -> assertEquals(
+                        result.metrics().get("boofCvScoredCandidateCount"),
+                        result.metrics().get("boofCvRejectedScoredCandidateCount"),
+                        scenarioId + " must count every scored non-JAB candidate as rejected"
+                ),
+                () -> assertEquals(
+                        0.0d,
+                        result.metrics().get("boofCvSelectedAdmissionBandCode"),
+                        scenarioId + " must report rejected selected admission band"
+                ),
+                () -> assertTrue(
+                        result.metrics().get("boofCvSelectedRejectionReasonCode") > 0.0d,
+                        scenarioId + " must report a deterministic rejection reason code"
+                ),
                 () -> assertFiniteMetrics(scenarioId, result.metrics())
         );
     }
@@ -134,6 +158,26 @@ class BoofCvCaptureMediaCvBackendGeneratedTest {
                         scenarioId + " must report deterministic detected candidate count diagnostics"
                 ),
                 () -> assertAcceptedCandidateCountMetric(scenarioId, first, first.candidates().size()),
+                () -> assertEquals(
+                        (double) first.candidates().size(),
+                        first.metrics().get("boofCvStrictEvidenceCandidateCount"),
+                        scenarioId + " must keep generated positives on the strict evidence path"
+                ),
+                () -> assertEquals(
+                        0.0d,
+                        first.metrics().get("boofCvPlausibleValidationCandidateCount"),
+                        scenarioId + " must not downgrade generated positives to plausible validation"
+                ),
+                () -> assertEquals(
+                        1.0d,
+                        first.metrics().get("boofCvSelectedAdmissionBandCode"),
+                        scenarioId + " must report strict selected admission band"
+                ),
+                () -> assertEquals(
+                        0.0d,
+                        first.metrics().get("boofCvSelectedRejectionReasonCode"),
+                        scenarioId + " must not report rejection for accepted strict evidence"
+                ),
                 () -> assertFiniteMetrics(scenarioId, first.metrics()),
                 () -> assertAcceptedCandidates(scenarioId, firstFrame, first)
         );

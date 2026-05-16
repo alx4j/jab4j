@@ -5,6 +5,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.stream.Stream;
 import com.alx4j.jab4j.reader.capture.media.CaptureMediaDiagnosticCode;
 import com.alx4j.jab4j.reader.capture.media.cv.CaptureMediaCvBackend;
 import com.alx4j.jab4j.reader.capture.media.cv.CvBackendIdentity;
@@ -25,7 +26,7 @@ import com.alx4j.jab4j.render.layout.FixedLayoutPlanner;
  */
 public final class BoofCvCaptureMediaCvBackend implements CaptureMediaCvBackend {
 
-    private static final double MIN_FRAME_COVERAGE_RATIO = 0.20d;
+    private static final int MAX_PLAUSIBLE_VALIDATION_CANDIDATES = 2;
     private static final String BACKEND_ID = new String(new char[] { 'b', 'o', 'o', 'f', 'c', 'v' });
     private static final String NOT_FOUND_MESSAGE =
             "Media normalization did not find a clean supported rendered frame region";
@@ -104,18 +105,35 @@ public final class BoofCvCaptureMediaCvBackend implements CaptureMediaCvBackend 
         try {
             BoofCvCandidateRegionProposer.ProposalResult proposal = regionProposer.propose(frame);
             List<CvFrameCandidate> scoredCandidates = evidenceScorer.scoreRegions(frame, proposal.regions());
-            List<CvFrameCandidate> evidenceCandidates = evidenceScorer.distinctEvidenceCandidates(scoredCandidates);
-            Map<String, Double> metrics = metrics(proposal, scoredCandidates, evidenceCandidates);
-            if (evidenceCandidates.isEmpty()) {
+            List<CvFrameCandidate> strictEvidenceCandidates =
+                    evidenceScorer.distinctEvidenceCandidates(scoredCandidates);
+            List<CvFrameCandidate> plausibleValidationCandidates =
+                    evidenceScorer.distinctPlausibleValidationCandidates(
+                            scoredCandidates,
+                            strictEvidenceCandidates,
+                            MAX_PLAUSIBLE_VALIDATION_CANDIDATES
+                    );
+            List<CvFrameCandidate> acceptedStrictCandidates = strictEvidenceCandidates.stream()
+                    .filter(this::hasMinimumFrameCoverage)
+                    .toList();
+            List<CvFrameCandidate> acceptedCandidates = acceptedCandidates(
+                    acceptedStrictCandidates,
+                    plausibleValidationCandidates
+            );
+            Map<String, Double> metrics = metrics(
+                    proposal,
+                    scoredCandidates,
+                    strictEvidenceCandidates,
+                    plausibleValidationCandidates,
+                    acceptedCandidates
+            );
+            if (acceptedCandidates.isEmpty() && strictEvidenceCandidates.isEmpty()) {
                 return rejectedWithCandidates(scoredCandidates, metrics, NOT_FOUND_MESSAGE);
             }
 
-            List<CvFrameCandidate> acceptedCandidates = evidenceCandidates.stream()
-                    .filter(candidate -> candidate.score().frameCoverageRatio() >= MIN_FRAME_COVERAGE_RATIO)
-                    .toList();
             if (acceptedCandidates.isEmpty()) {
                 return CvDetectionResult.tooSmall(
-                        evidenceCandidates,
+                        strictEvidenceCandidates,
                         metrics,
                         "Detected JAB frame region is below the minimum generated coverage threshold"
                 );
@@ -135,14 +153,21 @@ public final class BoofCvCaptureMediaCvBackend implements CaptureMediaCvBackend 
             List<CvNormalizedFrame> normalizedFrames = acceptedCandidates.stream()
                     .map(candidate -> correctPerspective(frame, candidate))
                     .toList();
-            return CvDetectionResult.acceptedNormalizedFrames(normalizedFrames);
+            return new CvDetectionResult(
+                    CvDetectionStatus.ACCEPTED,
+                    List.of(),
+                    normalizedFrames,
+                    Optional.empty(),
+                    metrics,
+                    "CV backend accepted normalized frames"
+            );
         }
         return new CvDetectionResult(
                 CvDetectionStatus.ACCEPTED,
                 acceptedCandidates,
                 List.of(),
                 Optional.empty(),
-                acceptedMetrics(metrics, acceptedCandidates.size()),
+                metrics,
                 "CV backend accepted frame candidates"
         );
     }
@@ -177,12 +202,27 @@ public final class BoofCvCaptureMediaCvBackend implements CaptureMediaCvBackend 
     private Map<String, Double> metrics(
             BoofCvCandidateRegionProposer.ProposalResult proposal,
             List<CvFrameCandidate> scoredCandidates,
-            List<CvFrameCandidate> evidenceCandidates
+            List<CvFrameCandidate> strictEvidenceCandidates,
+            List<CvFrameCandidate> plausibleValidationCandidates,
+            List<CvFrameCandidate> acceptedCandidates
     ) {
         Map<String, Double> metrics = new LinkedHashMap<>(proposal.metrics());
         metrics.put("boofCvScoredCandidateCount", (double) scoredCandidates.size());
-        metrics.put("boofCvJabEvidenceCandidateCount", (double) evidenceCandidates.size());
-        scoredCandidates.stream().findFirst().ifPresent(candidate -> {
+        metrics.put("boofCvJabEvidenceCandidateCount", (double) strictEvidenceCandidates.size());
+        metrics.put("boofCvStrictEvidenceCandidateCount", (double) strictEvidenceCandidates.size());
+        metrics.put("boofCvPlausibleValidationCandidateCount", (double) plausibleValidationCandidates.size());
+        int rejectedCandidateCount = Math.max(
+                0,
+                scoredCandidates.size() - strictEvidenceCandidates.size() - plausibleValidationCandidates.size()
+        );
+        metrics.put("boofCvRejectedScoredCandidateCount", (double) rejectedCandidateCount);
+        metrics.put("boofCvRejectedCandidateCount", (double) rejectedCandidateCount);
+        metrics.put("boofCvAcceptedCandidateCount", (double) acceptedCandidates.size());
+        metrics.put("boofCvSelectedAdmissionBandCode", selectedAdmissionBand(scoredCandidates, acceptedCandidates)
+                .code());
+        metrics.put("boofCvSelectedRejectionReasonCode", selectedRejectionReason(scoredCandidates, acceptedCandidates)
+                .code());
+        selectedCandidate(scoredCandidates, acceptedCandidates).ifPresent(candidate -> {
             metrics.put("boofCvSelectedLeftPx", (double) candidate.sourceLeftPx());
             metrics.put("boofCvSelectedTopPx", (double) candidate.sourceTopPx());
             metrics.put("boofCvSelectedRightExclusivePx", (double) candidate.sourceRightExclusivePx());
@@ -201,9 +241,49 @@ public final class BoofCvCaptureMediaCvBackend implements CaptureMediaCvBackend 
         return Map.copyOf(metrics);
     }
 
-    private Map<String, Double> acceptedMetrics(Map<String, Double> metrics, int acceptedCount) {
-        Map<String, Double> acceptedMetrics = new LinkedHashMap<>(metrics);
-        acceptedMetrics.put("boofCvAcceptedCandidateCount", (double) acceptedCount);
-        return Map.copyOf(acceptedMetrics);
+    private List<CvFrameCandidate> acceptedCandidates(
+            List<CvFrameCandidate> acceptedStrictCandidates,
+            List<CvFrameCandidate> plausibleValidationCandidates
+    ) {
+        return Stream.concat(
+                        acceptedStrictCandidates.stream(),
+                        plausibleValidationCandidates.stream()
+                )
+                .toList();
+    }
+
+    private boolean hasMinimumFrameCoverage(CvFrameCandidate candidate) {
+        return candidate.score().frameCoverageRatio() >= BoofCvJabEvidenceScorer.MIN_FRAME_COVERAGE_RATIO;
+    }
+
+    private BoofCvJabEvidenceScorer.AdmissionBand selectedAdmissionBand(
+            List<CvFrameCandidate> scoredCandidates,
+            List<CvFrameCandidate> acceptedCandidates
+    ) {
+        return selectedCandidate(scoredCandidates, acceptedCandidates)
+                .map(evidenceScorer::admissionBand)
+                .orElse(BoofCvJabEvidenceScorer.AdmissionBand.REJECTED);
+    }
+
+    private BoofCvJabEvidenceScorer.RejectionReason selectedRejectionReason(
+            List<CvFrameCandidate> scoredCandidates,
+            List<CvFrameCandidate> acceptedCandidates
+    ) {
+        if (!acceptedCandidates.isEmpty()) {
+            return BoofCvJabEvidenceScorer.RejectionReason.NONE;
+        }
+        return selectedCandidate(scoredCandidates, acceptedCandidates)
+                .map(evidenceScorer::rejectionReason)
+                .orElse(BoofCvJabEvidenceScorer.RejectionReason.NO_PLAUSIBLE_PROPOSAL);
+    }
+
+    private Optional<CvFrameCandidate> selectedCandidate(
+            List<CvFrameCandidate> scoredCandidates,
+            List<CvFrameCandidate> acceptedCandidates
+    ) {
+        if (!acceptedCandidates.isEmpty()) {
+            return Optional.of(acceptedCandidates.get(0));
+        }
+        return scoredCandidates.stream().findFirst();
     }
 }

@@ -82,7 +82,12 @@ class BoofCvCaptureMediaCvBackendTest {
                 () -> assertEquals(6.0d, result.metrics().get("boofCvInputHeightPixels")),
                 () -> assertEquals(1.0d, result.metrics().get("boofCvConversionCopyCount")),
                 () -> assertEquals(1.0d, result.metrics().get("boofCvGrayscaleConversionCount")),
-                () -> assertTrue(result.metrics().containsKey("boofCvExternalContourCount"))
+                () -> assertTrue(result.metrics().containsKey("boofCvExternalContourCount")),
+                () -> assertEquals(0.0d, result.metrics().get("boofCvStrictEvidenceCandidateCount")),
+                () -> assertEquals(0.0d, result.metrics().get("boofCvPlausibleValidationCandidateCount")),
+                () -> assertEquals(0.0d, result.metrics().get("boofCvRejectedScoredCandidateCount")),
+                () -> assertEquals(0.0d, result.metrics().get("boofCvSelectedAdmissionBandCode")),
+                () -> assertEquals(80.0d, result.metrics().get("boofCvSelectedRejectionReasonCode"))
         );
     }
 
@@ -100,7 +105,52 @@ class BoofCvCaptureMediaCvBackendTest {
                 () -> assertEquals(
                         (double) result.candidates().size(),
                         result.metrics().get("boofCvAcceptedCandidateCount")
-                )
+                ),
+                () -> assertEquals(
+                        (double) result.candidates().size(),
+                        result.metrics().get("boofCvStrictEvidenceCandidateCount")
+                ),
+                () -> assertEquals(0.0d, result.metrics().get("boofCvPlausibleValidationCandidateCount")),
+                () -> assertEquals(1.0d, result.metrics().get("boofCvSelectedAdmissionBandCode")),
+                () -> assertEquals(0.0d, result.metrics().get("boofCvSelectedRejectionReasonCode"))
+        );
+    }
+
+    @Test
+    @DisplayName("Near-miss generated monitor evidence is admitted as bounded plausible validation")
+    void nearMissGeneratedMonitorEvidenceIsAdmittedAsBoundedPlausibleValidation() {
+        CvDetectionResult first = new BoofCvCaptureMediaCvBackend()
+                .detect(syncWeakenedGeneratedMonitorPng());
+        CvDetectionResult second = new BoofCvCaptureMediaCvBackend()
+                .detect(syncWeakenedGeneratedMonitorPng());
+
+        assertAll(
+                () -> assertEquals(CvDetectionStatus.ACCEPTED, first.status()),
+                () -> assertFalse(first.candidates().isEmpty()),
+                () -> assertTrue(first.normalizedFrames().isEmpty()),
+                () -> assertTrue(first.diagnosticCode().isEmpty()),
+                () -> assertEquals(first, second),
+                () -> assertEquals(
+                        0.0d,
+                        first.metrics().get("boofCvStrictEvidenceCandidateCount"),
+                        first.metrics().toString()
+                ),
+                () -> assertEquals(
+                        0.0d,
+                        first.metrics().get("boofCvJabEvidenceCandidateCount"),
+                        first.metrics().toString()
+                ),
+                () -> assertTrue(
+                        first.metrics().get("boofCvPlausibleValidationCandidateCount") >= 1.0d
+                                && first.metrics().get("boofCvPlausibleValidationCandidateCount") <= 2.0d
+                ),
+                () -> assertEquals(
+                        (double) first.candidates().size(),
+                        first.metrics().get("boofCvAcceptedCandidateCount")
+                ),
+                () -> assertEquals(2.0d, first.metrics().get("boofCvSelectedAdmissionBandCode")),
+                () -> assertEquals(0.0d, first.metrics().get("boofCvSelectedRejectionReasonCode")),
+                () -> assertTrue(first.candidates().get(0).score().syncBandScore() < 0.395d)
         );
     }
 
@@ -123,6 +173,10 @@ class BoofCvCaptureMediaCvBackendTest {
                 () -> assertTrue(optInResult.candidates().isEmpty()),
                 () -> assertEquals(defaultResult.candidates().size(), optInResult.normalizedFrames().size()),
                 () -> assertTrue(optInResult.diagnosticCode().isEmpty()),
+                () -> assertEquals(
+                        (double) optInResult.normalizedFrames().size(),
+                        optInResult.metrics().get("boofCvAcceptedCandidateCount")
+                ),
                 () -> assertEquals(acceptedCandidate.layoutProfile(), normalizedFrame.layoutProfile()),
                 () -> assertEquals(acceptedCandidate.frameCorners(), normalizedFrame.frameCorners()),
                 () -> assertEquals(expectedQuality, normalizedFrame.qualityMetrics()),
@@ -136,6 +190,36 @@ class BoofCvCaptureMediaCvBackendTest {
                         0xFF000000,
                         normalizedPixels[normalizedPixels.length - 1] & 0xFF000000
                 )
+        );
+    }
+
+    private MediaInputFrame syncWeakenedGeneratedMonitorPng() {
+        MediaInputFrame source = BoofCvGeneratedFixtureFactory.cameraLikeMonitorPng();
+        int[] pixels = source.copyArgbPixels();
+        int sourceFrameLeft = 210;
+        int sourceFrameTop = 140;
+        int outerMargin = 40;
+        int topSyncBandHeight = 48;
+        int syncCellWidth = 16;
+        int weakenedLightArgb = 0xFFC8C8C8;
+        int weakenedDarkArgb = 0xFF737373;
+        for (int y = sourceFrameTop + outerMargin; y < sourceFrameTop + outerMargin + topSyncBandHeight; y++) {
+            for (int x = sourceFrameLeft + outerMargin;
+                    x < sourceFrameLeft + 1280 - outerMargin;
+                    x++) {
+                int cellIndex = (x - sourceFrameLeft - outerMargin) / syncCellWidth;
+                pixels[(y * source.widthPixels()) + x] = cellIndex % 2 == 0 ? weakenedLightArgb : weakenedDarkArgb;
+            }
+        }
+        return new MediaInputFrame(
+                "CM-MVP7-GENERATED-WEAK-SYNC-MONITOR-PNG.png",
+                source.sourceKind(),
+                source.callerOrder(),
+                source.widthPixels(),
+                source.heightPixels(),
+                source.formatName(),
+                source.pixelSha256() + "-weak-sync",
+                pixels
         );
     }
 
