@@ -216,7 +216,7 @@ class CaptureMediaCorpusFixturesTest {
                 () -> assertEquals(1, result.summary().duplicateMediaFrameCount()),
                 () -> assertTrue(result.summary().rejectedCandidateCount() >= 1),
                 () -> assertTrue(result.summary().decodedTileCount() > 0),
-                () -> assertTrue(result.diagnostics().stream().noneMatch(diagnostic -> diagnostic.blocking())),
+                () -> assertTrue(result.diagnostics().stream().noneMatch(CaptureMediaDiagnostic::blocking)),
                 () -> assertTrue(result.diagnostics().stream().anyMatch(diagnostic ->
                         diagnostic.code() == CaptureMediaDiagnosticCode.COLOR_OR_COMPRESSION_SHIFT
                                 && diagnostic.severity() == CaptureMediaDiagnosticSeverity.WARNING
@@ -321,6 +321,49 @@ class CaptureMediaCorpusFixturesTest {
                 () -> assertTrue(video.mediaFiles().stream().anyMatch(path -> path.getFileName().toString().endsWith(".mp4"))),
                 () -> assertEquals(CaptureMediaCorpusFixtures.EXTERNAL_IPHONE_STILLS, external.scenarioId()),
                 () -> assertEquals("external_private", external.assetAvailability())
+        );
+    }
+
+    @Test
+    @DisplayName("Generated false-positive fixtures remain rejected by media normalization")
+    void generatedFalsePositiveFixturesRemainRejectedByMediaNormalization() throws Exception {
+        GeneratedCaptureMediaFixture brightMonitor = CaptureMediaCorpusFixtures.brightMonitorWithoutJab(tempDir);
+        GeneratedCaptureMediaFixture uiChrome = CaptureMediaCorpusFixtures.uiChromeWithoutJab(tempDir);
+        GeneratedCaptureMediaFixture stripes = CaptureMediaCorpusFixtures.repeatedStripesWithoutJab(tempDir);
+        GeneratedCaptureMediaFixture partial = CaptureMediaCorpusFixtures.partialCroppedFrame(tempDir);
+        CaptureMediaFrameNormalizer normalizer = new CaptureMediaFrameNormalizer();
+
+        MediaNormalizationResult brightResult =
+                normalizer.normalize(mediaInputFrame(brightMonitor.mediaFiles().get(0), "png"));
+        MediaNormalizationResult uiResult =
+                normalizer.normalize(mediaInputFrame(uiChrome.mediaFiles().get(0), "png"));
+        MediaNormalizationResult stripesResult =
+                normalizer.normalize(mediaInputFrame(stripes.mediaFiles().get(0), "png"));
+        MediaNormalizationResult partialResult =
+                normalizer.normalize(mediaInputFrame(partial.mediaFiles().get(0), "png"));
+
+        assertAll(
+                () -> assertEquals(CaptureMediaCorpusFixtures.BRIGHT_MONITOR_WITHOUT_JAB,
+                        brightMonitor.scenarioId()),
+                () -> assertEquals(CaptureMediaCorpusFixtures.UI_CHROME_WITHOUT_JAB, uiChrome.scenarioId()),
+                () -> assertEquals(CaptureMediaCorpusFixtures.REPEATED_STRIPES_WITHOUT_JAB, stripes.scenarioId()),
+                () -> assertEquals(CaptureMediaCorpusFixtures.PARTIAL_CROPPED_FRAME, partial.scenarioId()),
+                () -> assertNotNull(ImageIO.read(brightMonitor.mediaFiles().get(0).toFile())),
+                () -> assertNotNull(ImageIO.read(uiChrome.mediaFiles().get(0).toFile())),
+                () -> assertNotNull(ImageIO.read(stripes.mediaFiles().get(0).toFile())),
+                () -> assertNotNull(ImageIO.read(partial.mediaFiles().get(0).toFile())),
+                () -> assertFalse(brightResult.accepted()),
+                () -> assertFalse(uiResult.accepted()),
+                () -> assertFalse(stripesResult.accepted()),
+                () -> assertFalse(partialResult.accepted()),
+                () -> assertEquals(CaptureMediaDiagnosticCode.SCREEN_OR_FRAME_NOT_FOUND,
+                        brightResult.diagnostics().get(0).code()),
+                () -> assertEquals(CaptureMediaDiagnosticCode.SCREEN_OR_FRAME_NOT_FOUND,
+                        uiResult.diagnostics().get(0).code()),
+                () -> assertEquals(CaptureMediaDiagnosticCode.SCREEN_OR_FRAME_NOT_FOUND,
+                        stripesResult.diagnostics().get(0).code()),
+                () -> assertEquals(CaptureMediaDiagnosticCode.SCREEN_OR_FRAME_NOT_FOUND,
+                        partialResult.diagnostics().get(0).code())
         );
     }
 

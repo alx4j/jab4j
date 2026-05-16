@@ -228,6 +228,46 @@ class BoofCvDependencySmokeTest {
     }
 
     @Test
+    @DisplayName("BoofCV adapter produces deterministic generated monitor evidence")
+    void boofCvAdapterProducesDeterministicGeneratedMonitorEvidence() {
+        BoofCvCaptureMediaCvBackend backend = new BoofCvCaptureMediaCvBackend();
+
+        CvDetectionResult first = backend.detect(generatedCameraLikeFrame("boofcv-deterministic-monitor.png"));
+        CvDetectionResult second = backend.detect(generatedCameraLikeFrame("boofcv-deterministic-monitor.png"));
+
+        assertAll(
+                () -> assertEquals(CvDetectionStatus.ACCEPTED, first.status()),
+                () -> assertEquals(first.status(), second.status()),
+                () -> assertEquals(first.candidates(), second.candidates()),
+                () -> assertEquals(first.normalizedFrames(), second.normalizedFrames()),
+                () -> assertEquals(first.metrics(), second.metrics()),
+                () -> assertEquals(first.message(), second.message())
+        );
+    }
+
+    @Test
+    @DisplayName("BoofCV adapter rejects generated false-positive monitor evidence")
+    void boofCvAdapterRejectsGeneratedFalsePositiveMonitorEvidence() {
+        BoofCvCaptureMediaCvBackend backend = new BoofCvCaptureMediaCvBackend();
+
+        CvDetectionResult brightMonitor =
+                backend.detect(brightMonitorWithoutJabFrame("boofcv-bright-monitor-without-jab.png"));
+        CvDetectionResult uiChrome =
+                backend.detect(uiChromeWithoutJabFrame("boofcv-ui-chrome-without-jab.png"));
+        CvDetectionResult repeatedStripes =
+                backend.detect(repeatedStripesWithoutJabFrame("boofcv-repeated-stripes-without-jab.png"));
+        CvDetectionResult partialFrame =
+                backend.detect(partialCroppedFrame("boofcv-partial-cropped-frame.png"));
+
+        assertAll(
+                () -> assertRejectedFalsePositive(brightMonitor),
+                () -> assertRejectedFalsePositive(uiChrome),
+                () -> assertRejectedFalsePositive(repeatedStripes),
+                () -> assertRejectedFalsePositive(partialFrame)
+        );
+    }
+
+    @Test
     @DisplayName("BoofCV backend can explicitly return perspective-corrected normalized frames")
     void boofCvBackendCanExplicitlyReturnPerspectiveCorrectedNormalizedFrames() {
         CvDetectionResult result = BoofCvCaptureMediaCvBackend.withPerspectiveCorrection()
@@ -603,6 +643,103 @@ class BoofCvDependencySmokeTest {
                 }
             }
         }
+    }
+
+    private MediaInputFrame brightMonitorWithoutJabFrame(String sourceId) {
+        int[] canvas = monitorLikeCanvas();
+        fillRect(canvas, GENERATED_INSET_X, GENERATED_INSET_Y, DEBUG_FRAME_WIDTH, DEBUG_FRAME_HEIGHT, 0xFFF4F7FA);
+        fillRect(canvas, 160, 150, 1120, 72, 0xFFDCE3EA);
+        fillRect(canvas, 160, 290, 500, 240, 0xFFCAD3DC);
+        fillRect(canvas, 740, 290, 500, 240, 0xFFCAD3DC);
+        return mediaInputFrame(sourceId, canvas);
+    }
+
+    private MediaInputFrame uiChromeWithoutJabFrame(String sourceId) {
+        int[] canvas = monitorLikeCanvas();
+        fillRect(canvas, GENERATED_INSET_X, GENERATED_INSET_Y, DEBUG_FRAME_WIDTH, DEBUG_FRAME_HEIGHT, 0xFFEEF2F5);
+        fillRect(canvas, GENERATED_INSET_X, GENERATED_INSET_Y, DEBUG_FRAME_WIDTH, 56, 0xFF26313A);
+        for (int row = 0; row < 4; row++) {
+            int top = 220 + (row * 128);
+            fillRect(canvas, 150, top, 1020, 54, 0xFFB9C4CE);
+            fillRect(canvas, 150, top + 76, 760, 22, 0xFFB9C4CE);
+        }
+        return mediaInputFrame(sourceId, canvas);
+    }
+
+    private MediaInputFrame repeatedStripesWithoutJabFrame(String sourceId) {
+        int[] canvas = monitorLikeCanvas();
+        fillRect(canvas, GENERATED_INSET_X, GENERATED_INSET_Y, DEBUG_FRAME_WIDTH, DEBUG_FRAME_HEIGHT, 0xFF11161B);
+        for (int col = 0; col < 72; col++) {
+            fillRect(canvas, 140 + (col * 14), 160, 9, 520, col % 2 == 0 ? WHITE : BLACK);
+        }
+        for (int row = 0; row < 8; row++) {
+            fillRect(canvas, 150, 170 + (row * 62), 1120, 6, 0xFFE8EDF2);
+        }
+        return mediaInputFrame(sourceId, canvas);
+    }
+
+    private MediaInputFrame partialCroppedFrame(String sourceId) {
+        LayoutProfile profile = debugProfile();
+        FixedLayoutPlan layoutPlan = layoutPlanner.plan(profile);
+        int[] rendered = renderedFramePixels(profile, layoutPlan);
+        int[] canvas = monitorLikeCanvas();
+        pasteClipped(rendered, profile.frameWidthPx(), profile.frameHeightPx(), canvas, -180, GENERATED_INSET_Y);
+        return mediaInputFrame(sourceId, canvas);
+    }
+
+    private int[] monitorLikeCanvas() {
+        int[] canvas = blankCanvas(GENERATED_CANVAS_WIDTH, GENERATED_CANVAS_HEIGHT);
+        fillRect(canvas, 48, 42, GENERATED_CANVAS_WIDTH - 96, GENERATED_CANVAS_HEIGHT - 84, 0xFF15191D);
+        fillRect(canvas, 78, 70, GENERATED_CANVAS_WIDTH - 156, GENERATED_CANVAS_HEIGHT - 140, 0xFF242A31);
+        return canvas;
+    }
+
+    private MediaInputFrame mediaInputFrame(String sourceId, int[] pixels) {
+        return new MediaInputFrame(
+                sourceId,
+                CaptureMediaSourceKind.STILL_IMAGE_FILE,
+                0,
+                GENERATED_CANVAS_WIDTH,
+                GENERATED_CANVAS_HEIGHT,
+                "png",
+                "source-hash",
+                pixels
+        );
+    }
+
+    private void pasteClipped(
+            int[] source,
+            int sourceWidth,
+            int sourceHeight,
+            int[] canvas,
+            int insetX,
+            int insetY
+    ) {
+        for (int row = 0; row < sourceHeight; row++) {
+            int destinationY = insetY + row;
+            if (destinationY < 0 || destinationY >= GENERATED_CANVAS_HEIGHT) {
+                continue;
+            }
+            for (int col = 0; col < sourceWidth; col++) {
+                int destinationX = insetX + col;
+                if (destinationX < 0 || destinationX >= GENERATED_CANVAS_WIDTH) {
+                    continue;
+                }
+                canvas[(destinationY * GENERATED_CANVAS_WIDTH) + destinationX] =
+                        source[(row * sourceWidth) + col];
+            }
+        }
+    }
+
+    private void assertRejectedFalsePositive(CvDetectionResult result) {
+        assertAll(
+                () -> assertEquals(CvDetectionStatus.REJECTED, result.status()),
+                () -> assertEquals(Optional.of(CaptureMediaDiagnosticCode.SCREEN_OR_FRAME_NOT_FOUND),
+                        result.diagnosticCode()),
+                () -> assertTrue(result.normalizedFrames().isEmpty()),
+                () -> assertEquals(0.0d, result.metrics().get("boofCvJabEvidenceCandidateCount")),
+                () -> assertTrue(result.metrics().containsKey("boofCvExternalContourCount"))
+        );
     }
 
     private int[] blankCanvas(int canvasWidth, int canvasHeight) {

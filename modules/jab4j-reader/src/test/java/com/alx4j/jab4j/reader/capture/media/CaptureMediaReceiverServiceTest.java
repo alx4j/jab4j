@@ -93,7 +93,7 @@ class CaptureMediaReceiverServiceTest {
     @DisplayName("Readable JPEG with unsupported dimensions is rejected as no recoverable frame")
     void readableJpegWithUnsupportedDimensionsIsRejectedAsNoRecoverableFrame() throws Exception {
         Path image = tempDir.resolve("uncropped-photo.JPG");
-        writeJpeg(image, 320, 240);
+        writeJpeg(image);
 
         CaptureMediaReceiverResult result =
                 service.evaluate(CaptureMediaReceiverRequest.evaluateStillImages(List.of(image)));
@@ -132,9 +132,17 @@ class CaptureMediaReceiverServiceTest {
                 () -> assertTrue(Files.isRegularFile(candidateImage)),
                 () -> assertTrue(Files.isRegularFile(candidateMetadata)),
                 () -> assertTrue(metadata.contains("sourceId=" + image.toAbsolutePath().normalize())),
+                () -> assertTrue(metadata.contains("cv.backendId=legacy")),
+                () -> assertTrue(metadata.contains("candidate.rank=1")),
+                () -> assertTrue(metadata.contains("candidate.sourceBounds.leftPx=0.0")),
+                () -> assertTrue(metadata.contains("candidate.corners.bottomRightX=1280.0")),
+                () -> assertTrue(metadata.contains("perspective.skewScore=0.0")),
                 () -> assertTrue(metadata.contains("layoutProfileId=debug-low-density")),
                 () -> assertTrue(metadata.contains("sampler.candidateAttemptCount=")),
-                () -> assertTrue(metadata.contains("sampler.decodedPayloadCount="))
+                () -> assertTrue(metadata.contains("sampler.decodedPayloadCount=")),
+                () -> assertTrue(metadata.contains("sampler.tileDecode.attemptCount=")),
+                () -> assertTrue(metadata.contains("sampler.envelope.acceptedPayloadCount=")),
+                () -> assertTrue(metadata.contains("diagnostic.selectedPublicCode=SCREEN_OR_FRAME_NOT_FOUND"))
         );
     }
 
@@ -143,8 +151,8 @@ class CaptureMediaReceiverServiceTest {
         ImageIO.write(image, "png", output.toFile());
     }
 
-    private void writeJpeg(Path output, int width, int height) throws Exception {
-        BufferedImage image = new BufferedImage(width, height, BufferedImage.TYPE_INT_RGB);
+    private void writeJpeg(Path output) throws Exception {
+        BufferedImage image = new BufferedImage(320, 240, BufferedImage.TYPE_INT_RGB);
         if (!ImageIO.write(image, "jpeg", output.toFile())) {
             throw new IllegalStateException("No JPEG ImageIO writer is available");
         }

@@ -5,6 +5,9 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.awt.image.BufferedImage;
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.List;
@@ -13,6 +16,7 @@ import java.util.Optional;
 import java.util.OptionalInt;
 import java.util.UUID;
 import java.util.zip.CRC32C;
+import javax.imageio.ImageIO;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import com.alx4j.jab4j.api.model.FrameType;
@@ -179,6 +183,67 @@ class CaptureMediaTilePayloadSamplerTest {
                 () -> assertEquals(CaptureMediaDiagnosticSeverity.WARNING, sample.diagnostics().get(0).severity()),
                 () -> assertTrue(sample.paletteConfidence().orElseThrow().lowConfidenceSampleCount() > 0),
                 () -> assertEquals(1, inspection.decodedPayloadCount())
+        );
+    }
+
+    @Test
+    @DisplayName("JPEG-compressed camera-derived tile payloads decode with shifted palette metrics")
+    void jpegCompressedCameraDerivedTilePayloadsDecodeWithShiftedPaletteMetrics() throws Exception {
+        RenderedTileFixture fixture = renderedTileFixture(0);
+        NormalizedCaptureFrame jpegFrame = cameraDerivedFrame(jpegRoundTrip(fixture.frame().copyArgbPixels()));
+
+        FrameSample sample = sampler.sample(jpegFrame);
+        FrameInspection inspection = sampler.inspect(jpegFrame);
+
+        assertAll(
+                () -> assertEquals(FrameSampleStatus.ACCEPTED, sample.status()),
+                () -> assertEquals(List.of(fixture.payload()), sample.payloads()),
+                () -> assertTrue(sample.diagnostics().stream().noneMatch(CaptureMediaDiagnostic::blocking)),
+                () -> assertTrue(sample.paletteConfidence().orElseThrow().shiftedSampleCount() > 0),
+                () -> assertTrue(sample.paletteConfidence().orElseThrow().maximumRgbDistance() > 0.0d),
+                () -> assertEquals(1, inspection.decodedPayloadCount())
+        );
+    }
+
+    @Test
+    @DisplayName("Local white-balance drift decodes only with low-confidence warnings")
+    void localWhiteBalanceDriftDecodesOnlyWithLowConfidenceWarnings() {
+        RenderedTileFixture fixture = renderedTileFixture(0);
+        NormalizedCaptureFrame cameraFrame = cameraDerivedFrame(whiteBalancedPixels(fixture.frame().copyArgbPixels()));
+
+        FrameSample sample = sampler.sample(cameraFrame);
+        FrameInspection inspection = sampler.inspect(cameraFrame);
+
+        assertAll(
+                () -> assertEquals(FrameSampleStatus.ACCEPTED, sample.status()),
+                () -> assertEquals(List.of(fixture.payload()), sample.payloads()),
+                () -> assertEquals(CaptureMediaDiagnosticCode.COLOR_OR_COMPRESSION_SHIFT,
+                        sample.diagnostics().get(0).code()),
+                () -> assertEquals(CaptureMediaDiagnosticSeverity.WARNING, sample.diagnostics().get(0).severity()),
+                () -> assertTrue(sample.paletteConfidence().orElseThrow().lowConfidenceSampleCount() > 0),
+                () -> assertEquals(BorderInspectionStatus.SIGNATURE, inspection.slots().get(0).borderStatus()),
+                () -> assertEquals(1, inspection.decodedPayloadCount())
+        );
+    }
+
+    @Test
+    @DisplayName("Low-contrast tile evidence is rejected before tile decode")
+    void lowContrastTileEvidenceIsRejectedBeforeTileDecode() {
+        RenderedTileFixture fixture = renderedTileFixture(0);
+        NormalizedCaptureFrame lowContrastFrame = frame(lowContrastPixels(fixture.frame().copyArgbPixels()));
+
+        FrameSample sample = sampler.sample(lowContrastFrame);
+        FrameInspection inspection = sampler.inspect(lowContrastFrame);
+        CaptureMediaDiagnostic diagnostic = sample.diagnostics().get(0);
+
+        assertAll(
+                () -> assertEquals(FrameSampleStatus.REJECTED, sample.status()),
+                () -> assertTrue(sample.payloads().isEmpty()),
+                () -> assertEquals(CaptureMediaDiagnosticCode.COLOR_OR_COMPRESSION_SHIFT, diagnostic.code()),
+                () -> assertEquals(CaptureMediaDiagnosticSeverity.ERROR, diagnostic.severity()),
+                () -> assertTrue(diagnostic.blocking()),
+                () -> assertEquals(BorderInspectionStatus.PALETTE_REJECTED, inspection.slots().get(0).borderStatus()),
+                () -> assertEquals(0, inspection.decodedPayloadCount())
         );
     }
 
@@ -408,6 +473,78 @@ class CaptureMediaTilePayloadSamplerTest {
                 }
             }
         }
+    }
+
+    private int[] jpegRoundTrip(int[] pixels) throws Exception {
+        BufferedImage source = new BufferedImage(
+                CAPTURE_LAYOUT.frameWidthPx(),
+                CAPTURE_LAYOUT.frameHeightPx(),
+                BufferedImage.TYPE_INT_RGB
+        );
+        source.setRGB(
+                0,
+                0,
+                CAPTURE_LAYOUT.frameWidthPx(),
+                CAPTURE_LAYOUT.frameHeightPx(),
+                pixels,
+                0,
+                CAPTURE_LAYOUT.frameWidthPx()
+        );
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        if (!ImageIO.write(source, "jpeg", output)) {
+            throw new IllegalStateException("No JPEG ImageIO writer is available");
+        }
+        BufferedImage decoded = ImageIO.read(new ByteArrayInputStream(output.toByteArray()));
+        return decoded.getRGB(
+                0,
+                0,
+                CAPTURE_LAYOUT.frameWidthPx(),
+                CAPTURE_LAYOUT.frameHeightPx(),
+                null,
+                0,
+                CAPTURE_LAYOUT.frameWidthPx()
+        );
+    }
+
+    private int[] whiteBalancedPixels(int[] pixels) {
+        int[] shifted = Arrays.copyOf(pixels, pixels.length);
+        for (int index = 0; index < shifted.length; index++) {
+            shifted[index] = whiteBalancedColor(shifted[index]);
+        }
+        return shifted;
+    }
+
+    private int whiteBalancedColor(int argb) {
+        int red = whiteBalanceChannel((argb >>> 16) & 0xFF, 32, -12);
+        int green = whiteBalanceChannel((argb >>> 8) & 0xFF, 22, -7);
+        int blue = whiteBalanceChannel(argb & 0xFF, 12, 10);
+        return 0xFF000000 | (red << 16) | (green << 8) | blue;
+    }
+
+    private int whiteBalanceChannel(int value, int floorLift, int brightShift) {
+        return value < 128
+                ? clamp(value + floorLift, 0, 255)
+                : clamp(value + brightShift, 0, 255);
+    }
+
+    private int[] lowContrastPixels(int[] pixels) {
+        int[] shifted = Arrays.copyOf(pixels, pixels.length);
+        for (int index = 0; index < shifted.length; index++) {
+            int argb = shifted[index];
+            int red = lowContrastChannel((argb >>> 16) & 0xFF);
+            int green = lowContrastChannel((argb >>> 8) & 0xFF);
+            int blue = lowContrastChannel(argb & 0xFF);
+            shifted[index] = 0xFF000000 | (red << 16) | (green << 8) | blue;
+        }
+        return shifted;
+    }
+
+    private int lowContrastChannel(int value) {
+        return clamp(96 + (value / 4), 0, 255);
+    }
+
+    private int clamp(int value, int min, int max) {
+        return Math.max(min, Math.min(max, value));
     }
 
     private NormalizedCaptureFrame frame(int[] pixels) {
