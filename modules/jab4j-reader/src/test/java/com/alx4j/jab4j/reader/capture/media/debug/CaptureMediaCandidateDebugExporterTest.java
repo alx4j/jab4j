@@ -1,8 +1,11 @@
 package com.alx4j.jab4j.reader.capture.media.debug;
 
 import static org.junit.jupiter.api.Assertions.assertAll;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.awt.image.BufferedImage;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Arrays;
@@ -10,6 +13,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalInt;
+import javax.imageio.ImageIO;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -92,6 +96,44 @@ class CaptureMediaCandidateDebugExporterTest {
     }
 
     @Test
+    @DisplayName("Export writes deterministic grid overlay artifact and compact overlay sidecar counts")
+    void exportWritesDeterministicGridOverlayArtifactAndCompactOverlaySidecarCounts() throws Exception {
+        CaptureMediaCandidateDebugExporter exporter = new CaptureMediaCandidateDebugExporter(
+                new CaptureMediaTilePayloadSampler((frame, layoutPlan) -> Optional.of(samplingEvidence()))
+        );
+        NormalizedCaptureFrame frame = signedCameraDerivedFrame();
+
+        CaptureMediaCandidateDebugExporter.CandidateDebugExport exported = exporter.export(frame, tempDir);
+
+        Path overlayPath = tempDir.resolve("candidate-0000-grid-overlay.png");
+        BufferedImage candidateImage = ImageIO.read(exported.imagePath().toFile());
+        BufferedImage overlayImage = ImageIO.read(overlayPath.toFile());
+        String metadata = Files.readString(exported.metadataPath());
+        assertAll(
+                () -> assertEquals(Optional.of(overlayPath), exported.overlayPath()),
+                () -> assertTrue(Files.isRegularFile(exported.imagePath())),
+                () -> assertTrue(Files.isRegularFile(exported.metadataPath())),
+                () -> assertTrue(Files.isRegularFile(overlayPath)),
+                () -> assertTrue(Files.size(overlayPath) > 0L),
+                () -> assertNotNull(candidateImage),
+                () -> assertNotNull(overlayImage),
+                () -> assertEquals(FRAME_WIDTH, overlayImage.getWidth()),
+                () -> assertEquals(FRAME_HEIGHT, overlayImage.getHeight()),
+                () -> assertTrue(imagesDiffer(candidateImage, overlayImage)),
+                () -> assertTrue(metadata.contains("debug.gridOverlayPath=candidate-0000-grid-overlay.png")),
+                () -> assertTrue(metadata.contains("overlay.tileSlotCount=2")),
+                () -> assertTrue(metadata.contains("overlay.sideVersionAttemptCount=")),
+                () -> assertTrue(metadata.contains("overlay.candidateAttemptCount=")),
+                () -> assertTrue(metadata.contains("overlay.noFinderAttemptCount=")),
+                () -> assertTrue(metadata.contains("overlay.paletteRejectedAttemptCount=")),
+                () -> assertTrue(metadata.contains("overlay.finderCandidateAttemptCount=")),
+                () -> assertTrue(metadata.contains("overlay.tileDecodeAttemptCount=")),
+                () -> assertTrue(metadata.contains("overlay.envelope.acceptedPayloadCount=")),
+                () -> assertTrue(metadata.contains("overlay.envelope.rejectedAttemptCount="))
+        );
+    }
+
+    @Test
     @DisplayName("Sidecar includes deterministic sampler geometry for camera-derived signed candidates")
     void sidecarIncludesDeterministicSamplerGeometryForCameraDerivedSignedCandidates() throws Exception {
         CaptureMediaCandidateDebugExporter exporter = new CaptureMediaCandidateDebugExporter(
@@ -136,6 +178,22 @@ class CaptureMediaCandidateDebugExporterTest {
                 () -> assertTrue(metadata.contains("sampler.gridPhase.available=true")),
                 () -> assertTrue(metadata.contains("sampler.evidence.metric.readerSamplingEvidenceConfidence="))
         );
+    }
+
+    private boolean imagesDiffer(BufferedImage first, BufferedImage second) {
+        if (first == null || second == null
+                || first.getWidth() != second.getWidth()
+                || first.getHeight() != second.getHeight()) {
+            return false;
+        }
+        for (int y = 0; y < first.getHeight(); y++) {
+            for (int x = 0; x < first.getWidth(); x++) {
+                if (first.getRGB(x, y) != second.getRGB(x, y)) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     private NormalizedCaptureFrame normalizedFrame() {

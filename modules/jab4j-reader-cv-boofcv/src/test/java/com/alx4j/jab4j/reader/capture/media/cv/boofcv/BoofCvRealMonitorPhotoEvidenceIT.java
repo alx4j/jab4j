@@ -202,7 +202,12 @@ final class BoofCvRealMonitorPhotoEvidenceIT {
                 "boofCvProposedRegions",
                 "boofCvScoredCandidates",
                 "boofCvEvidenceCandidates",
+                "boofCvStrictEvidenceCandidates",
+                "boofCvPlausibleValidationCandidates",
+                "boofCvRejectedScoredCandidates",
                 "boofCvAcceptedCandidates",
+                "boofCvSelectedAdmissionBandCode",
+                "boofCvSelectedRejectionReasonCode",
                 "boofCvSelectedCandidateScore",
                 "boofCvSelectedSyncBandScore",
                 "boofCvSelectedGridScore",
@@ -223,6 +228,7 @@ final class BoofCvRealMonitorPhotoEvidenceIT {
                 "samplerEnvelopeAcceptedPayloads",
                 "samplerEnvelopeRejectedAttempts",
                 "samplerSelectedPublicDiagnostic",
+                "debugGridOverlayCount",
                 "primaryDiagnostic",
                 "primaryDiagnosticMessage",
                 "diagnostics",
@@ -245,7 +251,12 @@ final class BoofCvRealMonitorPhotoEvidenceIT {
                     Integer.toString(row.boofCvProposedRegionCount),
                     Integer.toString(row.boofCvScoredCandidateCount),
                     Integer.toString(row.boofCvEvidenceCandidateCount),
+                    Integer.toString(row.boofCvStrictEvidenceCandidateCount),
+                    Integer.toString(row.boofCvPlausibleValidationCandidateCount),
+                    Integer.toString(row.boofCvRejectedScoredCandidateCount),
                     Integer.toString(row.boofCvAcceptedCandidateCount),
+                    row.boofCvSelectedAdmissionBandCode,
+                    row.boofCvSelectedRejectionReasonCode,
                     row.boofCvSelectedCandidateScore,
                     row.boofCvSelectedSyncBandScore,
                     row.boofCvSelectedGridScore,
@@ -266,6 +277,7 @@ final class BoofCvRealMonitorPhotoEvidenceIT {
                     Integer.toString(row.samplerEvidence.envelopeAcceptedPayloadCount()),
                     Integer.toString(row.samplerEvidence.envelopeRejectedAttemptCount()),
                     row.samplerEvidence.selectedPublicDiagnostic(),
+                    Integer.toString(row.samplerEvidence.gridOverlayCount()),
                     row.primaryDiagnosticCode,
                     tsvValue(row.primaryDiagnosticMessage),
                     row.diagnosticCodes,
@@ -359,7 +371,12 @@ final class BoofCvRealMonitorPhotoEvidenceIT {
             int boofCvProposedRegionCount,
             int boofCvScoredCandidateCount,
             int boofCvEvidenceCandidateCount,
+            int boofCvStrictEvidenceCandidateCount,
+            int boofCvPlausibleValidationCandidateCount,
+            int boofCvRejectedScoredCandidateCount,
             int boofCvAcceptedCandidateCount,
+            String boofCvSelectedAdmissionBandCode,
+            String boofCvSelectedRejectionReasonCode,
             String boofCvSelectedCandidateScore,
             String boofCvSelectedSyncBandScore,
             String boofCvSelectedGridScore,
@@ -408,7 +425,12 @@ final class BoofCvRealMonitorPhotoEvidenceIT {
                     boofCvProbe.proposedRegionCount(),
                     boofCvProbe.scoredCandidateCount(),
                     boofCvProbe.evidenceCandidateCount(),
+                    boofCvProbe.strictEvidenceCandidateCount(),
+                    boofCvProbe.plausibleValidationCandidateCount(),
+                    boofCvProbe.rejectedScoredCandidateCount(),
                     boofCvProbe.acceptedCandidateCount(),
+                    boofCvProbe.selectedAdmissionBandCode(),
+                    boofCvProbe.selectedRejectionReasonCode(),
                     boofCvProbe.selectedCandidateScore(),
                     boofCvProbe.selectedSyncBandScore(),
                     boofCvProbe.selectedGridScore(),
@@ -493,11 +515,12 @@ final class BoofCvRealMonitorPhotoEvidenceIT {
             int tileDecodeAttemptCount,
             int envelopeAcceptedPayloadCount,
             int envelopeRejectedAttemptCount,
-            String selectedPublicDiagnostic
+            String selectedPublicDiagnostic,
+            int gridOverlayCount
     ) {
 
         private static SamplerEvidence empty() {
-            return new SamplerEvidence(0, 0, 0, 0, 0, 0, 0, "");
+            return new SamplerEvidence(0, 0, 0, 0, 0, 0, 0, "", 0);
         }
 
         private static SamplerEvidence from(Path debugOutputPath) {
@@ -514,6 +537,7 @@ final class BoofCvRealMonitorPhotoEvidenceIT {
             } catch (IOException exception) {
                 return empty();
             }
+            int gridOverlayCount = gridOverlayCount(debugOutputPath);
             int candidateAttempts = 0;
             int noFinderAttempts = 0;
             int paletteRejectedAttempts = 0;
@@ -544,8 +568,20 @@ final class BoofCvRealMonitorPhotoEvidenceIT {
                     tileDecodeAttempts,
                     envelopeAcceptedPayloads,
                     envelopeRejectedAttempts,
-                    selectedDiagnostics.isEmpty() ? "" : String.join(",", selectedDiagnostics)
+                    selectedDiagnostics.isEmpty() ? "" : String.join(",", selectedDiagnostics),
+                    gridOverlayCount
             );
+        }
+
+        private static int gridOverlayCount(Path debugOutputPath) {
+            try (Stream<Path> stream = Files.walk(debugOutputPath)) {
+                return (int) stream
+                        .filter(Files::isRegularFile)
+                        .filter(path -> path.getFileName().toString().endsWith("-grid-overlay.png"))
+                        .count();
+            } catch (IOException exception) {
+                return 0;
+            }
         }
 
         private static boolean candidateSidecar(Path path) {
@@ -582,7 +618,12 @@ final class BoofCvRealMonitorPhotoEvidenceIT {
             int proposedRegionCount,
             int scoredCandidateCount,
             int evidenceCandidateCount,
+            int strictEvidenceCandidateCount,
+            int plausibleValidationCandidateCount,
+            int rejectedScoredCandidateCount,
             int acceptedCandidateCount,
+            String selectedAdmissionBandCode,
+            String selectedRejectionReasonCode,
             String selectedCandidateScore,
             String selectedSyncBandScore,
             String selectedGridScore,
@@ -591,11 +632,11 @@ final class BoofCvRealMonitorPhotoEvidenceIT {
     ) {
 
         private static BoofCvProbe noReadableFrame() {
-            return new BoofCvProbe("NO_READABLE_FRAME", 0, 0, 0, 0, "", "", "", "", "");
+            return new BoofCvProbe("NO_READABLE_FRAME", 0, 0, 0, 0, 0, 0, 0, "", "", "", "", "", "", "");
         }
 
         private static BoofCvProbe failed(String failureKind) {
-            return new BoofCvProbe("PROBE_FAILED:" + failureKind, 0, 0, 0, 0, "", "", "", "", "");
+            return new BoofCvProbe("PROBE_FAILED:" + failureKind, 0, 0, 0, 0, 0, 0, 0, "", "", "", "", "", "", "");
         }
 
         private static BoofCvProbe from(CvDetectionResult result) {
@@ -609,7 +650,12 @@ final class BoofCvRealMonitorPhotoEvidenceIT {
                     intMetric(metrics, "boofCvComponentCandidateCount"),
                     intMetric(metrics, "boofCvScoredCandidateCount"),
                     intMetric(metrics, "boofCvJabEvidenceCandidateCount"),
+                    intMetric(metrics, "boofCvStrictEvidenceCandidateCount"),
+                    intMetric(metrics, "boofCvPlausibleValidationCandidateCount"),
+                    intMetric(metrics, "boofCvRejectedScoredCandidateCount"),
                     acceptedCandidateCount,
+                    metric(metrics, "boofCvSelectedAdmissionBandCode"),
+                    metric(metrics, "boofCvSelectedRejectionReasonCode"),
                     metric(metrics, "boofCvSelectedCandidateScore"),
                     metric(metrics, "boofCvSelectedSyncBandScore"),
                     metric(metrics, "boofCvSelectedGridScore"),
