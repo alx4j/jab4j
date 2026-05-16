@@ -38,6 +38,7 @@ public final class CaptureMediaModuleGridOverlayRenderer {
     private static final Color TILE_OR_ENVELOPE_REJECTED_COLOR = new Color(220, 64, 255, 176);
     private static final Color ACCEPTED_PAYLOAD_COLOR = new Color(0, 255, 128, 192);
     private static final int MAX_MODULE_CENTER_POINTS_PER_ATTEMPT = 2_500;
+    private static final double MAX_PROPORTIONAL_LAYOUT_SCALE_ERROR = 0.01d;
 
     private final CaptureRenderedLayoutCatalog layoutCatalog;
     private final FixedLayoutPlanner layoutPlanner;
@@ -127,12 +128,9 @@ public final class CaptureMediaModuleGridOverlayRenderer {
         if (profile.frameWidthPx() == frameWidthPx && profile.frameHeightPx() == frameHeightPx) {
             return Optional.of(profile);
         }
-        if (frameWidthPx % profile.frameWidthPx() != 0 || frameHeightPx % profile.frameHeightPx() != 0) {
-            return Optional.empty();
-        }
-        int scaleX = frameWidthPx / profile.frameWidthPx();
-        int scaleY = frameHeightPx / profile.frameHeightPx();
-        if (scaleX != scaleY || scaleX <= 1) {
+        double scaleX = (double) frameWidthPx / profile.frameWidthPx();
+        double scaleY = (double) frameHeightPx / profile.frameHeightPx();
+        if (!proportionalScale(scaleX, scaleY)) {
             return Optional.empty();
         }
         return Optional.of(new LayoutProfile(
@@ -141,14 +139,26 @@ public final class CaptureMediaModuleGridOverlayRenderer {
                 profile.cols(),
                 frameWidthPx,
                 frameHeightPx,
-                profile.tileGapPx() * scaleX,
-                profile.outerMarginPx() * scaleX,
+                scaledPixels(profile.tileGapPx(), scaleX),
+                scaledPixels(profile.outerMarginPx(), scaleX),
                 profile.separatorStyle(),
-                profile.topSyncBandPx() * scaleX,
-                profile.metadataBandPx() * scaleX,
+                scaledPixels(profile.topSyncBandPx(), scaleX),
+                scaledPixels(profile.metadataBandPx(), scaleX),
                 profile.backgroundStyle(),
                 profile.fitPolicy()
         ));
+    }
+
+    private boolean proportionalScale(double scaleX, double scaleY) {
+        if (!Double.isFinite(scaleX) || !Double.isFinite(scaleY) || scaleX <= 0.0d || scaleY <= 0.0d) {
+            return false;
+        }
+        double error = Math.abs(scaleX - scaleY) / Math.max(scaleX, scaleY);
+        return error <= MAX_PROPORTIONAL_LAYOUT_SCALE_ERROR;
+    }
+
+    private int scaledPixels(int pixels, double scale) {
+        return Math.max(0, (int) Math.round(pixels * scale));
     }
 
     private void drawSlots(
