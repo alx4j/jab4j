@@ -35,7 +35,10 @@ import com.alx4j.jab4j.reader.capture.media.quality.CaptureMediaQualityMetrics;
 class CaptureMediaCvBackendContractTest {
 
     private static final String CV_PACKAGE = "com.alx4j.jab4j.reader.capture.media.cv";
-    private static final Pattern EXPORTED_PACKAGE = Pattern.compile("exports\\s+([a-zA-Z0-9_.]+)");
+    private static final Pattern EXPORTED_PACKAGE = Pattern.compile("(?m)^\\s*exports\\s+([a-zA-Z0-9_.]+)\\s*;");
+    private static final Pattern UNQUALIFIED_INTERNAL_CV_EXPORT = Pattern.compile(
+            "(?m)^\\s*exports\\s+" + Pattern.quote(CV_PACKAGE) + "(?:\\.[a-zA-Z0-9_]+)*\\s*;"
+    );
     private static final LayoutProfile TEST_PROFILE = new LayoutProfile(
             "fake-cv-layout",
             1,
@@ -307,14 +310,24 @@ class CaptureMediaCvBackendContractTest {
     }
 
     @Test
-    @DisplayName("Reader module does not export internal CV packages")
-    void readerModuleDoesNotExportInternalCvPackages() throws IOException {
+    @DisplayName("Explicit backend selection keeps legacy local and optional providers absent by default")
+    void explicitBackendSelectionKeepsLegacyLocalAndOptionalProvidersAbsentByDefault() {
+        assertAll(
+                () -> assertEquals("legacy", CaptureMediaCvBackends.legacy().identity().backendId()),
+                () -> assertEquals(
+                        "legacy",
+                        CaptureMediaCvBackends.findExplicit("legacy").orElseThrow().identity().backendId()
+                ),
+                () -> assertTrue(CaptureMediaCvBackends.findExplicit("missing-backend").isEmpty())
+        );
+    }
+
+    @Test
+    @DisplayName("Reader module does not unqualified-export internal CV packages")
+    void readerModuleDoesNotUnqualifiedExportInternalCvPackages() throws IOException {
         String moduleInfo = Files.readString(mainSourceRoot().resolve("module-info.java"));
 
-        assertAll(
-                () -> assertFalse(moduleInfo.contains("exports " + CV_PACKAGE), moduleInfo),
-                () -> assertFalse(moduleInfo.contains("exports " + CV_PACKAGE + "."), moduleInfo)
-        );
+        assertFalse(UNQUALIFIED_INTERNAL_CV_EXPORT.matcher(moduleInfo).find(), moduleInfo);
     }
 
     @Test

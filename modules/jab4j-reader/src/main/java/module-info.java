@@ -12,5 +12,6 @@ module com.alx4j.jab4j.reader {
     exports com.alx4j.jab4j.reader.frame;
     exports com.alx4j.jab4j.reader.restore;
 
+    uses com.alx4j.jab4j.reader.capture.media.cv.CaptureMediaCvBackend;
     uses com.alx4j.jab4j.reader.capture.media.video.CaptureMediaVideoFrameSourceAdapter;
 }
