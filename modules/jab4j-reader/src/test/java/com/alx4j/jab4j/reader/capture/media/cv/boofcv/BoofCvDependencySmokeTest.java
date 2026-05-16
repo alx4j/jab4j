@@ -19,10 +19,15 @@ import com.alx4j.jab4j.reader.capture.media.cv.CvFrameCandidate;
 import com.alx4j.jab4j.reader.capture.media.cv.CvBackendIdentity;
 import com.alx4j.jab4j.reader.capture.media.cv.CvDetectionResult;
 import com.alx4j.jab4j.reader.capture.media.cv.CvDetectionStatus;
+import com.alx4j.jab4j.reader.capture.media.cv.CvNormalizedFrame;
+import com.alx4j.jab4j.reader.capture.media.cv.PerspectiveTransform;
 import com.alx4j.jab4j.reader.capture.media.cv.legacy.LegacyCaptureMediaCvBackend;
 import com.alx4j.jab4j.reader.capture.media.input.MediaInputFrame;
 import com.alx4j.jab4j.reader.capture.media.normalize.CaptureMediaFrameNormalizer;
+import com.alx4j.jab4j.reader.capture.media.normalize.FrameCorners;
 import com.alx4j.jab4j.reader.capture.media.normalize.MediaNormalizationResult;
+import com.alx4j.jab4j.reader.capture.media.normalize.NormalizedCaptureFrame;
+import com.alx4j.jab4j.reader.capture.media.quality.CaptureMediaQualityMetrics;
 import com.alx4j.jab4j.reader.capture.qualify.CaptureRenderedLayoutCatalog;
 import com.alx4j.jab4j.render.layout.FixedLayoutPlan;
 import com.alx4j.jab4j.render.layout.FixedLayoutPlanner;
@@ -45,6 +50,15 @@ class BoofCvDependencySmokeTest {
     private static final int BLACK = 0xFF000000;
     private static final int WHITE = 0xFFFFFFFF;
     private static final int DARK_GRAY = 0xFF202020;
+    private static final int DEBUG_FRAME_WIDTH = 1280;
+    private static final int DEBUG_FRAME_HEIGHT = 720;
+    private static final int OUTER_MARGIN = 40;
+    private static final int TOP_SYNC_BAND = 48;
+    private static final int TILE_GAP = 16;
+    private static final int TILE_SLOT_WIDTH = 592;
+    private static final int TILE_SLOT_HEIGHT = 568;
+    private static final int GRID_ORIGIN_X = 40;
+    private static final int GRID_ORIGIN_Y = 112;
     private static final int GENERATED_CANVAS_WIDTH = 1600;
     private static final int GENERATED_CANVAS_HEIGHT = 900;
     private static final int GENERATED_INSET_X = 80;
@@ -213,6 +227,115 @@ class BoofCvDependencySmokeTest {
     }
 
     @Test
+    @DisplayName("BoofCV backend can explicitly return perspective-corrected normalized frames")
+    void boofCvBackendCanExplicitlyReturnPerspectiveCorrectedNormalizedFrames() {
+        CvDetectionResult result = BoofCvCaptureMediaCvBackend.withPerspectiveCorrection()
+                .detect(generatedCameraLikeFrame("boofcv-corrected-monitor.png"));
+        CvNormalizedFrame normalizedFrame = result.normalizedFrames().get(0);
+
+        assertAll(
+                () -> assertEquals(CvDetectionStatus.ACCEPTED, result.status()),
+                () -> assertTrue(result.candidates().isEmpty()),
+                () -> assertEquals(1, result.normalizedFrames().size()),
+                () -> assertEquals("debug-low-density", normalizedFrame.layoutProfile().profileId()),
+                () -> assertEquals(DEBUG_FRAME_WIDTH, normalizedFrame.layoutProfile().frameWidthPx()),
+                () -> assertEquals(DEBUG_FRAME_HEIGHT, normalizedFrame.layoutProfile().frameHeightPx()),
+                () -> assertEquals(DEBUG_FRAME_WIDTH * DEBUG_FRAME_HEIGHT, normalizedFrame.argbPixels().length),
+                () -> assertEquals(1.0d, result.metrics().get("boofCvAcceptedCandidateCount")),
+                () -> assertTrue(normalizedFrame.qualityMetrics().frameCoverageRatio() > 0.50d),
+                () -> assertEquals(0.0d, normalizedFrame.qualityMetrics().skewScore())
+        );
+    }
+
+    @Test
+    @DisplayName("BoofCV interpolation is compared with legacy nearest-neighbor perspective correction")
+    void boofCvInterpolationIsComparedWithLegacyNearestNeighborPerspectiveCorrection() {
+        FrameCorners expectedCorners = new FrameCorners(150, 80, 1370, 110, 1280, 790, 230, 760);
+        MediaInputFrame inputFrame = generatedPerspectiveFrame("boofcv-perspective-comparison.png", expectedCorners);
+        CvDetectionResult legacyResult = new LegacyCaptureMediaCvBackend().detect(inputFrame);
+        CvNormalizedFrame legacyFrame = legacyResult.normalizedFrames().get(0);
+
+        CvNormalizedFrame boofFrame = new BoofCvPerspectiveCorrector().correct(
+                inputFrame,
+                legacyFrame.layoutProfile(),
+                legacyFrame.frameCorners(),
+                legacyFrame.qualityMetrics()
+        );
+        int[] legacyPixels = legacyFrame.argbPixels();
+        int[] boofPixels = boofFrame.argbPixels();
+
+        assertAll(
+                () -> assertEquals(CvDetectionStatus.ACCEPTED, legacyResult.status()),
+                () -> assertEquals("debug-low-density", boofFrame.layoutProfile().profileId()),
+                () -> assertEquals(legacyFrame.layoutProfile(), boofFrame.layoutProfile()),
+                () -> assertEquals(legacyFrame.frameCorners(), boofFrame.frameCorners()),
+                () -> assertEquals(legacyFrame.qualityMetrics(), boofFrame.qualityMetrics()),
+                () -> assertEquals(legacyPixels.length, boofPixels.length),
+                () -> assertTrue(countChangedPixels(legacyPixels, boofPixels) > 500),
+                () -> assertTrue(meanRgbDistance(legacyPixels, boofPixels) < 20.0d),
+                () -> assertLuminanceAtLeast(boofPixels, OUTER_MARGIN + (TOP_SYNC_BAND / 2), OUTER_MARGIN + 8, 230),
+                () -> assertLuminanceAtMost(boofPixels, OUTER_MARGIN + (TOP_SYNC_BAND / 2), OUTER_MARGIN + 24, 35),
+                () -> assertLuminanceAtMost(
+                        boofPixels,
+                        GRID_ORIGIN_Y + (TILE_SLOT_HEIGHT / 2),
+                        GRID_ORIGIN_X + (TILE_SLOT_WIDTH / 2),
+                        35
+                ),
+                () -> assertLuminanceAtLeast(
+                        boofPixels,
+                        GRID_ORIGIN_Y + (TILE_SLOT_HEIGHT / 2),
+                        GRID_ORIGIN_X + TILE_SLOT_WIDTH + (TILE_GAP / 2),
+                        230
+                )
+        );
+    }
+
+    @Test
+    @DisplayName("BoofCV corrected frames preserve metadata through normalizer output")
+    void boofCvCorrectedFramesPreserveMetadataThroughNormalizerOutput() {
+        FrameCorners expectedCorners = new FrameCorners(150, 80, 1370, 110, 1280, 790, 230, 760);
+        MediaInputFrame inputFrame = generatedPerspectiveFrameWithTiming(
+                "boofcv-normalized-metadata.png",
+                expectedCorners
+        );
+        CvDetectionResult legacyResult = new LegacyCaptureMediaCvBackend().detect(inputFrame);
+        CvNormalizedFrame legacyFrame = legacyResult.normalizedFrames().get(0);
+        CvNormalizedFrame boofFrame = new BoofCvPerspectiveCorrector().correct(
+                inputFrame,
+                legacyFrame.layoutProfile(),
+                legacyFrame.frameCorners(),
+                legacyFrame.qualityMetrics()
+        );
+        CaptureMediaFrameNormalizer normalizer = new CaptureMediaFrameNormalizer(
+                frame -> CvDetectionResult.acceptedNormalizedFrames(List.of(boofFrame))
+        );
+
+        MediaNormalizationResult result = normalizer.normalize(inputFrame);
+
+        NormalizedCaptureFrame normalized = result.frame().orElseThrow();
+        CaptureMediaQualityMetrics metrics = normalized.qualityMetrics();
+        assertAll(
+                () -> assertEquals(CvDetectionStatus.ACCEPTED, legacyResult.status()),
+                () -> assertTrue(result.accepted(), () -> result.diagnostics().toString()),
+                () -> assertEquals("boofcv-normalized-metadata.png", normalized.sourceId()),
+                () -> assertEquals(CaptureMediaSourceKind.STILL_IMAGE_FILE, normalized.sourceKind()),
+                () -> assertEquals(5, normalized.callerOrder()),
+                () -> assertEquals(GENERATED_CANVAS_WIDTH, normalized.originalWidthPixels()),
+                () -> assertEquals(GENERATED_CANVAS_HEIGHT, normalized.originalHeightPixels()),
+                () -> assertEquals(DEBUG_FRAME_WIDTH, normalized.normalizedWidthPixels()),
+                () -> assertEquals(DEBUG_FRAME_HEIGHT, normalized.normalizedHeightPixels()),
+                () -> assertEquals("png", normalized.formatName()),
+                () -> assertEquals("source-hash", normalized.pixelSha256()),
+                () -> assertEquals(250L, normalized.timestampMillis().orElseThrow()),
+                () -> assertEquals(7L, normalized.frameNumber().orElseThrow()),
+                () -> assertEquals("debug-low-density", normalized.layoutProfileId()),
+                () -> assertEquals(boofFrame.frameCorners(), normalized.frameCorners()),
+                () -> assertEquals(boofFrame.qualityMetrics(), metrics),
+                () -> assertEquals(boofFrame.argbPixels()[0], normalized.argbPixelAt(0, 0))
+        );
+    }
+
+    @Test
     @DisplayName("BoofCV runtime failure maps to stable backend failure")
     void boofCvRuntimeFailureMapsToStableBackendFailure() {
         BoofCvCaptureMediaCvBackend backend = new BoofCvCaptureMediaCvBackend(true);
@@ -298,6 +421,42 @@ class BoofCvDependencySmokeTest {
                 GENERATED_CANVAS_HEIGHT,
                 "png",
                 "source-hash",
+                canvas
+        );
+    }
+
+    private MediaInputFrame generatedPerspectiveFrame(String sourceId, FrameCorners corners) {
+        LayoutProfile profile = debugProfile();
+        FixedLayoutPlan layoutPlan = layoutPlanner.plan(profile);
+        int[] rendered = renderedFramePixels(profile, layoutPlan);
+        int[] canvas = perspectiveProject(rendered, profile, GENERATED_CANVAS_WIDTH, GENERATED_CANVAS_HEIGHT, corners);
+        return new MediaInputFrame(
+                sourceId,
+                CaptureMediaSourceKind.STILL_IMAGE_FILE,
+                0,
+                GENERATED_CANVAS_WIDTH,
+                GENERATED_CANVAS_HEIGHT,
+                "png",
+                "source-hash",
+                canvas
+        );
+    }
+
+    private MediaInputFrame generatedPerspectiveFrameWithTiming(String sourceId, FrameCorners corners) {
+        LayoutProfile profile = debugProfile();
+        FixedLayoutPlan layoutPlan = layoutPlanner.plan(profile);
+        int[] rendered = renderedFramePixels(profile, layoutPlan);
+        int[] canvas = perspectiveProject(rendered, profile, GENERATED_CANVAS_WIDTH, GENERATED_CANVAS_HEIGHT, corners);
+        return new MediaInputFrame(
+                sourceId,
+                CaptureMediaSourceKind.STILL_IMAGE_FILE,
+                5,
+                GENERATED_CANVAS_WIDTH,
+                GENERATED_CANVAS_HEIGHT,
+                "png",
+                "source-hash",
+                Optional.of(250L),
+                Optional.of(7L),
                 canvas
         );
     }
@@ -428,6 +587,119 @@ class BoofCvDependencySmokeTest {
             int destinationOffset = ((insetY + row) * GENERATED_CANVAS_WIDTH) + insetX;
             System.arraycopy(source, sourceOffset, canvas, destinationOffset, sourceWidth);
         }
+    }
+
+    private int[] perspectiveProject(
+            int[] renderedFrame,
+            LayoutProfile profile,
+            int canvasWidth,
+            int canvasHeight,
+            FrameCorners corners
+    ) {
+        int[] canvas = blankCanvas(canvasWidth, canvasHeight);
+        PerspectiveTransform canvasToFrame = PerspectiveTransform.fromUnitSquareTo(corners).inverse();
+        int left = clamp((int) Math.floor(minX(corners)), 0, canvasWidth - 1);
+        int right = clamp((int) Math.ceil(maxX(corners)), 0, canvasWidth - 1);
+        int top = clamp((int) Math.floor(minY(corners)), 0, canvasHeight - 1);
+        int bottom = clamp((int) Math.ceil(maxY(corners)), 0, canvasHeight - 1);
+        for (int row = top; row <= bottom; row++) {
+            for (int col = left; col <= right; col++) {
+                PerspectiveTransform.PerspectivePoint source = canvasToFrame.map(col, row);
+                if (source.x() < 0.0d || source.x() > 1.0d || source.y() < 0.0d || source.y() > 1.0d) {
+                    continue;
+                }
+                int sourceX = clamp(
+                        (int) Math.round(source.x() * (profile.frameWidthPx() - 1)),
+                        0,
+                        profile.frameWidthPx() - 1
+                );
+                int sourceY = clamp(
+                        (int) Math.round(source.y() * (profile.frameHeightPx() - 1)),
+                        0,
+                        profile.frameHeightPx() - 1
+                );
+                canvas[(row * canvasWidth) + col] = renderedFrame[(sourceY * profile.frameWidthPx()) + sourceX];
+            }
+        }
+        return canvas;
+    }
+
+    private int countChangedPixels(int[] firstPixels, int[] secondPixels) {
+        int changedPixels = 0;
+        for (int index = 0; index < firstPixels.length; index++) {
+            if (firstPixels[index] != secondPixels[index]) {
+                changedPixels++;
+            }
+        }
+        return changedPixels;
+    }
+
+    private double meanRgbDistance(int[] firstPixels, int[] secondPixels) {
+        double totalDistance = 0.0d;
+        for (int index = 0; index < firstPixels.length; index++) {
+            totalDistance += rgbDistance(firstPixels[index], secondPixels[index]);
+        }
+        return totalDistance / firstPixels.length;
+    }
+
+    private double rgbDistance(int firstArgb, int secondArgb) {
+        int redDelta = ((firstArgb >>> 16) & 0xFF) - ((secondArgb >>> 16) & 0xFF);
+        int greenDelta = ((firstArgb >>> 8) & 0xFF) - ((secondArgb >>> 8) & 0xFF);
+        int blueDelta = (firstArgb & 0xFF) - (secondArgb & 0xFF);
+        return Math.sqrt((redDelta * redDelta) + (greenDelta * greenDelta) + (blueDelta * blueDelta));
+    }
+
+    private void assertLuminanceAtLeast(int[] pixels, int row, int col, int minimumLuminance) {
+        assertTrue(
+                luminance(pixels[(row * DEBUG_FRAME_WIDTH) + col]) >= minimumLuminance,
+                "Expected pixel luminance to be at least " + minimumLuminance
+        );
+    }
+
+    private void assertLuminanceAtMost(int[] pixels, int row, int col, int maximumLuminance) {
+        assertTrue(
+                luminance(pixels[(row * DEBUG_FRAME_WIDTH) + col]) <= maximumLuminance,
+                "Expected pixel luminance to be at most " + maximumLuminance
+        );
+    }
+
+    private int luminance(int argb) {
+        int red = (argb >>> 16) & 0xFF;
+        int green = (argb >>> 8) & 0xFF;
+        int blue = argb & 0xFF;
+        return (int) Math.round((0.2126d * red) + (0.7152d * green) + (0.0722d * blue));
+    }
+
+    private double minX(FrameCorners corners) {
+        return Math.min(
+                Math.min(corners.topLeftX(), corners.topRightX()),
+                Math.min(corners.bottomRightX(), corners.bottomLeftX())
+        );
+    }
+
+    private double maxX(FrameCorners corners) {
+        return Math.max(
+                Math.max(corners.topLeftX(), corners.topRightX()),
+                Math.max(corners.bottomRightX(), corners.bottomLeftX())
+        );
+    }
+
+    private double minY(FrameCorners corners) {
+        return Math.min(
+                Math.min(corners.topLeftY(), corners.topRightY()),
+                Math.min(corners.bottomRightY(), corners.bottomLeftY())
+        );
+    }
+
+    private double maxY(FrameCorners corners) {
+        return Math.max(
+                Math.max(corners.topLeftY(), corners.topRightY()),
+                Math.max(corners.bottomRightY(), corners.bottomLeftY())
+        );
+    }
+
+    private int clamp(int value, int min, int max) {
+        return Math.max(min, Math.min(max, value));
     }
 
     private int[] shiftPaletteColors(int[] pixels, int colorShift) {
