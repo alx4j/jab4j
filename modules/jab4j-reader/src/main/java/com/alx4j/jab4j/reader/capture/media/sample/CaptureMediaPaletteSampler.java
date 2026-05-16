@@ -1,5 +1,6 @@
 package com.alx4j.jab4j.reader.capture.media.sample;
 
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -110,6 +111,58 @@ public final class CaptureMediaPaletteSampler {
     }
 
     /**
+     * Samples a bounded square area, reduces it to a median RGB color, then maps that color to the rendered palette.
+     *
+     * <p>This keeps palette ownership in the palette sampler while allowing capture-media callers to use local
+     * multi-point sampling when CV evidence indicates a noisy module center.</p>
+     *
+     * @param frame normalized frame
+     * @param centerRow center row in normalized-frame coordinates
+     * @param centerCol center column in normalized-frame coordinates
+     * @param radiusPx non-negative sampling radius in pixels
+     * @return structured palette sample for the median area color
+     */
+    public CaptureMediaPaletteSample sampleTolerantPaletteArea(
+            NormalizedCaptureFrame frame,
+            int centerRow,
+            int centerCol,
+            int radiusPx
+    ) {
+        Objects.requireNonNull(frame, "frame must not be null");
+        if (radiusPx < 0) {
+            throw new IllegalArgumentException("radiusPx must be non-negative");
+        }
+        if (radiusPx == 0) {
+            return sampleTolerantPalette(frame, centerRow, centerCol);
+        }
+
+        int top = Math.max(0, centerRow - radiusPx);
+        int bottom = Math.min(frame.normalizedHeightPixels() - 1, centerRow + radiusPx);
+        int left = Math.max(0, centerCol - radiusPx);
+        int right = Math.min(frame.normalizedWidthPixels() - 1, centerCol + radiusPx);
+        int sampleCount = (bottom - top + 1) * (right - left + 1);
+        int[] redValues = new int[sampleCount];
+        int[] greenValues = new int[sampleCount];
+        int[] blueValues = new int[sampleCount];
+        int index = 0;
+        for (int row = top; row <= bottom; row++) {
+            for (int col = left; col <= right; col++) {
+                int argb = frame.argbPixelAt(row, col);
+                redValues[index] = red(argb);
+                greenValues[index] = green(argb);
+                blueValues[index] = blue(argb);
+                index++;
+            }
+        }
+
+        int medianArgb = 0xFF000000
+                | (median(redValues) << 16)
+                | (median(greenValues) << 8)
+                | median(blueValues);
+        return tolerantPaletteSample(medianArgb);
+    }
+
+    /**
      * Emits a source-scoped color/compression diagnostic for low-confidence or rejected samples.
      *
      * @param frame normalized source frame
@@ -199,6 +252,12 @@ public final class CaptureMediaPaletteSampler {
             return 0.0d;
         }
         return 1.0d - (rgbDistance / MAX_ACCEPTED_RGB_DISTANCE);
+    }
+
+    private int median(int[] values) {
+        int[] sorted = Arrays.copyOf(values, values.length);
+        Arrays.sort(sorted);
+        return sorted[sorted.length / 2];
     }
 
     private record NearestPaletteColor(int paletteIndex, int paletteArgb, double rgbDistance) {

@@ -20,6 +20,7 @@ import com.alx4j.jab4j.reader.capture.media.cv.CvBackendIdentity;
 import com.alx4j.jab4j.reader.capture.media.cv.CvDetectionResult;
 import com.alx4j.jab4j.reader.capture.media.cv.CvDetectionStatus;
 import com.alx4j.jab4j.reader.capture.media.cv.CvNormalizedFrame;
+import com.alx4j.jab4j.reader.capture.media.cv.CvSamplingEvidence;
 import com.alx4j.jab4j.reader.capture.media.cv.PerspectiveTransform;
 import com.alx4j.jab4j.reader.capture.media.cv.legacy.LegacyCaptureMediaCvBackend;
 import com.alx4j.jab4j.reader.capture.media.input.MediaInputFrame;
@@ -336,6 +337,36 @@ class BoofCvDependencySmokeTest {
     }
 
     @Test
+    @DisplayName("BoofCV sampling evidence estimates sync-band grid phase and local references")
+    void boofCvSamplingEvidenceEstimatesSyncBandGridPhaseAndLocalReferences() {
+        CvDetectionResult result = BoofCvCaptureMediaCvBackend.withPerspectiveCorrection()
+                .detect(generatedCameraLikeFrame("boofcv-sampling-evidence.png"));
+        CvNormalizedFrame cvFrame = result.normalizedFrames().get(0);
+        NormalizedCaptureFrame normalizedFrame = normalizedFrameFrom(cvFrame);
+        FixedLayoutPlan layoutPlan = layoutPlanner.plan(cvFrame.layoutProfile());
+
+        CvSamplingEvidence evidence = new BoofCvSamplingEvidenceEstimator()
+                .evidenceFor(normalizedFrame, layoutPlan)
+                .orElseThrow();
+        int localWhiteReferenceArgb = evidence.gridPhase().orElseThrow().localWhiteReferenceArgb().orElseThrow();
+        int localBlackReferenceArgb = evidence.gridPhase().orElseThrow().localBlackReferenceArgb().orElseThrow();
+
+        assertAll(
+                () -> assertEquals(CvDetectionStatus.ACCEPTED, result.status()),
+                () -> assertEquals(0.0d, evidence.gridPhaseOffsetXPx(), 2.0d),
+                () -> assertEquals(0.0d, evidence.gridPhaseOffsetYPx(), 0.0d),
+                () -> assertEquals(evidence.gridPhaseOffsetXPx(), evidence.moduleCenterOffsetXPx(), 0.0d),
+                () -> assertEquals(0.0d, evidence.moduleCenterOffsetYPx(), 0.0d),
+                () -> assertTrue(luminance(localWhiteReferenceArgb) > 220),
+                () -> assertTrue(luminance(localBlackReferenceArgb) < 45),
+                () -> assertTrue(evidence.gridPhase().orElseThrow().localContrast() > 0.75d),
+                () -> assertTrue(evidence.confidence() > 0.80d),
+                () -> assertTrue(evidence.metrics().containsKey("boofCvGridPhaseOffsetXPx")),
+                () -> assertTrue(evidence.metrics().containsKey("boofCvSamplingEvidenceConfidence"))
+        );
+    }
+
+    @Test
     @DisplayName("BoofCV runtime failure maps to stable backend failure")
     void boofCvRuntimeFailureMapsToStableBackendFailure() {
         BoofCvCaptureMediaCvBackend backend = new BoofCvCaptureMediaCvBackend(true);
@@ -458,6 +489,24 @@ class BoofCvDependencySmokeTest {
                 Optional.of(250L),
                 Optional.of(7L),
                 canvas
+        );
+    }
+
+    private NormalizedCaptureFrame normalizedFrameFrom(CvNormalizedFrame frame) {
+        return new NormalizedCaptureFrame(
+                "boofcv-normalized-sampling.png",
+                CaptureMediaSourceKind.STILL_IMAGE_FILE,
+                0,
+                frame.layoutProfile().frameWidthPx(),
+                frame.layoutProfile().frameHeightPx(),
+                frame.layoutProfile().frameWidthPx(),
+                frame.layoutProfile().frameHeightPx(),
+                "png",
+                "source-hash",
+                frame.layoutProfile().profileId(),
+                frame.frameCorners(),
+                frame.qualityMetrics(),
+                frame.argbPixels()
         );
     }
 

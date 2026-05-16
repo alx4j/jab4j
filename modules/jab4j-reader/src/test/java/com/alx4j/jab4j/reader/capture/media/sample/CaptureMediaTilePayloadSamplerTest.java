@@ -8,6 +8,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.OptionalInt;
 import java.util.UUID;
 import java.util.zip.CRC32C;
 import org.junit.jupiter.api.DisplayName;
@@ -22,6 +25,9 @@ import com.alx4j.jab4j.reader.capture.media.CaptureMediaDiagnostic;
 import com.alx4j.jab4j.reader.capture.media.CaptureMediaDiagnosticCode;
 import com.alx4j.jab4j.reader.capture.media.CaptureMediaDiagnosticSeverity;
 import com.alx4j.jab4j.reader.capture.media.CaptureMediaSourceKind;
+import com.alx4j.jab4j.reader.capture.media.cv.CvGridPhase;
+import com.alx4j.jab4j.reader.capture.media.cv.CvSamplingEvidence;
+import com.alx4j.jab4j.reader.capture.media.cv.CvTileSamplingEvidence;
 import com.alx4j.jab4j.reader.capture.media.normalize.FrameCorners;
 import com.alx4j.jab4j.reader.capture.media.normalize.NormalizedCaptureFrame;
 import com.alx4j.jab4j.reader.capture.media.quality.CaptureMediaQualityMetrics;
@@ -194,6 +200,49 @@ class CaptureMediaTilePayloadSamplerTest {
     }
 
     @Test
+    @DisplayName("Explicit sampling evidence aligns camera-derived tile slots")
+    void explicitSamplingEvidenceAlignsCameraDerivedTileSlots() {
+        RenderedTileFixture fixture = renderedTileFixture(18, 36, -40);
+        NormalizedCaptureFrame cameraFrame = cameraDerivedFrame(fixture.frame().copyArgbPixels());
+        CaptureMediaTilePayloadSampler evidenceSampler = new CaptureMediaTilePayloadSampler(
+                (frame, layoutPlan) -> Optional.of(samplingEvidence(36, -40, 0, 0, 0.92d))
+        );
+
+        FrameSample sample = evidenceSampler.sample(cameraFrame);
+        FrameInspection inspection = evidenceSampler.inspect(cameraFrame);
+
+        assertAll(
+                () -> assertEquals(FrameSampleStatus.ACCEPTED, sample.status()),
+                () -> assertEquals(List.of(fixture.payload()), sample.payloads()),
+                () -> assertEquals(BorderInspectionStatus.SIGNATURE, inspection.slots().get(0).borderStatus()),
+                () -> assertEquals(1, inspection.decodedPayloadCount())
+        );
+    }
+
+    @Test
+    @DisplayName("Explicit sampling evidence enables area sampling for noisy module centers")
+    void explicitSamplingEvidenceEnablesAreaSamplingForNoisyModuleCenters() {
+        RenderedTileFixture fixture = renderedTileFixture(0);
+        int[] noisyPixels = fixture.frame().copyArgbPixels();
+        mutateLogicalModuleCenters(noisyPixels, fixture.logicalTile(), 0xFF808080);
+        NormalizedCaptureFrame cameraFrame = cameraDerivedFrame(noisyPixels);
+        CaptureMediaTilePayloadSampler evidenceSampler = new CaptureMediaTilePayloadSampler(
+                (frame, layoutPlan) -> Optional.of(samplingEvidence(0, 0, 0, 0, 0.88d))
+        );
+
+        FrameSample legacySample = sampler.sample(cameraFrame);
+        FrameSample evidenceSample = evidenceSampler.sample(cameraFrame);
+        FrameInspection evidenceInspection = evidenceSampler.inspect(cameraFrame);
+
+        assertAll(
+                () -> assertEquals(FrameSampleStatus.REJECTED, legacySample.status()),
+                () -> assertEquals(FrameSampleStatus.ACCEPTED, evidenceSample.status()),
+                () -> assertEquals(List.of(fixture.payload()), evidenceSample.payloads()),
+                () -> assertEquals(1, evidenceInspection.decodedPayloadCount())
+        );
+    }
+
+    @Test
     @DisplayName("Palette-sampled content is not accepted when tile or envelope validation fails")
     void paletteSampledContentIsNotAcceptedWhenTileOrEnvelopeValidationFails() {
         RenderedTileFixture fixture = renderedTileFixture(0);
@@ -317,6 +366,32 @@ class CaptureMediaTilePayloadSamplerTest {
         }
     }
 
+    private void mutateLogicalModuleCenters(int[] framePixels, LogicalTile logicalTile, int replacementColor) {
+        TilePlacement placement = LAYOUT_PLAN.tilePlacements().get(0);
+        int border = LAYOUT_PLAN.separatorThicknessPx();
+        int innerWidth = LAYOUT_PLAN.tileSlotWidthPx() - (2 * border);
+        int innerHeight = LAYOUT_PLAN.tileSlotHeightPx() - (2 * border);
+        int logicalSide = logicalTile.widthModules() + (2 * logicalTile.quietZoneModules());
+        int moduleSize = Math.min(innerWidth / logicalSide, innerHeight / logicalSide);
+        int contentWidth = logicalSide * moduleSize;
+        int contentHeight = logicalSide * moduleSize;
+        int offsetX = border + ((innerWidth - contentWidth) / 2);
+        int offsetY = border + ((innerHeight - contentHeight) / 2);
+        for (int row = 0; row < logicalTile.heightModules(); row++) {
+            for (int col = 0; col < logicalTile.widthModules(); col++) {
+                int centerX = placement.xPx()
+                        + offsetX
+                        + ((col + logicalTile.quietZoneModules()) * moduleSize)
+                        + (moduleSize / 2);
+                int centerY = placement.yPx()
+                        + offsetY
+                        + ((row + logicalTile.quietZoneModules()) * moduleSize)
+                        + (moduleSize / 2);
+                framePixels[(centerY * CAPTURE_LAYOUT.frameWidthPx()) + centerX] = replacementColor;
+            }
+        }
+    }
+
     private void mutateSparseTileBorderPixels(int[] framePixels, int interval) {
         TilePlacement placement = LAYOUT_PLAN.tilePlacements().get(0);
         int border = LAYOUT_PLAN.separatorThicknessPx();
@@ -368,6 +443,37 @@ class CaptureMediaTilePayloadSamplerTest {
                 FrameCorners.exactFrame(CAPTURE_LAYOUT.frameWidthPx(), CAPTURE_LAYOUT.frameHeightPx()),
                 CaptureMediaQualityMetrics.perspectiveCorrected(0.50d, 0.05d),
                 pixels
+        );
+    }
+
+    private CvSamplingEvidence samplingEvidence(
+            double gridPhaseOffsetX,
+            double gridPhaseOffsetY,
+            double moduleCenterOffsetX,
+            double moduleCenterOffsetY,
+            double confidence
+    ) {
+        return new CvSamplingEvidence(
+                "test",
+                Optional.of(new CvGridPhase(
+                        gridPhaseOffsetX,
+                        gridPhaseOffsetY,
+                        confidence,
+                        1.0d,
+                        OptionalInt.of(0xFFFFFFFF),
+                        OptionalInt.of(0xFF000000)
+                )),
+                List.of(new CvTileSamplingEvidence(
+                        0,
+                        moduleCenterOffsetX,
+                        moduleCenterOffsetY,
+                        confidence,
+                        1.0d,
+                        OptionalInt.of(0xFFFFFFFF),
+                        OptionalInt.of(0xFF000000),
+                        Map.of("testTileSamplingEvidence", 1.0d)
+                )),
+                Map.of("testSamplingEvidence", 1.0d)
         );
     }
 

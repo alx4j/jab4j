@@ -12,6 +12,10 @@ import com.alx4j.jab4j.api.model.TilePayload;
 import com.alx4j.jab4j.reader.capture.media.CaptureMediaDiagnostic;
 import com.alx4j.jab4j.reader.capture.media.CaptureMediaDiagnosticCode;
 import com.alx4j.jab4j.reader.capture.media.CaptureMediaDiagnosticSeverity;
+import com.alx4j.jab4j.reader.capture.media.cv.CvGridPhase;
+import com.alx4j.jab4j.reader.capture.media.cv.CvSamplingEvidence;
+import com.alx4j.jab4j.reader.capture.media.cv.CvSamplingEvidenceProvider;
+import com.alx4j.jab4j.reader.capture.media.cv.CvTileSamplingEvidence;
 import com.alx4j.jab4j.reader.capture.media.normalize.NormalizedCaptureFrame;
 import com.alx4j.jab4j.reader.capture.qualify.CaptureRenderedLayoutCatalog;
 import com.alx4j.jab4j.render.layout.FixedLayoutPlan;
@@ -52,6 +56,9 @@ public final class CaptureMediaTilePayloadSampler {
     private static final double MAX_CAMERA_BORDER_REJECTED_RATIO = 0.08d;
     private static final double MIN_CAMERA_BORDER_STRONG_SIDE_RATIO = 0.68d;
     private static final double MIN_CAMERA_BORDER_MODERATE_SIDE_RATIO = 0.42d;
+    private static final double MIN_SAMPLING_EVIDENCE_CONFIDENCE = 0.55d;
+    private static final int MAX_EVIDENCE_MODULE_CENTER_OFFSET_PX = 8;
+    private static final int MAX_AREA_SAMPLE_RADIUS_PX = 3;
 
     private final CaptureMediaPaletteSampler paletteSampler;
     private final List<Integer> paletteArgb;
@@ -60,6 +67,7 @@ public final class CaptureMediaTilePayloadSampler {
     private final TileDecoder tileDecoder;
     private final TileCodecProfile tileCodecProfile;
     private final TilePayloadEnvelopeCodec envelopeCodec;
+    private final CvSamplingEvidenceProvider samplingEvidenceProvider;
 
     /**
      * Creates a sampler using current rendered-layout, balanced-v1 tile, and envelope validation defaults.
@@ -71,7 +79,25 @@ public final class CaptureMediaTilePayloadSampler {
                 new FixedLayoutPlanner(),
                 TileCodecs.defaultDecoder(),
                 TileCodecProfiles.balancedV1(),
-                new TilePayloadEnvelopeCodec()
+                new TilePayloadEnvelopeCodec(),
+                CvSamplingEvidenceProvider.none()
+        );
+    }
+
+    /**
+     * Creates a sampler with optional backend-neutral sampling evidence.
+     *
+     * @param samplingEvidenceProvider provider for grid-phase and local sampling evidence
+     */
+    public CaptureMediaTilePayloadSampler(CvSamplingEvidenceProvider samplingEvidenceProvider) {
+        this(
+                new CaptureMediaPaletteSampler(),
+                new CaptureRenderedLayoutCatalog(),
+                new FixedLayoutPlanner(),
+                TileCodecs.defaultDecoder(),
+                TileCodecProfiles.balancedV1(),
+                new TilePayloadEnvelopeCodec(),
+                samplingEvidenceProvider
         );
     }
 
@@ -93,6 +119,37 @@ public final class CaptureMediaTilePayloadSampler {
             TileCodecProfile tileCodecProfile,
             TilePayloadEnvelopeCodec envelopeCodec
     ) {
+        this(
+                paletteSampler,
+                layoutCatalog,
+                layoutPlanner,
+                tileDecoder,
+                tileCodecProfile,
+                envelopeCodec,
+                CvSamplingEvidenceProvider.none()
+        );
+    }
+
+    /**
+     * Creates a sampler with explicit collaborators and optional backend-neutral sampling evidence.
+     *
+     * @param paletteSampler bounded nearest-palette sampler
+     * @param layoutCatalog supported rendered layout catalog
+     * @param layoutPlanner fixed layout planner
+     * @param tileDecoder logical tile decoder
+     * @param tileCodecProfile supported logical tile profile
+     * @param envelopeCodec tile payload envelope codec
+     * @param samplingEvidenceProvider provider for grid-phase and local sampling evidence
+     */
+    public CaptureMediaTilePayloadSampler(
+            CaptureMediaPaletteSampler paletteSampler,
+            CaptureRenderedLayoutCatalog layoutCatalog,
+            FixedLayoutPlanner layoutPlanner,
+            TileDecoder tileDecoder,
+            TileCodecProfile tileCodecProfile,
+            TilePayloadEnvelopeCodec envelopeCodec,
+            CvSamplingEvidenceProvider samplingEvidenceProvider
+    ) {
         this.paletteSampler = Objects.requireNonNull(paletteSampler, "paletteSampler must not be null");
         this.paletteArgb = this.paletteSampler.paletteArgb();
         this.layoutCatalog = Objects.requireNonNull(layoutCatalog, "layoutCatalog must not be null");
@@ -100,6 +157,10 @@ public final class CaptureMediaTilePayloadSampler {
         this.tileDecoder = Objects.requireNonNull(tileDecoder, "tileDecoder must not be null");
         this.tileCodecProfile = Objects.requireNonNull(tileCodecProfile, "tileCodecProfile must not be null");
         this.envelopeCodec = Objects.requireNonNull(envelopeCodec, "envelopeCodec must not be null");
+        this.samplingEvidenceProvider = Objects.requireNonNull(
+                samplingEvidenceProvider,
+                "samplingEvidenceProvider must not be null"
+        );
     }
 
     /**
@@ -128,12 +189,13 @@ public final class CaptureMediaTilePayloadSampler {
         }
 
         FixedLayoutPlan layoutPlan = layoutPlanner.plan(resolvedLayout.orElseThrow());
+        Optional<CvSamplingEvidence> samplingEvidence = samplingEvidence(frame, layoutPlan);
         List<TilePayload> payloads = new ArrayList<>();
         List<CaptureMediaDiagnostic> diagnostics = new ArrayList<>();
         PaletteSampleAccumulator acceptedConfidence = new PaletteSampleAccumulator();
         List<TilePlacement> placements = layoutPlan.tilePlacements();
         for (int tileIndex = 0; tileIndex < placements.size(); tileIndex++) {
-            SlotSample slotSample = sampleSlot(frame, layoutPlan, placements.get(tileIndex), tileIndex);
+            SlotSample slotSample = sampleSlot(frame, layoutPlan, placements.get(tileIndex), tileIndex, samplingEvidence);
             if (slotSample.status() == SlotSampleStatus.EMPTY
                     || slotSample.status() == SlotSampleStatus.NO_SIGNATURE_CONTENT) {
                 continue;
@@ -205,6 +267,7 @@ public final class CaptureMediaTilePayloadSampler {
         }
 
         FixedLayoutPlan layoutPlan = layoutPlanner.plan(resolvedLayout.orElseThrow());
+        Optional<CvSamplingEvidence> samplingEvidence = samplingEvidence(frame, layoutPlan);
         List<SlotInspection> slots = new ArrayList<>();
         int candidateAttemptCount = 0;
         int paletteRejectedAttemptCount = 0;
@@ -212,7 +275,7 @@ public final class CaptureMediaTilePayloadSampler {
         int decodedPayloadCount = 0;
         List<TilePlacement> placements = layoutPlan.tilePlacements();
         for (int tileIndex = 0; tileIndex < placements.size(); tileIndex++) {
-            SlotInspection slot = inspectSlot(frame, layoutPlan, placements.get(tileIndex), tileIndex);
+            SlotInspection slot = inspectSlot(frame, layoutPlan, placements.get(tileIndex), tileIndex, samplingEvidence);
             slots.add(slot);
             for (CandidateInspection candidate : slot.candidates()) {
                 candidateAttemptCount++;
@@ -241,9 +304,10 @@ public final class CaptureMediaTilePayloadSampler {
             NormalizedCaptureFrame frame,
             FixedLayoutPlan layoutPlan,
             TilePlacement placement,
-            int tileIndex
+            int tileIndex,
+            Optional<CvSamplingEvidence> samplingEvidence
     ) {
-        TilePlacement effectivePlacement = alignedTilePlacement(frame, layoutPlan, placement);
+        TilePlacement effectivePlacement = alignedTilePlacement(frame, layoutPlan, placement, tileIndex, samplingEvidence);
         BorderSample borderSample = sampleRenderedTileBorder(frame, layoutPlan, effectivePlacement);
         if (borderSample.status() != BorderSampleStatus.SIGNATURE) {
             if (borderSample.status() == BorderSampleStatus.REJECTED
@@ -258,7 +322,14 @@ public final class CaptureMediaTilePayloadSampler {
         List<CandidateSample> candidates = new ArrayList<>();
         CandidateSample rejectedCandidate = null;
         for (int sideVersion = tileCodecProfile.minSideVersion(); sideVersion <= tileCodecProfile.maxSideVersion(); sideVersion++) {
-            CandidateSample candidate = sampleCandidate(frame, layoutPlan, effectivePlacement, tileIndex, sideVersion);
+            CandidateSample candidate = sampleCandidate(
+                    frame,
+                    layoutPlan,
+                    effectivePlacement,
+                    tileIndex,
+                    sideVersion,
+                    samplingEvidence
+            );
             if (candidate.status() == CandidateSampleStatus.REJECTED) {
                 rejectedCandidate = lowerConfidence(rejectedCandidate, candidate);
             } else if (candidate.status() == CandidateSampleStatus.CANDIDATE) {
@@ -285,9 +356,10 @@ public final class CaptureMediaTilePayloadSampler {
             NormalizedCaptureFrame frame,
             FixedLayoutPlan layoutPlan,
             TilePlacement placement,
-            int tileIndex
+            int tileIndex,
+            Optional<CvSamplingEvidence> samplingEvidence
     ) {
-        TilePlacement effectivePlacement = alignedTilePlacement(frame, layoutPlan, placement);
+        TilePlacement effectivePlacement = alignedTilePlacement(frame, layoutPlan, placement, tileIndex, samplingEvidence);
         BorderSample borderSample = sampleRenderedTileBorder(frame, layoutPlan, effectivePlacement);
         boolean interiorContent = hasInteriorContent(frame, layoutPlan, effectivePlacement);
         if (borderSample.status() != BorderSampleStatus.SIGNATURE) {
@@ -301,7 +373,14 @@ public final class CaptureMediaTilePayloadSampler {
 
         List<CandidateInspection> candidates = new ArrayList<>();
         for (int sideVersion = tileCodecProfile.minSideVersion(); sideVersion <= tileCodecProfile.maxSideVersion(); sideVersion++) {
-            CandidateSample candidate = sampleCandidate(frame, layoutPlan, effectivePlacement, tileIndex, sideVersion);
+            CandidateSample candidate = sampleCandidate(
+                    frame,
+                    layoutPlan,
+                    effectivePlacement,
+                    tileIndex,
+                    sideVersion,
+                    samplingEvidence
+            );
             DecodeInspectionStatus decodeStatus = DecodeInspectionStatus.NOT_ATTEMPTED;
             if (candidate.status() == CandidateSampleStatus.CANDIDATE) {
                 TilePayload payload = decodeCandidate(layoutPlan, tileIndex, candidate.logicalTile().orElseThrow());
@@ -344,11 +423,33 @@ public final class CaptureMediaTilePayloadSampler {
     private TilePlacement alignedTilePlacement(
             NormalizedCaptureFrame frame,
             FixedLayoutPlan layoutPlan,
-            TilePlacement placement
+            TilePlacement placement,
+            int tileIndex,
+            Optional<CvSamplingEvidence> samplingEvidence
     ) {
         if (!cameraDerived(frame)) {
             return placement;
         }
+        Optional<TilePlacement> evidencePlacement = evidenceAlignedPlacement(frame, placement, tileIndex, samplingEvidence);
+        if (evidencePlacement.isPresent()) {
+            BorderEvidence evidenceBorder = sampleBorderEvidence(
+                    frame,
+                    evidencePlacement.orElseThrow(),
+                    layoutPlan.separatorThicknessPx(),
+                    CAMERA_SLOT_ALIGNMENT_SAMPLE_STRIDE_PX
+            );
+            if (evidenceBorder.cameraSignature()) {
+                return evidencePlacement.orElseThrow();
+            }
+        }
+        return legacyAlignedTilePlacement(frame, layoutPlan, placement);
+    }
+
+    private TilePlacement legacyAlignedTilePlacement(
+            NormalizedCaptureFrame frame,
+            FixedLayoutPlan layoutPlan,
+            TilePlacement placement
+    ) {
         int border = layoutPlan.separatorThicknessPx();
         TilePlacement bestPlacement = placement;
         BorderEvidence bestEvidence = sampleBorderEvidence(
@@ -380,6 +481,22 @@ public final class CaptureMediaTilePayloadSampler {
             }
         }
         return bestPlacement;
+    }
+
+    private Optional<TilePlacement> evidenceAlignedPlacement(
+            NormalizedCaptureFrame frame,
+            TilePlacement placement,
+            int tileIndex,
+            Optional<CvSamplingEvidence> samplingEvidence
+    ) {
+        return samplingEvidence
+                .filter(this::usableSamplingEvidence)
+                .flatMap(evidence -> shiftedPlacement(
+                        frame,
+                        placement,
+                        roundedAlignmentOffset(alignmentOffsetXPx(evidence, tileIndex)),
+                        roundedAlignmentOffset(alignmentOffsetYPx(evidence, tileIndex))
+                ));
     }
 
     private Optional<TilePlacement> shiftedPlacement(
@@ -484,7 +601,8 @@ public final class CaptureMediaTilePayloadSampler {
             FixedLayoutPlan layoutPlan,
             TilePlacement placement,
             int tileIndex,
-            int sideVersion
+            int sideVersion,
+            Optional<CvSamplingEvidence> samplingEvidence
     ) {
         int dimension = tileCodecProfile.dimensionForSideVersion(sideVersion);
         int border = layoutPlan.separatorThicknessPx();
@@ -503,17 +621,22 @@ public final class CaptureMediaTilePayloadSampler {
         List<Integer> moduleColors = new ArrayList<>(dimension * dimension);
         PaletteSampleAccumulator confidence = new PaletteSampleAccumulator();
         boolean rejected = false;
+        int moduleCenterOffsetX = moduleCenterOffsetPx(samplingEvidence, tileIndex, true);
+        int moduleCenterOffsetY = moduleCenterOffsetPx(samplingEvidence, tileIndex, false);
+        int areaSampleRadius = areaSampleRadiusPx(samplingEvidence, moduleSize);
         for (int row = 0; row < dimension; row++) {
             for (int col = 0; col < dimension; col++) {
                 int sampleX = placement.xPx()
                         + offsetX
                         + ((col + tileCodecProfile.quietZoneModules()) * moduleSize)
-                        + (moduleSize / 2);
+                        + (moduleSize / 2)
+                        + moduleCenterOffsetX;
                 int sampleY = placement.yPx()
                         + offsetY
                         + ((row + tileCodecProfile.quietZoneModules()) * moduleSize)
-                        + (moduleSize / 2);
-                CaptureMediaPaletteSample sample = sampleTolerantPalette(frame, sampleY, sampleX);
+                        + (moduleSize / 2)
+                        + moduleCenterOffsetY;
+                CaptureMediaPaletteSample sample = sampleTolerantPalette(frame, sampleY, sampleX, areaSampleRadius);
                 confidence.add(sample);
                 if (!sample.accepted()) {
                     rejected = true;
@@ -550,24 +673,126 @@ public final class CaptureMediaTilePayloadSampler {
     }
 
     private CaptureMediaPaletteSample sampleTolerantPalette(NormalizedCaptureFrame frame, int row, int col) {
-        int argb = frame.argbPixelAt(row, col);
-        CaptureMediaPaletteSample standardSample = paletteSampler.tolerantPaletteSample(argb);
+        return sampleTolerantPalette(frame, row, col, 0);
+    }
+
+    private CaptureMediaPaletteSample sampleTolerantPalette(
+            NormalizedCaptureFrame frame,
+            int row,
+            int col,
+            int areaSampleRadius
+    ) {
+        int safeRow = clamp(row, 0, frame.normalizedHeightPixels() - 1);
+        int safeCol = clamp(col, 0, frame.normalizedWidthPixels() - 1);
+        CaptureMediaPaletteSample standardSample = areaSampleRadius > 0
+                ? paletteSampler.sampleTolerantPaletteArea(frame, safeRow, safeCol, areaSampleRadius)
+                : paletteSampler.sampleTolerantPalette(frame, safeRow, safeCol);
         if (standardSample.accepted() || !cameraDerived(frame)) {
             return standardSample;
         }
 
-        NearestPaletteColor nearest = nearestPaletteColor(argb);
+        NearestPaletteColor nearest = nearestPaletteColor(standardSample.sourceArgb());
         if (nearest.rgbDistance() > CAMERA_MAX_ACCEPTED_RGB_DISTANCE) {
             return standardSample;
         }
         return new CaptureMediaPaletteSample(
-                argb,
+                standardSample.sourceArgb(),
                 nearest.paletteIndex(),
                 nearest.paletteArgb(),
                 nearest.rgbDistance(),
                 nearest.rgbDistance() / MAX_RGB_DISTANCE,
                 1.0d - (nearest.rgbDistance() / CAMERA_MAX_ACCEPTED_RGB_DISTANCE),
                 CaptureMediaPaletteSampleStatus.LOW_CONFIDENCE
+        );
+    }
+
+    private Optional<CvSamplingEvidence> samplingEvidence(
+            NormalizedCaptureFrame frame,
+            FixedLayoutPlan layoutPlan
+    ) {
+        try {
+            return samplingEvidenceProvider.evidenceFor(frame, layoutPlan)
+                    .filter(this::usableSamplingEvidence);
+        } catch (RuntimeException exception) {
+            return Optional.empty();
+        }
+    }
+
+    private boolean usableSamplingEvidence(CvSamplingEvidence evidence) {
+        return evidence.confidence() >= MIN_SAMPLING_EVIDENCE_CONFIDENCE;
+    }
+
+    private int moduleCenterOffsetPx(
+            Optional<CvSamplingEvidence> samplingEvidence,
+            int tileIndex,
+            boolean horizontal
+    ) {
+        if (samplingEvidence.filter(this::usableSamplingEvidence).isEmpty()) {
+            return 0;
+        }
+        CvSamplingEvidence evidence = samplingEvidence.orElseThrow();
+        double offset = horizontal ? moduleCenterOffsetXPx(evidence, tileIndex) : moduleCenterOffsetYPx(evidence, tileIndex);
+        return clamp(
+                (int) Math.round(offset),
+                -MAX_EVIDENCE_MODULE_CENTER_OFFSET_PX,
+                MAX_EVIDENCE_MODULE_CENTER_OFFSET_PX
+        );
+    }
+
+    private int areaSampleRadiusPx(Optional<CvSamplingEvidence> samplingEvidence, int moduleSize) {
+        if (moduleSize <= 2 || samplingEvidence.filter(this::usableSamplingEvidence).isEmpty()) {
+            return 0;
+        }
+        return Math.min(MAX_AREA_SAMPLE_RADIUS_PX, Math.max(1, moduleSize / 6));
+    }
+
+    private double alignmentOffsetXPx(CvSamplingEvidence evidence, int tileIndex) {
+        return evidence.tileEvidence(tileIndex)
+                .filter(this::usableTileEvidence)
+                .map(CvTileSamplingEvidence::moduleCenterOffsetXPx)
+                .orElseGet(() -> evidence.gridPhase()
+                        .filter(this::usableGridPhase)
+                        .map(CvGridPhase::offsetXPx)
+                        .orElse(0.0d));
+    }
+
+    private double alignmentOffsetYPx(CvSamplingEvidence evidence, int tileIndex) {
+        return evidence.tileEvidence(tileIndex)
+                .filter(this::usableTileEvidence)
+                .map(CvTileSamplingEvidence::moduleCenterOffsetYPx)
+                .orElseGet(() -> evidence.gridPhase()
+                        .filter(this::usableGridPhase)
+                        .map(CvGridPhase::offsetYPx)
+                        .orElse(0.0d));
+    }
+
+    private double moduleCenterOffsetXPx(CvSamplingEvidence evidence, int tileIndex) {
+        return evidence.tileEvidence(tileIndex)
+                .filter(this::usableTileEvidence)
+                .map(CvTileSamplingEvidence::moduleCenterOffsetXPx)
+                .orElse(evidence.moduleCenterOffsetXPx());
+    }
+
+    private double moduleCenterOffsetYPx(CvSamplingEvidence evidence, int tileIndex) {
+        return evidence.tileEvidence(tileIndex)
+                .filter(this::usableTileEvidence)
+                .map(CvTileSamplingEvidence::moduleCenterOffsetYPx)
+                .orElse(evidence.moduleCenterOffsetYPx());
+    }
+
+    private boolean usableTileEvidence(CvTileSamplingEvidence evidence) {
+        return evidence.confidence() >= MIN_SAMPLING_EVIDENCE_CONFIDENCE;
+    }
+
+    private boolean usableGridPhase(CvGridPhase gridPhase) {
+        return gridPhase.confidence() >= MIN_SAMPLING_EVIDENCE_CONFIDENCE;
+    }
+
+    private int roundedAlignmentOffset(double offset) {
+        return clamp(
+                (int) Math.round(offset),
+                -CAMERA_SLOT_ALIGNMENT_RADIUS_PX,
+                CAMERA_SLOT_ALIGNMENT_RADIUS_PX
         );
     }
 
@@ -610,6 +835,10 @@ public final class CaptureMediaTilePayloadSampler {
 
     private int blue(int argb) {
         return argb & 0xFF;
+    }
+
+    private int clamp(int value, int min, int max) {
+        return Math.max(min, Math.min(max, value));
     }
 
     private String formatMetric(double value) {
