@@ -29,6 +29,7 @@ import com.alx4j.jab4j.reader.capture.media.normalize.CaptureMediaFrameNormalize
 import com.alx4j.jab4j.reader.capture.media.normalize.MediaNormalizationResult;
 import com.alx4j.jab4j.reader.capture.media.normalize.NormalizedCaptureFrame;
 import com.alx4j.jab4j.reader.capture.media.quality.CaptureMediaQualityMetrics;
+import com.alx4j.jab4j.reader.capture.media.sample.CaptureMediaTilePayloadSampler;
 import com.alx4j.jab4j.reader.restore.ReaderRestoreRequest;
 import com.alx4j.jab4j.reader.restore.ReaderRestoreResult;
 import com.alx4j.jab4j.reader.restore.ReaderRestoreService;
@@ -57,13 +58,17 @@ public final class CaptureMediaReceiverService {
      * services.
      */
     public CaptureMediaReceiverService() {
+        this(new CaptureMediaTilePayloadSampler());
+    }
+
+    private CaptureMediaReceiverService(CaptureMediaTilePayloadSampler tilePayloadSampler) {
         this(
                 new CaptureMediaInputIntake(),
                 new CaptureMediaFrameNormalizer(),
-                new CaptureMediaFrameDecoder(),
+                new CaptureMediaFrameDecoder(tilePayloadSampler),
                 new CaptureFrameSetAssembler(),
                 new ReaderRestoreService(),
-                new CaptureMediaCandidateDebugExporter()
+                new CaptureMediaCandidateDebugExporter(tilePayloadSampler)
         );
     }
 

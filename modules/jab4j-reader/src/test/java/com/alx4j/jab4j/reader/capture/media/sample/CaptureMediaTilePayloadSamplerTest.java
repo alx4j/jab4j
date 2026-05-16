@@ -38,8 +38,12 @@ import com.alx4j.jab4j.reader.capture.media.quality.CaptureMediaQualityMetrics;
 import com.alx4j.jab4j.reader.capture.media.sample.CaptureMediaTilePayloadSampler.FrameSample;
 import com.alx4j.jab4j.reader.capture.media.sample.CaptureMediaTilePayloadSampler.FrameSampleStatus;
 import com.alx4j.jab4j.reader.capture.media.sample.CaptureMediaTilePayloadSampler.BorderInspectionStatus;
+import com.alx4j.jab4j.reader.capture.media.sample.CaptureMediaTilePayloadSampler.CandidateInspection;
 import com.alx4j.jab4j.reader.capture.media.sample.CaptureMediaTilePayloadSampler.DecodeInspectionStatus;
 import com.alx4j.jab4j.reader.capture.media.sample.CaptureMediaTilePayloadSampler.FrameInspection;
+import com.alx4j.jab4j.reader.capture.media.sample.CaptureMediaTilePayloadSampler.ModuleSamplingInspectionSource;
+import com.alx4j.jab4j.reader.capture.media.sample.CaptureMediaTilePayloadSampler.SlotInspection;
+import com.alx4j.jab4j.reader.capture.media.sample.CaptureMediaTilePayloadSampler.TileAlignmentInspectionSource;
 import com.alx4j.jab4j.render.layout.FixedLayoutPlan;
 import com.alx4j.jab4j.render.layout.FixedLayoutPlanner;
 import com.alx4j.jab4j.render.layout.TilePlacement;
@@ -91,6 +95,11 @@ class CaptureMediaTilePayloadSamplerTest {
 
         FrameSample sample = sampler.sample(fixture.frame());
         FrameInspection inspection = sampler.inspect(fixture.frame());
+        SlotInspection slot = inspection.slots().get(0);
+        CandidateInspection acceptedCandidate = slot.candidates().stream()
+                .filter(candidate -> candidate.decodeStatus() == DecodeInspectionStatus.ACCEPTED_PAYLOAD)
+                .findFirst()
+                .orElseThrow();
 
         assertAll(
                 () -> assertEquals(FrameSampleStatus.ACCEPTED, sample.status()),
@@ -99,10 +108,16 @@ class CaptureMediaTilePayloadSamplerTest {
                 () -> assertEquals(1.0d, sample.paletteConfidence().orElseThrow().minimumConfidence()),
                 () -> assertEquals(0, sample.paletteConfidence().orElseThrow().lowConfidenceSampleCount()),
                 () -> assertEquals(1, inspection.decodedPayloadCount()),
-                () -> assertEquals(BorderInspectionStatus.SIGNATURE, inspection.slots().get(0).borderStatus()),
-                () -> assertTrue(inspection.slots().get(0).interiorContent()),
-                () -> assertTrue(inspection.slots().get(0).candidates().stream()
-                        .anyMatch(candidate -> candidate.decodeStatus() == DecodeInspectionStatus.ACCEPTED_PAYLOAD))
+                () -> assertEquals(BorderInspectionStatus.SIGNATURE, slot.borderStatus()),
+                () -> assertTrue(slot.interiorContent()),
+                () -> assertEquals(0, slot.effectiveTileShiftXPx()),
+                () -> assertEquals(0, slot.effectiveTileShiftYPx()),
+                () -> assertEquals(TileAlignmentInspectionSource.NOMINAL, slot.effectiveTilePlacementSource()),
+                () -> assertEquals(0, acceptedCandidate.moduleCenterOffsetXPx()),
+                () -> assertEquals(0, acceptedCandidate.moduleCenterOffsetYPx()),
+                () -> assertEquals(ModuleSamplingInspectionSource.NONE,
+                        acceptedCandidate.moduleSamplingOffsetSource()),
+                () -> assertEquals(0, acceptedCandidate.areaSampleRadiusPx())
         );
     }
 
@@ -187,6 +202,50 @@ class CaptureMediaTilePayloadSamplerTest {
     }
 
     @Test
+    @DisplayName("Camera-derived sparse rejected module samples can continue through validation")
+    void cameraDerivedSparseRejectedModuleSamplesCanContinueThroughValidation() {
+        RenderedTileFixture fixture = renderedTileFixture(0);
+        int[] pixels = fixture.frame().copyArgbPixels();
+        mutateSparseLogicalModuleCentersBeyondCameraThreshold(pixels, fixture.logicalTile(), 29);
+        NormalizedCaptureFrame cameraFrame = cameraDerivedFrame(pixels);
+
+        FrameSample sample = sampler.sample(cameraFrame);
+        FrameInspection inspection = sampler.inspect(cameraFrame);
+        CandidateInspection acceptedCandidate = inspection.slots().get(0).candidates().stream()
+                .filter(candidate -> candidate.decodeStatus() == DecodeInspectionStatus.ACCEPTED_PAYLOAD)
+                .findFirst()
+                .orElseThrow();
+
+        assertAll(
+                () -> assertEquals(FrameSampleStatus.ACCEPTED, sample.status()),
+                () -> assertEquals(List.of(fixture.payload()), sample.payloads()),
+                () -> assertEquals(CaptureMediaDiagnosticSeverity.WARNING, sample.diagnostics().get(0).severity()),
+                () -> assertTrue(sample.paletteConfidence().orElseThrow().rejectedSampleCount() > 0),
+                () -> assertTrue(acceptedCandidate.paletteConfidence().orElseThrow().rejectedSampleCount() > 0),
+                () -> assertEquals(1, inspection.decodedPayloadCount())
+        );
+    }
+
+    @Test
+    @DisplayName("Exact sparse rejected module samples remain rejected")
+    void exactSparseRejectedModuleSamplesRemainRejected() {
+        RenderedTileFixture fixture = renderedTileFixture(0);
+        int[] pixels = fixture.frame().copyArgbPixels();
+        mutateSparseLogicalModuleCentersBeyondCameraThreshold(pixels, fixture.logicalTile(), 29);
+        NormalizedCaptureFrame exactFrame = frame(pixels);
+
+        FrameSample sample = sampler.sample(exactFrame);
+        FrameInspection inspection = sampler.inspect(exactFrame);
+
+        assertAll(
+                () -> assertEquals(FrameSampleStatus.REJECTED, sample.status()),
+                () -> assertTrue(sample.payloads().isEmpty()),
+                () -> assertTrue(sample.paletteConfidence().orElseThrow().rejectedSampleCount() > 0),
+                () -> assertEquals(0, inspection.decodedPayloadCount())
+        );
+    }
+
+    @Test
     @DisplayName("JPEG-compressed camera-derived tile payloads decode with shifted palette metrics")
     void jpegCompressedCameraDerivedTilePayloadsDecodeWithShiftedPaletteMetrics() throws Exception {
         RenderedTileFixture fixture = renderedTileFixture(0);
@@ -255,11 +314,60 @@ class CaptureMediaTilePayloadSamplerTest {
 
         FrameSample sample = sampler.sample(cameraFrame);
         FrameInspection inspection = sampler.inspect(cameraFrame);
+        SlotInspection slot = inspection.slots().get(0);
 
         assertAll(
                 () -> assertEquals(FrameSampleStatus.ACCEPTED, sample.status()),
                 () -> assertEquals(List.of(fixture.payload()), sample.payloads()),
-                () -> assertEquals(BorderInspectionStatus.SIGNATURE, inspection.slots().get(0).borderStatus()),
+                () -> assertEquals(BorderInspectionStatus.SIGNATURE, slot.borderStatus()),
+                () -> assertEquals(36, slot.effectiveTileShiftXPx()),
+                () -> assertEquals(-40, slot.effectiveTileShiftYPx()),
+                () -> assertEquals(TileAlignmentInspectionSource.LEGACY_BORDER_SCAN,
+                        slot.effectiveTilePlacementSource()),
+                () -> assertEquals(1, inspection.decodedPayloadCount())
+        );
+    }
+
+    @Test
+    @DisplayName("Camera-derived shifted tile slots are aligned beyond the original narrow scan radius")
+    void cameraDerivedWideShiftedTileSlotsAreAlignedBeforeBorderSampling() {
+        RenderedTileFixture fixture = renderedTileFixture(18, 76, -72);
+        NormalizedCaptureFrame cameraFrame = cameraDerivedFrame(fixture.frame().copyArgbPixels());
+
+        FrameSample sample = sampler.sample(cameraFrame);
+        FrameInspection inspection = sampler.inspect(cameraFrame);
+        SlotInspection slot = inspection.slots().get(0);
+
+        assertAll(
+                () -> assertEquals(FrameSampleStatus.ACCEPTED, sample.status()),
+                () -> assertEquals(List.of(fixture.payload()), sample.payloads()),
+                () -> assertEquals(BorderInspectionStatus.SIGNATURE, slot.borderStatus()),
+                () -> assertEquals(76, slot.effectiveTileShiftXPx()),
+                () -> assertEquals(-72, slot.effectiveTileShiftYPx()),
+                () -> assertEquals(TileAlignmentInspectionSource.LEGACY_BORDER_SCAN,
+                        slot.effectiveTilePlacementSource()),
+                () -> assertEquals(1, inspection.decodedPayloadCount())
+        );
+    }
+
+    @Test
+    @DisplayName("Camera-derived scaled display frames can use the encoded layout profile")
+    void cameraDerivedScaledDisplayFramesCanUseEncodedLayoutProfile() {
+        RenderedTileFixture fixture = renderedTileFixture(18);
+        NormalizedCaptureFrame scaledFrame = cameraDerivedFrame(
+                scaleNearest(fixture.frame().copyArgbPixels(), 1280, 720, 2),
+                2560,
+                1440,
+                "desktop-1440p-balanced"
+        );
+
+        FrameSample sample = sampler.sample(scaledFrame);
+        FrameInspection inspection = sampler.inspect(scaledFrame);
+
+        assertAll(
+                () -> assertEquals(FrameSampleStatus.ACCEPTED, sample.status()),
+                () -> assertEquals(List.of(fixture.payload()), sample.payloads()),
+                () -> assertEquals("debug-low-density", inspection.layoutProfileId()),
                 () -> assertEquals(1, inspection.decodedPayloadCount())
         );
     }
@@ -285,8 +393,8 @@ class CaptureMediaTilePayloadSamplerTest {
     }
 
     @Test
-    @DisplayName("Explicit sampling evidence enables area sampling for noisy module centers")
-    void explicitSamplingEvidenceEnablesAreaSamplingForNoisyModuleCenters() {
+    @DisplayName("Camera-derived fallback and explicit sampling evidence handle noisy module centers")
+    void cameraDerivedFallbackAndExplicitSamplingEvidenceHandleNoisyModuleCenters() {
         RenderedTileFixture fixture = renderedTileFixture(0);
         int[] noisyPixels = fixture.frame().copyArgbPixels();
         mutateLogicalModuleCenters(noisyPixels, fixture.logicalTile(), 0xFF808080);
@@ -297,12 +405,29 @@ class CaptureMediaTilePayloadSamplerTest {
 
         FrameSample legacySample = sampler.sample(cameraFrame);
         FrameSample evidenceSample = evidenceSampler.sample(cameraFrame);
+        FrameInspection legacyInspection = sampler.inspect(cameraFrame);
         FrameInspection evidenceInspection = evidenceSampler.inspect(cameraFrame);
+        CandidateInspection fallbackCandidate = legacyInspection.slots().get(0).candidates().stream()
+                .filter(candidate -> candidate.decodeStatus() == DecodeInspectionStatus.ACCEPTED_PAYLOAD)
+                .findFirst()
+                .orElseThrow();
+        CandidateInspection acceptedCandidate = evidenceInspection.slots().get(0).candidates().stream()
+                .filter(candidate -> candidate.decodeStatus() == DecodeInspectionStatus.ACCEPTED_PAYLOAD)
+                .findFirst()
+                .orElseThrow();
 
         assertAll(
-                () -> assertEquals(FrameSampleStatus.REJECTED, legacySample.status()),
+                () -> assertEquals(FrameSampleStatus.ACCEPTED, legacySample.status()),
+                () -> assertEquals(List.of(fixture.payload()), legacySample.payloads()),
+                () -> assertEquals(ModuleSamplingInspectionSource.FALLBACK_SEARCH,
+                        fallbackCandidate.moduleSamplingOffsetSource()),
                 () -> assertEquals(FrameSampleStatus.ACCEPTED, evidenceSample.status()),
                 () -> assertEquals(List.of(fixture.payload()), evidenceSample.payloads()),
+                () -> assertEquals(0, acceptedCandidate.moduleCenterOffsetXPx()),
+                () -> assertEquals(0, acceptedCandidate.moduleCenterOffsetYPx()),
+                () -> assertEquals(ModuleSamplingInspectionSource.TILE_EVIDENCE,
+                        acceptedCandidate.moduleSamplingOffsetSource()),
+                () -> assertTrue(acceptedCandidate.areaSampleRadiusPx() > 0),
                 () -> assertEquals(1, evidenceInspection.decodedPayloadCount())
         );
     }
@@ -457,6 +582,52 @@ class CaptureMediaTilePayloadSamplerTest {
         }
     }
 
+    private void mutateSparseLogicalModuleCentersBeyondCameraThreshold(
+            int[] framePixels,
+            LogicalTile logicalTile,
+            int interval
+    ) {
+        TilePlacement placement = LAYOUT_PLAN.tilePlacements().get(0);
+        int border = LAYOUT_PLAN.separatorThicknessPx();
+        int innerWidth = LAYOUT_PLAN.tileSlotWidthPx() - (2 * border);
+        int innerHeight = LAYOUT_PLAN.tileSlotHeightPx() - (2 * border);
+        int logicalSide = logicalTile.widthModules() + (2 * logicalTile.quietZoneModules());
+        int moduleSize = Math.min(innerWidth / logicalSide, innerHeight / logicalSide);
+        int contentWidth = logicalSide * moduleSize;
+        int contentHeight = logicalSide * moduleSize;
+        int offsetX = border + ((innerWidth - contentWidth) / 2);
+        int offsetY = border + ((innerHeight - contentHeight) / 2);
+        int visited = 0;
+        for (int row = 0; row < logicalTile.heightModules(); row++) {
+            for (int col = 0; col < logicalTile.widthModules(); col++) {
+                if (visited % interval == 0) {
+                    int centerX = placement.xPx()
+                            + offsetX
+                            + ((col + logicalTile.quietZoneModules()) * moduleSize)
+                            + (moduleSize / 2);
+                    int centerY = placement.yPx()
+                            + offsetY
+                            + ((row + logicalTile.quietZoneModules()) * moduleSize)
+                            + (moduleSize / 2);
+                    int index = (centerY * CAPTURE_LAYOUT.frameWidthPx()) + centerX;
+                    framePixels[index] = offThresholdNearestPaletteColor(framePixels[index]);
+                }
+                visited++;
+            }
+        }
+    }
+
+    private int offThresholdNearestPaletteColor(int argb) {
+        int red = shiftedTowardNeutral((argb >>> 16) & 0xFF);
+        int green = shiftedTowardNeutral((argb >>> 8) & 0xFF);
+        int blue = shiftedTowardNeutral(argb & 0xFF);
+        return 0xFF000000 | (red << 16) | (green << 8) | blue;
+    }
+
+    private int shiftedTowardNeutral(int value) {
+        return value < 128 ? Math.min(255, value + 110) : Math.max(0, value - 110);
+    }
+
     private void mutateSparseTileBorderPixels(int[] framePixels, int interval) {
         TilePlacement placement = LAYOUT_PLAN.tilePlacements().get(0);
         int border = LAYOUT_PLAN.separatorThicknessPx();
@@ -566,21 +737,53 @@ class CaptureMediaTilePayloadSamplerTest {
     }
 
     private NormalizedCaptureFrame cameraDerivedFrame(int[] pixels) {
+        return cameraDerivedFrame(
+                pixels,
+                CAPTURE_LAYOUT.frameWidthPx(),
+                CAPTURE_LAYOUT.frameHeightPx(),
+                CAPTURE_LAYOUT.profileId()
+        );
+    }
+
+    private NormalizedCaptureFrame cameraDerivedFrame(
+            int[] pixels,
+            int widthPixels,
+            int heightPixels,
+            String layoutProfileId
+    ) {
         return new NormalizedCaptureFrame(
                 "phone-tile-source.jpeg",
                 CaptureMediaSourceKind.STILL_IMAGE_FILE,
                 0,
-                CAPTURE_LAYOUT.frameWidthPx(),
-                CAPTURE_LAYOUT.frameHeightPx(),
-                CAPTURE_LAYOUT.frameWidthPx(),
-                CAPTURE_LAYOUT.frameHeightPx(),
+                widthPixels,
+                heightPixels,
+                widthPixels,
+                heightPixels,
                 "jpeg",
                 "abc123",
-                CAPTURE_LAYOUT.profileId(),
-                FrameCorners.exactFrame(CAPTURE_LAYOUT.frameWidthPx(), CAPTURE_LAYOUT.frameHeightPx()),
+                layoutProfileId,
+                FrameCorners.exactFrame(widthPixels, heightPixels),
                 CaptureMediaQualityMetrics.perspectiveCorrected(0.50d, 0.05d),
                 pixels
         );
+    }
+
+    private int[] scaleNearest(int[] sourcePixels, int sourceWidth, int sourceHeight, int scale) {
+        int[] scaledPixels = new int[sourcePixels.length * scale * scale];
+        int scaledWidth = sourceWidth * scale;
+        for (int sourceY = 0; sourceY < sourceHeight; sourceY++) {
+            for (int sourceX = 0; sourceX < sourceWidth; sourceX++) {
+                int argb = sourcePixels[(sourceY * sourceWidth) + sourceX];
+                int targetBaseY = sourceY * scale;
+                int targetBaseX = sourceX * scale;
+                for (int offsetY = 0; offsetY < scale; offsetY++) {
+                    for (int offsetX = 0; offsetX < scale; offsetX++) {
+                        scaledPixels[((targetBaseY + offsetY) * scaledWidth) + targetBaseX + offsetX] = argb;
+                    }
+                }
+            }
+        }
+        return scaledPixels;
     }
 
     private CvSamplingEvidence samplingEvidence(

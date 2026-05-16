@@ -13,17 +13,40 @@ import javax.imageio.ImageIO;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import com.alx4j.jab4j.api.model.FrameType;
+import com.alx4j.jab4j.api.model.LayoutProfile;
+import com.alx4j.jab4j.api.model.PayloadKind;
+import com.alx4j.jab4j.api.model.TilePayload;
 import com.alx4j.jab4j.reader.capture.decode.CaptureFrameSetAssembler;
+import com.alx4j.jab4j.reader.capture.media.cv.CvDetectionResult;
+import com.alx4j.jab4j.reader.capture.media.cv.CvNormalizedFrame;
 import com.alx4j.jab4j.reader.capture.media.decode.CaptureMediaFrameDecoder;
 import com.alx4j.jab4j.reader.capture.media.input.CaptureMediaInputIntake;
 import com.alx4j.jab4j.reader.capture.media.input.ImageIoCaptureMediaStillImageDecoder;
 import com.alx4j.jab4j.reader.capture.media.normalize.CaptureMediaFrameNormalizer;
+import com.alx4j.jab4j.reader.capture.media.normalize.FrameCorners;
+import com.alx4j.jab4j.reader.capture.media.quality.CaptureMediaQualityMetrics;
 import com.alx4j.jab4j.reader.capture.media.video.CaptureMediaVideoFrameSourceAdapter;
 import com.alx4j.jab4j.reader.capture.media.video.CaptureMediaVideoLimits;
 import com.alx4j.jab4j.reader.restore.ReaderRestoreService;
 
 @DisplayName("Capture media receiver service")
 class CaptureMediaReceiverServiceTest {
+
+    private static final LayoutProfile DEBUG_LAYOUT = new LayoutProfile(
+            "debug-low-density",
+            1,
+            2,
+            1280,
+            720,
+            16,
+            40,
+            "solidWhite",
+            48,
+            24,
+            "black",
+            "preserveAspect"
+    );
 
     private final CaptureMediaReceiverService service = new CaptureMediaReceiverService();
 
@@ -190,6 +213,62 @@ class CaptureMediaReceiverServiceTest {
         );
     }
 
+    @Test
+    @DisplayName("CV-normalized debug output uses reader-owned sampling evidence")
+    void cvNormalizedDebugOutputUsesReaderOwnedSamplingEvidence() throws Exception {
+        Path image = tempDir.resolve("phone-photo.png");
+        Path debugOutput = tempDir.resolve("cv-normalized-debug");
+        writePng(image, 320, 240);
+
+        CaptureMediaReceiverResult result = cameraDerivedCvService().evaluate(
+                CaptureMediaReceiverRequest.evaluateStillImages(List.of(image))
+                        .withDebugOutputDirectory(debugOutput)
+        );
+
+        String metadata = Files.readString(debugOutput.resolve("candidate-0000.txt"));
+        assertAll(
+                () -> assertTrue(result.failed()),
+                () -> assertTrue(metadata.contains("sampler.evidence.available=true")),
+                () -> assertTrue(metadata.contains("sampler.evidence.backendId=reader-normalized-argb")),
+                () -> assertTrue(metadata.contains("sampler.gridPhase.available=true")),
+                () -> assertTrue(metadata.contains("sampler.evidence.metric.readerSamplingEvidenceConfidence="))
+        );
+    }
+
+    @Test
+    @DisplayName("Decoded tile progress without complete content does not publish restored files")
+    void decodedTileProgressWithoutCompleteContentDoesNotPublishRestoredFiles() throws Exception {
+        Path image = tempDir.resolve("decoded-incomplete.png");
+        Path outputDirectory = tempDir.resolve("restore-decoded-incomplete");
+        TilePayload payload = CaptureMediaTestFrames.payload(
+                FrameType.DATA,
+                0L,
+                0,
+                PayloadKind.FILE_CHUNK,
+                "decoded-but-incomplete"
+        );
+        CaptureMediaTestFrames.writeRenderedPng(image, payload);
+
+        CaptureMediaReceiverResult result = service.restore(
+                CaptureMediaReceiverRequest.restoreStillImages(List.of(image), outputDirectory)
+        );
+
+        assertAll(
+                () -> assertEquals(CaptureMediaReceiverStatus.INCOMPLETE, result.status()),
+                () -> assertTrue(result.failed()),
+                () -> assertFalse(result.restored()),
+                () -> assertEquals(1, result.summary().acceptedCandidateCount()),
+                () -> assertEquals(1, result.summary().recoveredUniqueFrameCount()),
+                () -> assertTrue(result.summary().decodedTileCount() > 0),
+                () -> assertEquals(0, result.summary().restoredFileCount()),
+                () -> assertTrue(result.diagnostics().stream().anyMatch(diagnostic ->
+                        diagnostic.code() == CaptureMediaDiagnosticCode.MISSING_UNIQUE_FRAME
+                                && diagnostic.blocking())),
+                () -> assertTrue(result.restoreResult().isEmpty()),
+                () -> assertFalse(Files.exists(outputDirectory))
+        );
+    }
+
     private void writePng(Path output, int width, int height) throws Exception {
         BufferedImage image = new BufferedImage(width, height, BufferedImage.TYPE_INT_ARGB);
         ImageIO.write(image, "png", output.toFile());
@@ -200,6 +279,41 @@ class CaptureMediaReceiverServiceTest {
         if (!ImageIO.write(image, "jpeg", output.toFile())) {
             throw new IllegalStateException("No JPEG ImageIO writer is available");
         }
+    }
+
+    private CaptureMediaReceiverService cameraDerivedCvService() {
+        CaptureMediaFrameNormalizer normalizer = new CaptureMediaFrameNormalizer(frame ->
+                CvDetectionResult.acceptedNormalizedFrames(List.of(new CvNormalizedFrame(
+                        DEBUG_LAYOUT,
+                        new FrameCorners(50.0d, 60.0d, 1250.0d, 80.0d, 1240.0d, 700.0d, 40.0d, 680.0d),
+                        CaptureMediaQualityMetrics.perspectiveCorrected(0.50d, 0.05d),
+                        cameraDerivedPixels()
+                )))
+        );
+        return new CaptureMediaReceiverService(
+                new CaptureMediaInputIntake(),
+                normalizer,
+                new CaptureMediaFrameDecoder(),
+                new CaptureFrameSetAssembler(),
+                new ReaderRestoreService()
+        );
+    }
+
+    private int[] cameraDerivedPixels() {
+        int[] pixels = new int[DEBUG_LAYOUT.frameWidthPx() * DEBUG_LAYOUT.frameHeightPx()];
+        int cellWidth = Math.max(8, DEBUG_LAYOUT.tileGapPx());
+        int top = DEBUG_LAYOUT.outerMarginPx();
+        int bottomExclusive = top + DEBUG_LAYOUT.topSyncBandPx();
+        int left = DEBUG_LAYOUT.outerMarginPx();
+        int rightExclusive = DEBUG_LAYOUT.frameWidthPx() - DEBUG_LAYOUT.outerMarginPx();
+        for (int row = top; row < bottomExclusive; row++) {
+            for (int col = left; col < rightExclusive; col++) {
+                int segment = (col - left) / cellWidth;
+                pixels[(row * DEBUG_LAYOUT.frameWidthPx()) + col] =
+                        segment % 2 == 0 ? 0xFFFFFFFF : 0xFF000000;
+            }
+        }
+        return pixels;
     }
 
     private CaptureMediaReceiverService imageIoOnlyService() {
