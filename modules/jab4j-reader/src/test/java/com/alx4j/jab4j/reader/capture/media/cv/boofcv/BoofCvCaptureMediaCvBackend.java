@@ -15,7 +15,9 @@ import com.alx4j.jab4j.reader.capture.media.cv.CvCandidateScore;
 import com.alx4j.jab4j.reader.capture.media.cv.CvDetectionResult;
 import com.alx4j.jab4j.reader.capture.media.cv.CvDetectionStatus;
 import com.alx4j.jab4j.reader.capture.media.cv.CvFrameCandidate;
+import com.alx4j.jab4j.reader.capture.media.cv.CvNormalizedFrame;
 import com.alx4j.jab4j.reader.capture.media.input.MediaInputFrame;
+import com.alx4j.jab4j.reader.capture.media.quality.CaptureMediaQualityMetrics;
 import com.alx4j.jab4j.reader.capture.qualify.CaptureRenderedLayoutCatalog;
 import com.alx4j.jab4j.render.layout.FixedLayoutPlan;
 import com.alx4j.jab4j.render.layout.FixedLayoutPlanner;
@@ -50,6 +52,7 @@ final class BoofCvCaptureMediaCvBackend implements CaptureMediaCvBackend {
                     "test-scope-adapter",
                     "argb-to-planar-rgb-copy",
                     "grayscale-threshold-contour-candidate-evidence",
+                    "boofcv-perspective-bilinear-resampling",
                     "reader-owned-layout-scoring",
                     "stable-backend-failure-mapping"
             )
@@ -58,6 +61,8 @@ final class BoofCvCaptureMediaCvBackend implements CaptureMediaCvBackend {
     private final CaptureRenderedLayoutCatalog layoutCatalog;
     private final FixedLayoutPlanner layoutPlanner;
     private final boolean failBeforeDetection;
+    private final boolean normalizeAcceptedCandidates;
+    private final BoofCvPerspectiveCorrector perspectiveCorrector;
 
     /**
      * Creates a BoofCV backend for deterministic test and manual smoke selection.
@@ -76,6 +81,20 @@ final class BoofCvCaptureMediaCvBackend implements CaptureMediaCvBackend {
     }
 
     /**
+     * Creates a BoofCV backend variant that returns corrected ARGB frames instead of source-space candidates.
+     *
+     * @return explicit BoofCV backend with perspective correction enabled
+     */
+    static BoofCvCaptureMediaCvBackend withPerspectiveCorrection() {
+        return new BoofCvCaptureMediaCvBackend(
+                new CaptureRenderedLayoutCatalog(),
+                new FixedLayoutPlanner(),
+                false,
+                true
+        );
+    }
+
+    /**
      * Creates a BoofCV backend with explicit reader-owned layout collaborators.
      *
      * @param layoutCatalog supported rendered layout catalog
@@ -87,9 +106,28 @@ final class BoofCvCaptureMediaCvBackend implements CaptureMediaCvBackend {
             FixedLayoutPlanner layoutPlanner,
             boolean failBeforeDetection
     ) {
+        this(layoutCatalog, layoutPlanner, failBeforeDetection, false);
+    }
+
+    /**
+     * Creates a BoofCV backend with explicit reader-owned layout collaborators and perspective-correction behavior.
+     *
+     * @param layoutCatalog supported rendered layout catalog
+     * @param layoutPlanner fixed layout planner used for JAB geometry
+     * @param failBeforeDetection whether detection should fail before invoking BoofCV primitives
+     * @param normalizeAcceptedCandidates whether accepted candidates should be perspective-corrected by BoofCV
+     */
+    BoofCvCaptureMediaCvBackend(
+            CaptureRenderedLayoutCatalog layoutCatalog,
+            FixedLayoutPlanner layoutPlanner,
+            boolean failBeforeDetection,
+            boolean normalizeAcceptedCandidates
+    ) {
         this.layoutCatalog = Objects.requireNonNull(layoutCatalog, "layoutCatalog must not be null");
         this.layoutPlanner = Objects.requireNonNull(layoutPlanner, "layoutPlanner must not be null");
         this.failBeforeDetection = failBeforeDetection;
+        this.normalizeAcceptedCandidates = normalizeAcceptedCandidates;
+        this.perspectiveCorrector = new BoofCvPerspectiveCorrector();
     }
 
     /**
@@ -136,20 +174,62 @@ final class BoofCvCaptureMediaCvBackend implements CaptureMediaCvBackend {
                         "Detected JAB frame region is below the minimum generated coverage threshold"
                 );
             }
-            return new CvDetectionResult(
-                    CvDetectionStatus.ACCEPTED,
-                    acceptedCandidates,
-                    List.of(),
-                    Optional.empty(),
-                    acceptedMetrics(metrics, acceptedCandidates.size()),
-                    "CV backend accepted frame candidates"
-            );
+            return acceptedResult(frame, acceptedCandidates, metrics);
         } catch (RuntimeException exception) {
             return CvDetectionResult.backendFailure(
                     Map.of("backendFailureCount", 1.0d),
                     FAILURE_MESSAGE
             );
         }
+    }
+
+    /**
+     * Corrects one accepted source-space candidate with BoofCV interpolation and preserves candidate quality metrics.
+     *
+     * @param frame decoded source frame
+     * @param candidate accepted source-space candidate
+     * @return BoofCV-corrected normalized frame
+     */
+    CvNormalizedFrame correctPerspective(MediaInputFrame frame, CvFrameCandidate candidate) {
+        Objects.requireNonNull(candidate, "candidate must not be null");
+        return perspectiveCorrector.correct(
+                frame,
+                candidate.layoutProfile(),
+                candidate.frameCorners(),
+                CaptureMediaQualityMetrics.perspectiveCorrected(
+                        candidate.score().frameCoverageRatio(),
+                        candidate.score().skewScore()
+                )
+        );
+    }
+
+    private CvDetectionResult acceptedResult(
+            MediaInputFrame frame,
+            List<CvFrameCandidate> acceptedCandidates,
+            Map<String, Double> metrics
+    ) {
+        Map<String, Double> resultMetrics = acceptedMetrics(metrics, acceptedCandidates.size());
+        if (!normalizeAcceptedCandidates) {
+            return new CvDetectionResult(
+                    CvDetectionStatus.ACCEPTED,
+                    acceptedCandidates,
+                    List.of(),
+                    Optional.empty(),
+                    resultMetrics,
+                    "CV backend accepted frame candidates"
+            );
+        }
+        List<CvNormalizedFrame> normalizedFrames = acceptedCandidates.stream()
+                .map(candidate -> correctPerspective(frame, candidate))
+                .toList();
+        return new CvDetectionResult(
+                CvDetectionStatus.ACCEPTED,
+                List.of(),
+                normalizedFrames,
+                Optional.empty(),
+                resultMetrics,
+                "CV backend accepted perspective-corrected frames"
+        );
     }
 
     private CvDetectionResult rejectedWithCandidates(
