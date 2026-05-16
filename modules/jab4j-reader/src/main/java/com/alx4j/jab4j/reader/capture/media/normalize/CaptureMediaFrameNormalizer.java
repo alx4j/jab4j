@@ -10,11 +10,11 @@ import com.alx4j.jab4j.reader.capture.media.CaptureMediaDiagnostic;
 import com.alx4j.jab4j.reader.capture.media.CaptureMediaDiagnosticCode;
 import com.alx4j.jab4j.reader.capture.media.CaptureMediaDiagnosticSeverity;
 import com.alx4j.jab4j.reader.capture.media.cv.CaptureMediaCvBackend;
+import com.alx4j.jab4j.reader.capture.media.cv.CaptureMediaCvBackends;
 import com.alx4j.jab4j.reader.capture.media.cv.CvDetectionResult;
 import com.alx4j.jab4j.reader.capture.media.cv.CvFrameCandidate;
 import com.alx4j.jab4j.reader.capture.media.cv.CvNormalizedFrame;
 import com.alx4j.jab4j.reader.capture.media.cv.PerspectiveTransform;
-import com.alx4j.jab4j.reader.capture.media.cv.legacy.LegacyCaptureMediaCvBackend;
 import com.alx4j.jab4j.reader.capture.media.input.MediaInputFrame;
 import com.alx4j.jab4j.reader.capture.qualify.CaptureRenderedLayoutCatalog;
 import com.alx4j.jab4j.render.layout.FixedLayoutPlan;
@@ -85,7 +85,7 @@ public final class CaptureMediaFrameNormalizer {
      * @param layoutPlanner fixed layout planner used for rendered-frame signatures
      */
     public CaptureMediaFrameNormalizer(CaptureRenderedLayoutCatalog layoutCatalog, FixedLayoutPlanner layoutPlanner) {
-        this(layoutCatalog, layoutPlanner, new LegacyCaptureMediaCvBackend(layoutCatalog, layoutPlanner));
+        this(layoutCatalog, layoutPlanner, CaptureMediaCvBackends.configuredOrLegacy(layoutCatalog, layoutPlanner));
     }
 
     /**
