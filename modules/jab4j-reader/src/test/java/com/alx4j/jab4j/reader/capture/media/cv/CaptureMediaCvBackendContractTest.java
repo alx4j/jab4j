@@ -333,6 +333,7 @@ class CaptureMediaCvBackendContractTest {
     @Test
     @DisplayName("Production reader code does not import BoofCV")
     void productionReaderCodeDoesNotImportBoofCv() throws IOException {
+        String moduleInfo = Files.readString(mainSourceRoot().resolve("module-info.java"));
         List<String> violations = new ArrayList<>();
         try (Stream<Path> sourceFiles = Files.walk(mainSourceRoot())) {
             sourceFiles
@@ -340,7 +341,12 @@ class CaptureMediaCvBackendContractTest {
                     .forEach(path -> recordBoofCvImportViolation(path, violations));
         }
 
-        assertTrue(violations.isEmpty(), () -> "Production BoofCV imports found: " + violations);
+        assertAll(
+                () -> assertFalse(moduleInfo.contains("requires boofcv"), moduleInfo),
+                () -> assertFalse(moduleInfo.contains("requires org.boofcv"), moduleInfo),
+                () -> assertFalse(moduleInfo.contains("requires com.alx4j.jab4j.reader.cv.boofcv"), moduleInfo),
+                () -> assertTrue(violations.isEmpty(), () -> "Production BoofCV imports found: " + violations)
+        );
     }
 
     @Test

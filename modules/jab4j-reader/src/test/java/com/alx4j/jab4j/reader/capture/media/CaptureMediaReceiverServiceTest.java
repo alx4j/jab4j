@@ -33,21 +33,32 @@ class CaptureMediaReceiverServiceTest {
     @Test
     @DisplayName("Direct video input returns stable unsupported diagnostics without requiring a readable file")
     void directVideoInputReturnsStableUnsupportedDiagnosticsWithoutReadableFile() {
-        Path video = tempDir.resolve("phone-capture.mov");
+        Path mov = tempDir.resolve("phone-capture.mov");
+        Path mp4 = tempDir.resolve("phone-capture.mp4");
 
         CaptureMediaReceiverResult result =
-                service.evaluate(CaptureMediaReceiverRequest.evaluateVideoFiles(List.of(video)));
+                service.evaluate(CaptureMediaReceiverRequest.evaluateVideoFiles(List.of(mov, mp4)));
+        List<String> expectedSourceIds = List.of(mov, mp4).stream()
+                .map(path -> path.toAbsolutePath().normalize().toString())
+                .toList();
 
-        CaptureMediaDiagnostic diagnostic = result.diagnostics().get(0);
         assertAll(
                 () -> assertEquals(CaptureMediaReceiverStatus.REJECTED, result.status()),
                 () -> assertTrue(result.failed()),
-                () -> assertEquals(1, result.summary().submittedMediaCount()),
+                () -> assertEquals(2, result.summary().submittedMediaCount()),
                 () -> assertEquals(0, result.summary().readableMediaCount()),
-                () -> assertEquals(1, result.summary().rejectedCandidateCount()),
-                () -> assertEquals(CaptureMediaDiagnosticCode.UNSUPPORTED_CONTAINER, diagnostic.code()),
-                () -> assertTrue(diagnostic.blocking()),
-                () -> assertEquals(CaptureMediaSourceKind.VIDEO_FILE, diagnostic.sourceKind().orElseThrow()),
+                () -> assertEquals(2, result.summary().rejectedCandidateCount()),
+                () -> assertEquals(2, result.diagnostics().size()),
+                () -> assertEquals(List.of(
+                        CaptureMediaDiagnosticCode.UNSUPPORTED_CONTAINER,
+                        CaptureMediaDiagnosticCode.UNSUPPORTED_CONTAINER
+                ), result.diagnostics().stream().map(CaptureMediaDiagnostic::code).toList()),
+                () -> assertTrue(result.diagnostics().stream().allMatch(CaptureMediaDiagnostic::blocking)),
+                () -> assertTrue(result.diagnostics().stream()
+                        .allMatch(diagnostic -> diagnostic.sourceKind().orElseThrow() == CaptureMediaSourceKind.VIDEO_FILE)),
+                () -> assertEquals(expectedSourceIds, result.diagnostics().stream()
+                        .map(diagnostic -> diagnostic.sourceId().orElseThrow())
+                        .toList()),
                 () -> assertTrue(result.message().contains(".mov/.mp4"))
         );
     }
@@ -66,6 +77,39 @@ class CaptureMediaReceiverServiceTest {
                 () -> assertEquals(CaptureMediaDiagnosticCode.UNSUPPORTED_IMAGE_FORMAT,
                         result.diagnostics().get(0).code()),
                 () -> assertTrue(result.message().contains("HEIC/HEIF"))
+        );
+    }
+
+    @Test
+    @DisplayName("Corrupted still images return unreadable media diagnostics")
+    void corruptedStillImagesReturnUnreadableMediaDiagnostics() throws Exception {
+        Path png = tempDir.resolve("corrupted.png");
+        Path jpg = tempDir.resolve("corrupted.jpg");
+        Files.writeString(png, "not a png");
+        Files.writeString(jpg, "not a jpeg");
+
+        CaptureMediaReceiverResult result =
+                service.evaluate(CaptureMediaReceiverRequest.evaluateStillImages(List.of(png, jpg)));
+
+        assertAll(
+                () -> assertEquals(CaptureMediaReceiverStatus.REJECTED, result.status()),
+                () -> assertTrue(result.failed()),
+                () -> assertEquals(2, result.summary().submittedMediaCount()),
+                () -> assertEquals(0, result.summary().readableMediaCount()),
+                () -> assertEquals(2, result.summary().rejectedCandidateCount()),
+                () -> assertEquals(2, result.diagnostics().size()),
+                () -> assertEquals(List.of(
+                        CaptureMediaDiagnosticCode.UNREADABLE_MEDIA,
+                        CaptureMediaDiagnosticCode.UNREADABLE_MEDIA
+                ), result.diagnostics().stream().map(CaptureMediaDiagnostic::code).toList()),
+                () -> assertTrue(result.diagnostics().stream().allMatch(CaptureMediaDiagnostic::blocking)),
+                () -> assertTrue(result.diagnostics().stream()
+                        .allMatch(diagnostic -> diagnostic.sourceKind().orElseThrow()
+                                == CaptureMediaSourceKind.STILL_IMAGE_FILE)),
+                () -> assertEquals(List.of(0, 1), result.diagnostics().stream()
+                        .map(diagnostic -> diagnostic.callerOrder().orElseThrow())
+                        .toList()),
+                () -> assertTrue(result.message().contains("could not be read"))
         );
     }
 

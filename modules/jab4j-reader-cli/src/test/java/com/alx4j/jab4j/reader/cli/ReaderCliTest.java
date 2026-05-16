@@ -782,7 +782,9 @@ class ReaderCliTest {
                 () -> assertTrue(stderrText.contains("frame-sequence.txt is a writer-export validation helper")),
                 () -> assertTrue(stderrText.contains(
                         "Unsupported in the first media slice: full real photo recovery, direct .mov/.mp4 decoding"
-                ))
+                )),
+                () -> assertFalse(stderrText.contains("--capture-media-cv-backend")),
+                () -> assertFalse(stderrText.toLowerCase(java.util.Locale.ROOT).contains("boofcv"))
         );
     }
 
