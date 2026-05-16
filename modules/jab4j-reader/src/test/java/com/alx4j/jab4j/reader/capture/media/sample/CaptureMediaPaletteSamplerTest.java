@@ -140,19 +140,44 @@ class CaptureMediaPaletteSamplerTest {
         );
     }
 
+    @Test
+    @DisplayName("Area samples use median RGB before palette mapping")
+    void areaSamplesUseMedianRgbBeforePaletteMapping() {
+        int[] pixels = new int[25];
+        for (int index = 0; index < pixels.length; index++) {
+            pixels[index] = 0xFF000000;
+        }
+        pixels[(2 * 5) + 2] = 0xFF808080;
+        NormalizedCaptureFrame frame = frame(5, 5, pixels);
+
+        CaptureMediaPaletteSample centerSample = sampler.sampleTolerantPalette(frame, 2, 2);
+        CaptureMediaPaletteSample areaSample = sampler.sampleTolerantPaletteArea(frame, 2, 2, 1);
+
+        assertAll(
+                () -> assertEquals(CaptureMediaPaletteSampleStatus.REJECTED, centerSample.status()),
+                () -> assertEquals(CaptureMediaPaletteSampleStatus.EXACT, areaSample.status()),
+                () -> assertEquals(0, areaSample.paletteIndex()),
+                () -> assertEquals(0xFF000000, areaSample.sourceArgb())
+        );
+    }
+
     private NormalizedCaptureFrame frame(int[] pixels) {
+        return frame(2, 2, pixels);
+    }
+
+    private NormalizedCaptureFrame frame(int width, int height, int[] pixels) {
         return new NormalizedCaptureFrame(
                 "source.png",
                 CaptureMediaSourceKind.STILL_IMAGE_FILE,
                 0,
-                2,
-                2,
-                2,
-                2,
+                width,
+                height,
+                width,
+                height,
                 "png",
                 "abc123",
                 "test-layout",
-                FrameCorners.exactFrame(2, 2),
+                FrameCorners.exactFrame(width, height),
                 CaptureMediaQualityMetrics.exactRenderedFrame(),
                 pixels
         );
