@@ -19,7 +19,10 @@ import com.alx4j.jab4j.reader.capture.media.cv.CvTileSamplingEvidence;
 import com.alx4j.jab4j.reader.capture.media.normalize.FrameCorners;
 import com.alx4j.jab4j.reader.capture.media.normalize.NormalizedCaptureFrame;
 import com.alx4j.jab4j.reader.capture.media.sample.CaptureMediaTilePayloadSampler;
+import com.alx4j.jab4j.reader.capture.media.sample.CaptureMediaTilePayloadSampler.BorderInspectionStatus;
 import com.alx4j.jab4j.reader.capture.media.sample.CaptureMediaTilePayloadSampler.CandidateInspection;
+import com.alx4j.jab4j.reader.capture.media.sample.CaptureMediaTilePayloadSampler.CandidateInspectionStatus;
+import com.alx4j.jab4j.reader.capture.media.sample.CaptureMediaTilePayloadSampler.DecodeInspectionStatus;
 import com.alx4j.jab4j.reader.capture.media.sample.CaptureMediaTilePayloadSampler.FrameInspection;
 import com.alx4j.jab4j.reader.capture.media.sample.CaptureMediaTilePayloadSampler.PaletteConfidenceSummary;
 import com.alx4j.jab4j.reader.capture.media.sample.CaptureMediaTilePayloadSampler.SlotInspection;
@@ -224,6 +227,16 @@ public final class CaptureMediaCandidateDebugExporter {
         lines.add("sampler.tileDecode.attemptCount=" + tileDecodeAttemptCount(inspection));
         lines.add("sampler.envelope.acceptedPayloadCount=" + inspection.decodedPayloadCount());
         lines.add("sampler.envelope.rejectedAttemptCount=" + envelopeRejectedAttemptCount(inspection));
+        lines.add("sampler.reason.borderSignatureSlotCount=" + borderStatusCount(inspection, BorderInspectionStatus.SIGNATURE));
+        lines.add("sampler.reason.borderNoSignatureSlotCount=" + borderStatusCount(inspection, BorderInspectionStatus.NO_SIGNATURE));
+        lines.add("sampler.reason.borderPaletteRejectedSlotCount="
+                + borderStatusCount(inspection, BorderInspectionStatus.PALETTE_REJECTED));
+        lines.add("sampler.reason.noFinderAttemptCount=" + inspection.noFinderAttemptCount());
+        lines.add("sampler.reason.paletteRejectedAttemptCount=" + inspection.paletteRejectedAttemptCount());
+        lines.add("sampler.reason.finderCandidateAttemptCount="
+                + candidateStatusCount(inspection, CandidateInspectionStatus.FINDER_CANDIDATE));
+        lines.add("sampler.reason.tileOrEnvelopeRejectedAttemptCount=" + envelopeRejectedAttemptCount(inspection));
+        lines.add("sampler.reason.acceptedPayloadCount=" + inspection.decodedPayloadCount());
         addSamplingEvidence(lines, inspection);
         addSlotInspection(lines, inspection);
         lines.add("diagnostic.selectedPublicCode=" + selectedPublicDiagnosticCode(inspection)
@@ -284,10 +297,29 @@ public final class CaptureMediaCandidateDebugExporter {
             String slotPrefix = "sampler.slot." + slot.tileIndex();
             lines.add(slotPrefix + ".borderStatus=" + slot.borderStatus());
             lines.add(slotPrefix + ".interiorContent=" + slot.interiorContent());
+            lines.add(slotPrefix + ".effectiveTileShiftXPx=" + slot.effectiveTileShiftXPx());
+            lines.add(slotPrefix + ".effectiveTileShiftYPx=" + slot.effectiveTileShiftYPx());
+            lines.add(slotPrefix + ".effectiveTilePlacementSource=" + slot.effectiveTilePlacementSource());
             lines.add(slotPrefix + ".candidateCount=" + slot.candidates().size());
+            lines.add(slotPrefix + ".reason.noFinderAttemptCount="
+                    + candidateStatusCount(slot, CandidateInspectionStatus.NO_FINDER));
+            lines.add(slotPrefix + ".reason.paletteRejectedAttemptCount="
+                    + candidateStatusCount(slot, CandidateInspectionStatus.PALETTE_REJECTED));
+            lines.add(slotPrefix + ".reason.finderCandidateAttemptCount="
+                    + candidateStatusCount(slot, CandidateInspectionStatus.FINDER_CANDIDATE));
+            lines.add(slotPrefix + ".reason.tileOrEnvelopeRejectedAttemptCount="
+                    + decodeStatusCount(slot, DecodeInspectionStatus.REJECTED_BY_TILE_OR_ENVELOPE));
+            lines.add(slotPrefix + ".reason.acceptedPayloadCount="
+                    + decodeStatusCount(slot, DecodeInspectionStatus.ACCEPTED_PAYLOAD));
             for (CandidateInspection candidate : slot.candidates()) {
                 String candidatePrefix = slotPrefix + ".sideVersion." + candidate.sideVersion();
                 lines.add(candidatePrefix + ".dimension=" + candidate.dimension());
+                lines.add(candidatePrefix + ".moduleSizePx=" + candidate.moduleSizePx());
+                lines.add(candidatePrefix + ".moduleSampling.offsetXPx=" + candidate.moduleCenterOffsetXPx());
+                lines.add(candidatePrefix + ".moduleSampling.offsetYPx=" + candidate.moduleCenterOffsetYPx());
+                lines.add(candidatePrefix + ".moduleSampling.offsetSource="
+                        + candidate.moduleSamplingOffsetSource());
+                lines.add(candidatePrefix + ".moduleSampling.areaSampleRadiusPx=" + candidate.areaSampleRadiusPx());
                 lines.add(candidatePrefix + ".status=" + candidate.status());
                 lines.add(candidatePrefix + ".decodeStatus=" + candidate.decodeStatus());
                 lines.add(candidatePrefix + ".tileDecode.status=" + candidate.decodeStatus());
@@ -363,11 +395,49 @@ public final class CaptureMediaCandidateDebugExporter {
         return "0x%08X".formatted(value);
     }
 
+    private int borderStatusCount(FrameInspection inspection, BorderInspectionStatus status) {
+        int count = 0;
+        for (SlotInspection slot : inspection.slots()) {
+            if (slot.borderStatus() == status) {
+                count++;
+            }
+        }
+        return count;
+    }
+
+    private int candidateStatusCount(FrameInspection inspection, CandidateInspectionStatus status) {
+        int count = 0;
+        for (SlotInspection slot : inspection.slots()) {
+            count += candidateStatusCount(slot, status);
+        }
+        return count;
+    }
+
+    private int candidateStatusCount(SlotInspection slot, CandidateInspectionStatus status) {
+        int count = 0;
+        for (CandidateInspection candidate : slot.candidates()) {
+            if (candidate.status() == status) {
+                count++;
+            }
+        }
+        return count;
+    }
+
+    private int decodeStatusCount(SlotInspection slot, DecodeInspectionStatus status) {
+        int count = 0;
+        for (CandidateInspection candidate : slot.candidates()) {
+            if (candidate.decodeStatus() == status) {
+                count++;
+            }
+        }
+        return count;
+    }
+
     private int tileDecodeAttemptCount(FrameInspection inspection) {
         int attemptCount = 0;
         for (SlotInspection slot : inspection.slots()) {
             for (CandidateInspection candidate : slot.candidates()) {
-                if (candidate.decodeStatus() != CaptureMediaTilePayloadSampler.DecodeInspectionStatus.NOT_ATTEMPTED) {
+                if (candidate.decodeStatus() != DecodeInspectionStatus.NOT_ATTEMPTED) {
                     attemptCount++;
                 }
             }
@@ -379,8 +449,7 @@ public final class CaptureMediaCandidateDebugExporter {
         int rejectedCount = 0;
         for (SlotInspection slot : inspection.slots()) {
             for (CandidateInspection candidate : slot.candidates()) {
-                if (candidate.decodeStatus()
-                        == CaptureMediaTilePayloadSampler.DecodeInspectionStatus.REJECTED_BY_TILE_OR_ENVELOPE) {
+                if (candidate.decodeStatus() == DecodeInspectionStatus.REJECTED_BY_TILE_OR_ENVELOPE) {
                     rejectedCount++;
                 }
             }
@@ -396,7 +465,7 @@ public final class CaptureMediaCandidateDebugExporter {
                 || inspection.paletteRejectedAttemptCount() > 0
                 || inspection.noFinderAttemptCount() > 0
                 || inspection.slots().stream()
-                .anyMatch(slot -> slot.borderStatus() == CaptureMediaTilePayloadSampler.BorderInspectionStatus.PALETTE_REJECTED)) {
+                .anyMatch(slot -> slot.borderStatus() == BorderInspectionStatus.PALETTE_REJECTED)) {
             return Optional.of(CaptureMediaDiagnosticCode.COLOR_OR_COMPRESSION_SHIFT);
         }
         return Optional.of(CaptureMediaDiagnosticCode.SCREEN_OR_FRAME_NOT_FOUND);

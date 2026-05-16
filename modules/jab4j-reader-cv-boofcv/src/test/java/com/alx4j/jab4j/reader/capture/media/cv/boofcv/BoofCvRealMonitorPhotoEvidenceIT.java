@@ -11,8 +11,10 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -46,6 +48,7 @@ final class BoofCvRealMonitorPhotoEvidenceIT {
     private static final String REAL_MONITOR_PHOTO_INPUT_PROPERTY = "jab4j.boofcv.realMonitorPhotoInput";
     private static final Path EVIDENCE_ROOT = Path.of("target", "boofcv-real-monitor-evidence");
     private static final Set<String> SAMPLE_EXTENSIONS = Set.of("jpg", "jpeg", "heic", "heif");
+    private static final Set<String> MVP6_TARGET_SAMPLE_STEMS = Set.of("IMG_5865", "IMG_5867");
 
     /**
      * Evaluates local monitor-photo samples only when the manual input property is supplied.
@@ -189,6 +192,7 @@ final class BoofCvRealMonitorPhotoEvidenceIT {
                 "extension",
                 "approvedClassification",
                 "observedCandidateClassification",
+                "mvp6TargetSample",
                 "status",
                 "submitted",
                 "readable",
@@ -211,6 +215,14 @@ final class BoofCvRealMonitorPhotoEvidenceIT {
                 "duplicates",
                 "restoredFiles",
                 "boofCvCandidateEvidence",
+                "samplerCandidateAttempts",
+                "samplerNoFinderAttempts",
+                "samplerPaletteRejectedAttempts",
+                "samplerDecodedPayloads",
+                "samplerTileDecodeAttempts",
+                "samplerEnvelopeAcceptedPayloads",
+                "samplerEnvelopeRejectedAttempts",
+                "samplerSelectedPublicDiagnostic",
                 "primaryDiagnostic",
                 "primaryDiagnosticMessage",
                 "diagnostics",
@@ -223,6 +235,7 @@ final class BoofCvRealMonitorPhotoEvidenceIT {
                     row.extension,
                     row.approvedClassification.label,
                     row.observedCandidateClassification.label,
+                    Boolean.toString(row.mvp6TargetSample),
                     row.status,
                     Integer.toString(row.submittedMediaCount),
                     Integer.toString(row.readableMediaCount),
@@ -245,6 +258,14 @@ final class BoofCvRealMonitorPhotoEvidenceIT {
                     Integer.toString(row.duplicateMediaFrameCount),
                     Long.toString(row.restoredFileCount),
                     Boolean.toString(row.boofCvCandidateEvidence),
+                    Integer.toString(row.samplerEvidence.candidateAttemptCount()),
+                    Integer.toString(row.samplerEvidence.noFinderAttemptCount()),
+                    Integer.toString(row.samplerEvidence.paletteRejectedAttemptCount()),
+                    Integer.toString(row.samplerEvidence.decodedPayloadCount()),
+                    Integer.toString(row.samplerEvidence.tileDecodeAttemptCount()),
+                    Integer.toString(row.samplerEvidence.envelopeAcceptedPayloadCount()),
+                    Integer.toString(row.samplerEvidence.envelopeRejectedAttemptCount()),
+                    row.samplerEvidence.selectedPublicDiagnostic(),
                     row.primaryDiagnosticCode,
                     tsvValue(row.primaryDiagnosticMessage),
                     row.diagnosticCodes,
@@ -328,6 +349,7 @@ final class BoofCvRealMonitorPhotoEvidenceIT {
             String extension,
             SampleClassification approvedClassification,
             SampleClassification observedCandidateClassification,
+            boolean mvp6TargetSample,
             String status,
             int submittedMediaCount,
             int readableMediaCount,
@@ -350,6 +372,7 @@ final class BoofCvRealMonitorPhotoEvidenceIT {
             int duplicateMediaFrameCount,
             long restoredFileCount,
             boolean boofCvCandidateEvidence,
+            SamplerEvidence samplerEvidence,
             String primaryDiagnosticCode,
             String primaryDiagnosticMessage,
             String diagnosticCodes,
@@ -366,6 +389,7 @@ final class BoofCvRealMonitorPhotoEvidenceIT {
             CaptureMediaSummary summary = result.summary();
             String extension = fileExtension(sample);
             Optional<CaptureMediaDiagnostic> primaryDiagnostic = primaryDiagnostic(result.diagnostics());
+            SamplerEvidence samplerEvidence = SamplerEvidence.from(debugOutputPath);
             String primaryDiagnosticCode = primaryDiagnostic
                     .map(diagnostic -> diagnostic.code().name())
                     .orElse("none");
@@ -374,6 +398,7 @@ final class BoofCvRealMonitorPhotoEvidenceIT {
                     extension,
                     SampleClassification.approvedFrom(sample),
                     SampleClassification.observedFrom(extension, summary, primaryDiagnosticCode),
+                    mvp6TargetSample(sample),
                     result.status().name(),
                     summary.submittedMediaCount(),
                     summary.readableMediaCount(),
@@ -396,6 +421,7 @@ final class BoofCvRealMonitorPhotoEvidenceIT {
                     summary.duplicateMediaFrameCount(),
                     summary.restoredFileCount(),
                     boofCvProbe.evidenceCandidateCount() > 0,
+                    samplerEvidence,
                     primaryDiagnosticCode,
                     primaryDiagnostic.map(CaptureMediaDiagnostic::message).orElse("none"),
                     diagnosticCodes(result.diagnostics()),
@@ -417,6 +443,19 @@ final class BoofCvRealMonitorPhotoEvidenceIT {
                 return "";
             }
             return fileName.substring(dotIndex + 1).toLowerCase(Locale.ROOT);
+        }
+
+        private static boolean mvp6TargetSample(Path sample) {
+            return MVP6_TARGET_SAMPLE_STEMS.contains(fileStem(sample).toUpperCase(Locale.ROOT));
+        }
+
+        private static String fileStem(Path path) {
+            String fileName = path.getFileName().toString();
+            int dotIndex = fileName.lastIndexOf('.');
+            if (dotIndex <= 0) {
+                return fileName;
+            }
+            return fileName.substring(0, dotIndex);
         }
 
         private static Optional<CaptureMediaDiagnostic> primaryDiagnostic(List<CaptureMediaDiagnostic> diagnostics) {
@@ -443,6 +482,98 @@ final class BoofCvRealMonitorPhotoEvidenceIT {
             return String.join(",", diagnostics.stream()
                     .map(diagnostic -> diagnostic.code().name())
                     .toList());
+        }
+    }
+
+    private record SamplerEvidence(
+            int candidateAttemptCount,
+            int noFinderAttemptCount,
+            int paletteRejectedAttemptCount,
+            int decodedPayloadCount,
+            int tileDecodeAttemptCount,
+            int envelopeAcceptedPayloadCount,
+            int envelopeRejectedAttemptCount,
+            String selectedPublicDiagnostic
+    ) {
+
+        private static SamplerEvidence empty() {
+            return new SamplerEvidence(0, 0, 0, 0, 0, 0, 0, "");
+        }
+
+        private static SamplerEvidence from(Path debugOutputPath) {
+            if (!Files.isDirectory(debugOutputPath)) {
+                return empty();
+            }
+            List<Path> sidecars;
+            try (Stream<Path> stream = Files.walk(debugOutputPath)) {
+                sidecars = stream
+                        .filter(Files::isRegularFile)
+                        .filter(SamplerEvidence::candidateSidecar)
+                        .sorted(Comparator.comparing(Path::toString))
+                        .toList();
+            } catch (IOException exception) {
+                return empty();
+            }
+            int candidateAttempts = 0;
+            int noFinderAttempts = 0;
+            int paletteRejectedAttempts = 0;
+            int decodedPayloads = 0;
+            int tileDecodeAttempts = 0;
+            int envelopeAcceptedPayloads = 0;
+            int envelopeRejectedAttempts = 0;
+            List<String> selectedDiagnostics = new ArrayList<>();
+            for (Path sidecar : sidecars) {
+                Map<String, String> fields = sidecarFields(sidecar);
+                candidateAttempts += intField(fields, "sampler.candidateAttemptCount");
+                noFinderAttempts += intField(fields, "sampler.noFinderAttemptCount");
+                paletteRejectedAttempts += intField(fields, "sampler.paletteRejectedAttemptCount");
+                decodedPayloads += intField(fields, "sampler.decodedPayloadCount");
+                tileDecodeAttempts += intField(fields, "sampler.tileDecode.attemptCount");
+                envelopeAcceptedPayloads += intField(fields, "sampler.envelope.acceptedPayloadCount");
+                envelopeRejectedAttempts += intField(fields, "sampler.envelope.rejectedAttemptCount");
+                String selectedDiagnostic = fields.getOrDefault("diagnostic.selectedPublicCode", "");
+                if (!selectedDiagnostic.isBlank()) {
+                    selectedDiagnostics.add(selectedDiagnostic);
+                }
+            }
+            return new SamplerEvidence(
+                    candidateAttempts,
+                    noFinderAttempts,
+                    paletteRejectedAttempts,
+                    decodedPayloads,
+                    tileDecodeAttempts,
+                    envelopeAcceptedPayloads,
+                    envelopeRejectedAttempts,
+                    selectedDiagnostics.isEmpty() ? "" : String.join(",", selectedDiagnostics)
+            );
+        }
+
+        private static boolean candidateSidecar(Path path) {
+            String fileName = path.getFileName().toString();
+            return fileName.startsWith("candidate-") && fileName.endsWith(".txt");
+        }
+
+        private static Map<String, String> sidecarFields(Path sidecar) {
+            try {
+                Map<String, String> fields = new LinkedHashMap<>();
+                for (String line : Files.readAllLines(sidecar, StandardCharsets.UTF_8)) {
+                    int separator = line.indexOf('=');
+                    if (separator > 0) {
+                        fields.put(line.substring(0, separator), line.substring(separator + 1));
+                    }
+                }
+                return fields;
+            } catch (IOException exception) {
+                return Map.of();
+            }
+        }
+
+        private static int intField(Map<String, String> fields, String key) {
+            try {
+                return Integer.parseInt(fields.getOrDefault(key, "0"));
+            } catch (NumberFormatException exception) {
+                return 0;
+            }
         }
     }
 
