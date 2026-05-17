@@ -22,7 +22,7 @@ final class BoofCvJabEvidenceScorer {
 
     static final double MIN_FRAME_COVERAGE_RATIO = 0.20d;
 
-    private static final double MIN_ASPECT_SCORE = 0.70d;
+    private static final double MIN_ASPECT_SCORE = 0.80d;
     private static final double MIN_SIZE_SCORE = 0.45d;
     private static final double MIN_TOTAL_SCORE = 0.395d;
     private static final double MIN_BORDER_SCORE = 0.20d;
@@ -70,18 +70,39 @@ final class BoofCvJabEvidenceScorer {
     ) {
         Objects.requireNonNull(frame, "frame must not be null");
         Objects.requireNonNull(regions, "regions must not be null");
-        List<CvFrameCandidate> scoredCandidates = new ArrayList<>();
+        List<RegionProfileScores> regionScores = new ArrayList<>();
+        int inputOrder = 0;
         for (BoofCvCandidateRegionProposer.CandidateRegion region : regions) {
             Objects.requireNonNull(region, "regions must not contain null values");
-            bestProfileMatch(region).ifPresent(match -> scoredCandidates.add(scoreRegion(
-                    frame,
-                    region,
-                    match.profile(),
-                    match.aspectScore()
-            )));
+            List<ScoredProfileAlternative> alternatives = profileMatches(region).stream()
+                    .map(match -> new ScoredProfileAlternative(
+                            match,
+                            scoreRegion(frame, region, match.profile(), match.aspectScore())
+                    ))
+                    .sorted(profileAlternativeComparator())
+                    .toList();
+            if (!alternatives.isEmpty()) {
+                regionScores.add(new RegionProfileScores(inputOrder, alternatives));
+            }
+            inputOrder++;
         }
-        scoredCandidates.sort(Comparator.comparingDouble((CvFrameCandidate candidate) ->
-                candidate.score().totalScore()).reversed());
+        regionScores.sort(Comparator
+                .comparingDouble(RegionProfileScores::bestTotalScore)
+                .reversed()
+                .thenComparingInt(RegionProfileScores::inputOrder));
+
+        List<CvFrameCandidate> scoredCandidates = new ArrayList<>();
+        for (int regionIndex = 0; regionIndex < regionScores.size(); regionIndex++) {
+            List<ScoredProfileAlternative> alternatives = regionScores.get(regionIndex).alternatives();
+            for (int alternativeIndex = 0; alternativeIndex < alternatives.size(); alternativeIndex++) {
+                scoredCandidates.add(withRanks(
+                        alternatives.get(alternativeIndex).candidate(),
+                        regionIndex + 1,
+                        alternativeIndex + 1,
+                        alternatives.size()
+                ));
+            }
+        }
         return List.copyOf(scoredCandidates);
     }
 
@@ -174,20 +195,58 @@ final class BoofCvJabEvidenceScorer {
         return weakestEvidenceReason(score);
     }
 
-    private Optional<ProfileMatch> bestProfileMatch(BoofCvCandidateRegionProposer.CandidateRegion region) {
-        ProfileMatch best = null;
+    private List<ProfileMatch> profileMatches(BoofCvCandidateRegionProposer.CandidateRegion region) {
+        List<ProfileMatch> matches = new ArrayList<>();
+        int catalogOrder = 0;
         for (LayoutProfile profile : layoutCatalog.profiles()) {
             double aspectScore = aspectScore(region, profile);
             double sizeScore = sizeScore(region, profile);
             if (aspectScore < MIN_ASPECT_SCORE || sizeScore < MIN_SIZE_SCORE) {
+                catalogOrder++;
                 continue;
             }
-            ProfileMatch candidate = new ProfileMatch(profile, aspectScore, aspectScore * sizeScore);
-            if (best == null || candidate.combinedScore() > best.combinedScore()) {
-                best = candidate;
-            }
+            matches.add(new ProfileMatch(profile, aspectScore, aspectScore * sizeScore, catalogOrder));
+            catalogOrder++;
         }
-        return Optional.ofNullable(best);
+        return matches.stream()
+                .sorted(Comparator
+                        .comparingDouble(ProfileMatch::combinedScore)
+                        .reversed()
+                        .thenComparingInt(ProfileMatch::catalogOrder))
+                .toList();
+    }
+
+    private Comparator<ScoredProfileAlternative> profileAlternativeComparator() {
+        return Comparator
+                .comparingDouble((ScoredProfileAlternative alternative) ->
+                        alternative.candidate().score().totalScore())
+                .reversed()
+                .thenComparing(Comparator
+                        .comparingDouble((ScoredProfileAlternative alternative) ->
+                                alternative.match().combinedScore())
+                        .reversed())
+                .thenComparingInt(alternative -> alternative.match().catalogOrder());
+    }
+
+    private CvFrameCandidate withRanks(
+            CvFrameCandidate candidate,
+            int sourceRegionRank,
+            int profileAlternativeRank,
+            int profileAlternativeCount
+    ) {
+        return new CvFrameCandidate(
+                candidate.layoutProfile(),
+                candidate.frameCorners(),
+                candidate.sourceLeftPx(),
+                candidate.sourceTopPx(),
+                candidate.sourceRightExclusivePx(),
+                candidate.sourceBottomExclusivePx(),
+                candidate.score(),
+                candidate.geometrySource(),
+                sourceRegionRank,
+                profileAlternativeRank,
+                profileAlternativeCount
+        );
     }
 
     private CvFrameCandidate scoreRegion(
@@ -225,7 +284,11 @@ final class BoofCvJabEvidenceScorer {
                         CvCandidateScore.NOT_MEASURED,
                         CvCandidateScore.NOT_MEASURED,
                         CvCandidateScore.NOT_MEASURED
-                )
+                ),
+                Optional.of(region.geometrySource().sidecarValue()),
+                1,
+                1,
+                1
         );
     }
 
@@ -433,7 +496,12 @@ final class BoofCvJabEvidenceScorer {
 
     private boolean overlapsAny(CvFrameCandidate candidate, List<CvFrameCandidate> existingCandidates) {
         return existingCandidates.stream()
-                .anyMatch(existing -> intersectionOverUnion(existing, candidate) >= SAME_REGION_IOU);
+                .anyMatch(existing -> sameProfile(existing, candidate)
+                        && intersectionOverUnion(existing, candidate) >= SAME_REGION_IOU);
+    }
+
+    private boolean sameProfile(CvFrameCandidate first, CvFrameCandidate second) {
+        return first.layoutProfile().profileId().equals(second.layoutProfile().profileId());
     }
 
     private double intersectionOverUnion(CvFrameCandidate first, CvFrameCandidate second) {
@@ -489,14 +557,8 @@ final class BoofCvJabEvidenceScorer {
     }
 
     private double sizeScore(BoofCvCandidateRegionProposer.CandidateRegion region, LayoutProfile profile) {
-        double widthRatio = Math.min(
-                (double) region.widthPx() / profile.frameWidthPx(),
-                (double) profile.frameWidthPx() / region.widthPx()
-        );
-        double heightRatio = Math.min(
-                (double) region.heightPx() / profile.frameHeightPx(),
-                (double) profile.frameHeightPx() / region.heightPx()
-        );
+        double widthRatio = Math.min(1.0d, (double) region.widthPx() / profile.frameWidthPx());
+        double heightRatio = Math.min(1.0d, (double) region.heightPx() / profile.frameHeightPx());
         return clampScore((widthRatio + heightRatio) / 2.0d);
     }
 
@@ -534,7 +596,24 @@ final class BoofCvJabEvidenceScorer {
         return Math.max(min, Math.min(max, value));
     }
 
-    private record ProfileMatch(LayoutProfile profile, double aspectScore, double combinedScore) {
+    private record RegionProfileScores(int inputOrder, List<ScoredProfileAlternative> alternatives) {
+
+        private RegionProfileScores {
+            alternatives = List.copyOf(alternatives);
+        }
+
+        private double bestTotalScore() {
+            return alternatives.stream()
+                    .mapToDouble(alternative -> alternative.candidate().score().totalScore())
+                    .max()
+                    .orElse(0.0d);
+        }
+    }
+
+    private record ScoredProfileAlternative(ProfileMatch match, CvFrameCandidate candidate) {
+    }
+
+    private record ProfileMatch(LayoutProfile profile, double aspectScore, double combinedScore, int catalogOrder) {
     }
 
     private record SyncScore(double score, double contrastScore) {

@@ -66,6 +66,45 @@ class CaptureMediaFrameDecoderTest {
     }
 
     @Test
+    @DisplayName("Sampler-accepted partial camera-derived payloads become decoded candidates")
+    void samplerAcceptedPartialCameraDerivedPayloadsBecomeDecodedCandidates() {
+        TilePayload accepted = CaptureMediaTestFrames.payload(
+                FrameType.DATA,
+                3L,
+                0,
+                PayloadKind.FILE_CHUNK,
+                "left-tile"
+        );
+        TilePayload corruptedSibling = CaptureMediaTestFrames.payload(
+                FrameType.DATA,
+                3L,
+                1,
+                PayloadKind.FILE_CHUNK,
+                "right-tile"
+        );
+        NormalizedCaptureFrame frame = CaptureMediaTestFrames.cameraDerivedNormalizedFrameWithCorruptedSibling(
+                "partial-camera-frame.jpeg",
+                8,
+                accepted,
+                corruptedSibling
+        );
+
+        CaptureMediaFrameDecodeResult result = decoder.decode(List.of(frame));
+        DecodedCaptureFrame decodedFrame = result.decodedFrames().get(0);
+
+        assertAll(
+                () -> assertEquals(1, result.decodedCandidateCount()),
+                () -> assertEquals(0, result.rejectedCandidateCount()),
+                () -> assertTrue(result.diagnostics().stream().noneMatch(CaptureMediaDiagnostic::blocking)),
+                () -> assertTrue(result.diagnostics().stream()
+                        .anyMatch(diagnostic -> diagnostic.metrics().containsKey("partialAccepted"))),
+                () -> assertEquals("partial-camera-frame.jpeg", decodedFrame.sourceId()),
+                () -> assertEquals(8, decodedFrame.callerOrder()),
+                () -> assertEquals(List.of(accepted), decodedFrame.tilePayloads())
+        );
+    }
+
+    @Test
     @DisplayName("Sampler-accepted media payloads remain rejected diagnostics when frame identities disagree")
     void samplerAcceptedMediaPayloadsRemainRejectedDiagnosticsWhenFrameIdentitiesDisagree() {
         TilePayload first = CaptureMediaTestFrames.payload(

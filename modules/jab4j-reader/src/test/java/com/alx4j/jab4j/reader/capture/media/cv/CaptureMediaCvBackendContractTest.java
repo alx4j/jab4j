@@ -53,6 +53,20 @@ class CaptureMediaCvBackendContractTest {
             "black",
             "preserveAspect"
     );
+    private static final LayoutProfile ALTERNATIVE_TEST_PROFILE = new LayoutProfile(
+            "fake-cv-layout-alt",
+            1,
+            1,
+            4,
+            3,
+            0,
+            0,
+            "solidWhite",
+            0,
+            0,
+            "black",
+            "preserveAspect"
+    );
 
     @Test
     @DisplayName("Explicit backend is not invoked for exact supported rendered dimensions")
@@ -161,6 +175,67 @@ class CaptureMediaCvBackendContractTest {
                 () -> assertEquals(0.0d, accepted.qualityMetrics().skewScore()),
                 () -> assertEquals(0xFF000000, accepted.argbPixelAt(0, 0)),
                 () -> assertEquals(0xFF00000B, accepted.argbPixelAt(2, 3))
+        );
+    }
+
+    @Test
+    @DisplayName("Explicit backend accepted candidates preserve profile alternatives")
+    void explicitBackendAcceptedCandidatesPreserveProfileAlternatives() {
+        int[] sourcePixels = {
+                0xFF000000, 0xFF000001, 0xFF000002, 0xFF000003,
+                0xFF000004, 0xFF000005, 0xFF000006, 0xFF000007,
+                0xFF000008, 0xFF000009, 0xFF00000A, 0xFF00000B
+        };
+        CvFrameCandidate primary = new CvFrameCandidate(
+                TEST_PROFILE,
+                FrameCorners.exactFrame(4, 3),
+                0,
+                0,
+                4,
+                3,
+                candidateScore(0.75d, 1.0d, 0.0d),
+                1,
+                1,
+                2
+        );
+        CvFrameCandidate alternative = new CvFrameCandidate(
+                ALTERNATIVE_TEST_PROFILE,
+                FrameCorners.exactFrame(4, 3),
+                0,
+                0,
+                4,
+                3,
+                candidateScore(0.72d, 1.0d, 0.0d),
+                1,
+                2,
+                2
+        );
+        FakeBackend backend = new FakeBackend(CvDetectionResult.acceptedCandidates(List.of(primary, alternative)));
+        CaptureMediaFrameNormalizer normalizer = new CaptureMediaFrameNormalizer(backend);
+        MediaInputFrame inputFrame = new MediaInputFrame(
+                "backend-alternatives.png",
+                CaptureMediaSourceKind.STILL_IMAGE_FILE,
+                0,
+                4,
+                3,
+                "png",
+                "source-hash",
+                sourcePixels
+        );
+
+        MediaNormalizationResult result = normalizer.normalize(inputFrame);
+
+        assertAll(
+                () -> assertTrue(result.accepted()),
+                () -> assertEquals(2, result.frames().size()),
+                () -> assertEquals("fake-cv-layout", result.frames().get(0).layoutProfileId()),
+                () -> assertEquals("fake-cv-layout-alt", result.frames().get(1).layoutProfileId()),
+                () -> assertEquals(1, result.frames().get(0).sourceRegionRank()),
+                () -> assertEquals(1, result.frames().get(0).profileAlternativeRank()),
+                () -> assertEquals(2, result.frames().get(0).profileAlternativeCount()),
+                () -> assertEquals(1, result.frames().get(1).sourceRegionRank()),
+                () -> assertEquals(2, result.frames().get(1).profileAlternativeRank()),
+                () -> assertEquals(2, result.frames().get(1).profileAlternativeCount())
         );
     }
 

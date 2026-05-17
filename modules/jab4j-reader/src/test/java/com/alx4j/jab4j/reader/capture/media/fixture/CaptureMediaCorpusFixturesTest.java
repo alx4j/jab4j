@@ -186,9 +186,12 @@ class CaptureMediaCorpusFixturesTest {
                 () -> assertTrue(result.eligibleForRestore()),
                 () -> assertEquals(duplicate.mediaFiles().size(), result.summary().submittedMediaCount()),
                 () -> assertEquals(duplicate.mediaFiles().size(), result.summary().readableMediaCount()),
-                () -> assertEquals(duplicate.expectedUniqueFrameCount(), result.summary().acceptedCandidateCount()),
                 () -> assertEquals(duplicate.expectedUniqueFrameCount(), result.summary().recoveredUniqueFrameCount()),
                 () -> assertEquals(1, result.summary().duplicateMediaFrameCount()),
+                () -> assertEquals(
+                        result.summary().recoveredUniqueFrameCount() + result.summary().duplicateMediaFrameCount(),
+                        result.summary().acceptedCandidateCount()
+                ),
                 () -> assertTrue(result.summary().decodedTileCount() > 0),
                 () -> assertTrue(result.diagnostics().stream().anyMatch(diagnostic ->
                         diagnostic.code() == CaptureMediaDiagnosticCode.DUPLICATE_MEDIA_FRAME
@@ -211,9 +214,12 @@ class CaptureMediaCorpusFixturesTest {
                 () -> assertTrue(result.eligibleForRestore()),
                 () -> assertEquals(fixture.mediaFiles().size(), result.summary().submittedMediaCount()),
                 () -> assertEquals(fixture.mediaFiles().size(), result.summary().readableMediaCount()),
-                () -> assertEquals(fixture.expectedUniqueFrameCount(), result.summary().acceptedCandidateCount()),
                 () -> assertEquals(fixture.expectedUniqueFrameCount(), result.summary().recoveredUniqueFrameCount()),
                 () -> assertEquals(1, result.summary().duplicateMediaFrameCount()),
+                () -> assertEquals(
+                        result.summary().recoveredUniqueFrameCount() + result.summary().duplicateMediaFrameCount(),
+                        result.summary().acceptedCandidateCount()
+                ),
                 () -> assertTrue(result.summary().rejectedCandidateCount() >= 1),
                 () -> assertTrue(result.summary().decodedTileCount() > 0),
                 () -> assertTrue(result.diagnostics().stream().noneMatch(CaptureMediaDiagnostic::blocking)),
@@ -275,9 +281,12 @@ class CaptureMediaCorpusFixturesTest {
                 () -> assertTrue(result.eligibleForRestore()),
                 () -> assertEquals(qualityMix.mediaFiles().size(), result.summary().submittedMediaCount()),
                 () -> assertEquals(qualityMix.mediaFiles().size(), result.summary().readableMediaCount()),
-                () -> assertEquals(qualityMix.expectedUniqueFrameCount(), result.summary().acceptedCandidateCount()),
                 () -> assertEquals(qualityMix.expectedUniqueFrameCount(), result.summary().recoveredUniqueFrameCount()),
                 () -> assertTrue(result.summary().duplicateMediaFrameCount() >= 1),
+                () -> assertEquals(
+                        result.summary().recoveredUniqueFrameCount() + result.summary().duplicateMediaFrameCount(),
+                        result.summary().acceptedCandidateCount()
+                ),
                 () -> assertTrue(result.summary().rejectedCandidateCount() >= 2),
                 () -> assertTrue(result.summary().decodedTileCount() > 0),
                 () -> assertTrue(result.diagnostics().stream().noneMatch(CaptureMediaDiagnostic::blocking)),

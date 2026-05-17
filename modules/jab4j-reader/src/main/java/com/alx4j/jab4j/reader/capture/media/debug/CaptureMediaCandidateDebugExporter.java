@@ -25,6 +25,7 @@ import com.alx4j.jab4j.reader.capture.media.sample.CaptureMediaTilePayloadSample
 import com.alx4j.jab4j.reader.capture.media.sample.CaptureMediaTilePayloadSampler.DecodeInspectionStatus;
 import com.alx4j.jab4j.reader.capture.media.sample.CaptureMediaTilePayloadSampler.FrameInspection;
 import com.alx4j.jab4j.reader.capture.media.sample.CaptureMediaTilePayloadSampler.PaletteConfidenceSummary;
+import com.alx4j.jab4j.reader.capture.media.sample.CaptureMediaTilePayloadSampler.ProfileAttemptInspection;
 import com.alx4j.jab4j.reader.capture.media.sample.CaptureMediaTilePayloadSampler.SlotInspection;
 
 /**
@@ -226,6 +227,11 @@ public final class CaptureMediaCandidateDebugExporter {
         lines.add("cv.backendId=" + debugContext.cvBackendId());
         lines.add("cv.backendVersion=" + debugContext.cvBackendVersion());
         lines.add("candidate.rank=" + debugContext.rank());
+        lines.add("candidate.normalizationLayoutProfileId=" + frame.layoutProfileId());
+        lines.add("candidate.sourceRegionRank=" + frame.sourceRegionRank());
+        lines.add("candidate.profileAlternativeRank=" + frame.profileAlternativeRank());
+        lines.add("candidate.profileAlternativeCount=" + frame.profileAlternativeCount());
+        frame.geometrySource().ifPresent(source -> lines.add("candidate.geometrySource=" + source));
         lines.add("debug.gridOverlayPath=" + overlayPath.getFileName());
         addOverlayCounts(lines, inspection);
         addCandidateSourceBounds(lines, corners);
@@ -255,10 +261,24 @@ public final class CaptureMediaCandidateDebugExporter {
         lines.add("quality.colorDistanceScore=" + frame.qualityMetrics().colorDistanceScore());
         lines.add("sampler.candidateAttemptCount=" + inspection.candidateAttemptCount());
         lines.add("sampler.layoutProfileId=" + inspection.layoutProfileId());
+        lines.add("sampler.profileAttemptCount=" + inspection.profileAttempts().size());
+        lines.add("sampler.selectedLayoutProfileId=" + inspection.selectedLayoutProfileId().orElse(""));
+        lines.add("sampler.profileSelectionSource=" + inspection.profileSelectionSource().sidecarValue());
         lines.add("sampler.noFinderAttemptCount=" + inspection.noFinderAttemptCount());
         lines.add("sampler.paletteRejectedAttemptCount=" + inspection.paletteRejectedAttemptCount());
         lines.add("sampler.decodedPayloadCount=" + inspection.decodedPayloadCount());
         lines.add("sampler.slotCount=" + inspection.slots().size());
+        int partialRejectedSlotCount = partialRejectedSlotCount(inspection);
+        int partialUndecodableSlotCount = partialUndecodableSlotCount(inspection);
+        boolean partialAccepted = cameraDerived(frame)
+                && inspection.decodedPayloadCount() > 0
+                && (partialRejectedSlotCount > 0 || partialUndecodableSlotCount > 0);
+        lines.add("sampler.partialAccepted=" + partialAccepted);
+        lines.add("sampler.partialRejectedSlotCount=" + partialRejectedSlotCount);
+        lines.add("sampler.partialUndecodableSlotCount=" + partialUndecodableSlotCount);
+        lines.add("sampler.partialAcceptedPayloadCount="
+                + (partialAccepted ? inspection.decodedPayloadCount() : 0));
+        lines.add("sampler.partialWarningCount=" + (partialAccepted ? 1 : 0));
         lines.add("sampler.tileDecode.attemptCount=" + tileDecodeAttemptCount(inspection));
         lines.add("sampler.envelope.acceptedPayloadCount=" + inspection.decodedPayloadCount());
         lines.add("sampler.envelope.rejectedAttemptCount=" + envelopeRejectedAttemptCount(inspection));
@@ -272,6 +292,7 @@ public final class CaptureMediaCandidateDebugExporter {
                 + candidateStatusCount(inspection, CandidateInspectionStatus.FINDER_CANDIDATE));
         lines.add("sampler.reason.tileOrEnvelopeRejectedAttemptCount=" + envelopeRejectedAttemptCount(inspection));
         lines.add("sampler.reason.acceptedPayloadCount=" + inspection.decodedPayloadCount());
+        addProfileAttempts(lines, inspection);
         addSamplingEvidence(lines, inspection);
         addSlotInspection(lines, inspection);
         lines.add("diagnostic.selectedPublicCode=" + selectedPublicDiagnosticCode(inspection)
@@ -332,6 +353,27 @@ public final class CaptureMediaCandidateDebugExporter {
         lines.add("candidate.corners.bottomLeftY=" + corners.bottomLeftY());
     }
 
+    private void addProfileAttempts(List<String> lines, FrameInspection inspection) {
+        for (int index = 0; index < inspection.profileAttempts().size(); index++) {
+            ProfileAttemptInspection attempt = inspection.profileAttempts().get(index);
+            String prefix = "sampler.profileAttempt." + index;
+            lines.add(prefix + ".layoutProfileId=" + attempt.layoutProfileId());
+            lines.add(prefix + ".rows=" + attempt.rows());
+            lines.add(prefix + ".cols=" + attempt.cols());
+            lines.add(prefix + ".status=" + attempt.status());
+            lines.add(prefix + ".decodedPayloadCount=" + attempt.decodedPayloadCount());
+            lines.add(prefix + ".tileDecodeAttemptCount=" + attempt.tileDecodeAttemptCount());
+            lines.add(prefix + ".slotValidation.layoutProfileMismatchCount="
+                    + attempt.slotValidationLayoutProfileMismatchCount());
+            lines.add(prefix + ".slotValidation.tileIndexMismatchCount="
+                    + attempt.slotValidationTileIndexMismatchCount());
+            lines.add(prefix + ".slotValidation.totalTilesMismatchCount="
+                    + attempt.slotValidationTotalTilesMismatchCount());
+            lines.add(prefix + ".decodedPayloadLayoutProfileId="
+                    + attempt.decodedPayloadLayoutProfileId().orElse(""));
+        }
+    }
+
     private double min(double first, double second, double third, double fourth) {
         return Math.min(Math.min(first, second), Math.min(third, fourth));
     }
@@ -348,6 +390,8 @@ public final class CaptureMediaCandidateDebugExporter {
             lines.add(slotPrefix + ".effectiveTileShiftXPx=" + slot.effectiveTileShiftXPx());
             lines.add(slotPrefix + ".effectiveTileShiftYPx=" + slot.effectiveTileShiftYPx());
             lines.add(slotPrefix + ".effectiveTilePlacementSource=" + slot.effectiveTilePlacementSource());
+            lines.add(slotPrefix + ".samplingEvidenceAlignmentStatus="
+                    + slot.samplingEvidenceAlignmentStatus());
             lines.add(slotPrefix + ".candidateCount=" + slot.candidates().size());
             lines.add(slotPrefix + ".reason.noFinderAttemptCount="
                     + candidateStatusCount(slot, CandidateInspectionStatus.NO_FINDER));
@@ -371,14 +415,117 @@ public final class CaptureMediaCandidateDebugExporter {
                 lines.add(candidatePrefix + ".status=" + candidate.status());
                 lines.add(candidatePrefix + ".decodeStatus=" + candidate.decodeStatus());
                 lines.add(candidatePrefix + ".tileDecode.status=" + candidate.decodeStatus());
+                lines.add(candidatePrefix + ".tileDecode.attempted="
+                        + (candidate.decodeStatus() != DecodeInspectionStatus.NOT_ATTEMPTED));
                 lines.add(candidatePrefix + ".envelopeValidation.status=" + candidate.decodeStatus());
                 candidate.decodeFailureReason()
                         .ifPresent(reason -> lines.add(candidatePrefix + ".decodeFailureReason=" + reason));
+                candidate.decodeFailureReason()
+                        .ifPresent(reason -> lines.add(candidatePrefix + ".tileDecode.failureReason=" + reason));
+                addTileDecodeFields(lines, candidatePrefix, candidate);
                 candidate.samplingDiagnostics().forEach((name, value) ->
                         lines.add(candidatePrefix + ".diagnostic." + name + "=" + value));
                 candidate.paletteConfidence()
                         .ifPresent(confidence -> addPaletteConfidence(lines, candidatePrefix, confidence));
             }
+        }
+    }
+
+    private void addTileDecodeFields(
+            List<String> lines,
+            String candidatePrefix,
+            CandidateInspection candidate
+    ) {
+        addSamplingAlias(lines, candidatePrefix, candidate, "layoutProfileId", "tileDecode.layoutProfileId");
+        addSamplingAlias(lines, candidatePrefix, candidate, "tileIndex", "tileDecode.tileIndex");
+        addSamplingAlias(lines, candidatePrefix, candidate, "sampledSideVersion", "tileDecode.sampledSideVersion");
+        addSamplingAlias(lines, candidatePrefix, candidate, "sampledDimension", "tileDecode.sampledDimension");
+        addSamplingAlias(lines, candidatePrefix, candidate, "finderExact", "finder.exact");
+        addSamplingAlias(lines, candidatePrefix, candidate, "finderRecoverableCount", "finder.recoverableCount");
+        addSamplingAlias(lines, candidatePrefix, candidate, "finderCanonicalized", "finder.canonicalized");
+        addSamplingAlias(lines, candidatePrefix, candidate, "sampledMatrixSha256", "tileDecode.logicalTile.sha256");
+        addSamplingAlias(lines, candidatePrefix, candidate, "sampledMatrixPrefix", "tileDecode.logicalTile.prefix");
+        addSamplingAlias(lines, candidatePrefix, candidate, "sampledMatrixHistogram", "tileDecode.logicalTile.histogram");
+
+        addDecodeAlias(lines, candidatePrefix, candidate, "failureStage", "tileDecode.failureStage");
+        addDecodeAlias(lines, candidatePrefix, candidate, "maskPattern", "tileDecode.maskPattern");
+        addDecodeAlias(lines, candidatePrefix, candidate, "encodedBytes", "tileDecode.encodedBytes");
+        addDecodeAlias(lines, candidatePrefix, candidate, "logicalCapacityBytes", "tileDecode.logicalCapacityBytes");
+        addDecodeAlias(lines, candidatePrefix, candidate, "parityBytes", "tileDecode.parityBytes");
+        addDecodeAlias(lines, candidatePrefix, candidate, "headerBytes", "tileDecode.headerBytes");
+        addDecodeAlias(lines, candidatePrefix, candidate, "deinterleavedBytes", "tileDecode.deinterleavedBytes");
+        addDecodeAlias(lines, candidatePrefix, candidate, "parsedHeaderHex", "tileDecode.parsedHeaderHex");
+        addDecodeAlias(lines, candidatePrefix, candidate, "formatVersion", "tileDecode.formatVersion");
+        addDecodeAlias(lines, candidatePrefix, candidate, "payloadLength", "tileDecode.headerPayloadLength");
+        addDecodeAlias(lines, candidatePrefix, candidate, "framedLength", "tileDecode.framedLength");
+        addDecodeAlias(lines, candidatePrefix, candidate, "expectedEncodedBytes", "tileDecode.expectedEncodedBytes");
+        addDecodeAlias(lines, candidatePrefix, candidate, "storedPayloadCrc32c", "tileDecode.storedPayloadCrc32c");
+        addDecodeAlias(lines, candidatePrefix, candidate, "calculatedPayloadCrc32c", "tileDecode.calculatedPayloadCrc32c");
+        addDecodeAlias(lines, candidatePrefix, candidate, "decodedPayload.layoutProfileId",
+                "decodedPayload.layoutProfileId");
+        addDecodeAlias(lines, candidatePrefix, candidate, "decodedPayload.tileIndex", "decodedPayload.tileIndex");
+        addDecodeAlias(lines, candidatePrefix, candidate, "decodedPayload.totalTiles", "decodedPayload.totalTiles");
+        addDecodeAlias(lines, candidatePrefix, candidate, "slotValidation.stage", "slotValidation.stage");
+        addDecodeAlias(lines, candidatePrefix, candidate, "slotValidation.expectedLayoutProfileId",
+                "slotValidation.expectedLayoutProfileId");
+        addDecodeAlias(lines, candidatePrefix, candidate, "slotValidation.actualLayoutProfileId",
+                "slotValidation.actualLayoutProfileId");
+        addDecodeAlias(lines, candidatePrefix, candidate, "slotValidation.expectedTileIndex",
+                "slotValidation.expectedTileIndex");
+        addDecodeAlias(lines, candidatePrefix, candidate, "slotValidation.actualTileIndex",
+                "slotValidation.actualTileIndex");
+        addDecodeAlias(lines, candidatePrefix, candidate, "slotValidation.expectedTotalTiles",
+                "slotValidation.expectedTotalTiles");
+        addDecodeAlias(lines, candidatePrefix, candidate, "slotValidation.actualTotalTiles",
+                "slotValidation.actualTotalTiles");
+        encodedLengthDelta(candidate)
+                .ifPresent(value -> lines.add(candidatePrefix + ".tileDecode.encodedLengthDelta=" + value));
+    }
+
+    private void addSamplingAlias(
+            List<String> lines,
+            String candidatePrefix,
+            CandidateInspection candidate,
+            String diagnosticName,
+            String sidecarName
+    ) {
+        String value = candidate.samplingDiagnostics().get(diagnosticName);
+        if (value != null && !value.isBlank()) {
+            lines.add(candidatePrefix + "." + sidecarName + "=" + value);
+        }
+    }
+
+    private void addDecodeAlias(
+            List<String> lines,
+            String candidatePrefix,
+            CandidateInspection candidate,
+            String diagnosticName,
+            String sidecarName
+    ) {
+        String value = candidate.decodeDiagnostics().get(diagnosticName);
+        if (value != null && !value.isBlank()) {
+            lines.add(candidatePrefix + "." + sidecarName + "=" + value);
+        }
+    }
+
+    private Optional<Integer> encodedLengthDelta(CandidateInspection candidate) {
+        Optional<Integer> expectedEncodedBytes = intDiagnostic(candidate.decodeDiagnostics(), "expectedEncodedBytes");
+        Optional<Integer> encodedBytes = intDiagnostic(candidate.decodeDiagnostics(), "encodedBytes");
+        if (expectedEncodedBytes.isEmpty() || encodedBytes.isEmpty()) {
+            return Optional.empty();
+        }
+        return Optional.of(expectedEncodedBytes.orElseThrow() - encodedBytes.orElseThrow());
+    }
+
+    private Optional<Integer> intDiagnostic(Map<String, String> diagnostics, String name) {
+        try {
+            String value = diagnostics.get(name);
+            if (value == null || value.isBlank()) {
+                return Optional.empty();
+            }
+            return Optional.of(Integer.parseInt(value));
+        } catch (NumberFormatException exception) {
+            return Optional.empty();
         }
     }
 
@@ -507,6 +654,53 @@ public final class CaptureMediaCandidateDebugExporter {
             }
         }
         return rejectedCount;
+    }
+
+    private int partialRejectedSlotCount(FrameInspection inspection) {
+        int count = 0;
+        for (SlotInspection slot : inspection.slots()) {
+            if (partialRejectedSlot(slot)) {
+                count++;
+            }
+        }
+        return count;
+    }
+
+    private int partialUndecodableSlotCount(FrameInspection inspection) {
+        int count = 0;
+        for (SlotInspection slot : inspection.slots()) {
+            if (partialUndecodableSlot(slot)) {
+                count++;
+            }
+        }
+        return count;
+    }
+
+    private boolean partialRejectedSlot(SlotInspection slot) {
+        if (slotHasAcceptedPayload(slot)) {
+            return false;
+        }
+        if (slot.borderStatus() == BorderInspectionStatus.PALETTE_REJECTED && slot.interiorContent()) {
+            return true;
+        }
+        return slot.candidates().stream()
+                .anyMatch(candidate -> candidate.status() == CandidateInspectionStatus.PALETTE_REJECTED);
+    }
+
+    private boolean partialUndecodableSlot(SlotInspection slot) {
+        return !slotHasAcceptedPayload(slot)
+                && !partialRejectedSlot(slot)
+                && slot.borderStatus() == BorderInspectionStatus.SIGNATURE;
+    }
+
+    private boolean slotHasAcceptedPayload(SlotInspection slot) {
+        return slot.candidates().stream()
+                .anyMatch(candidate -> candidate.decodeStatus() == DecodeInspectionStatus.ACCEPTED_PAYLOAD);
+    }
+
+    private boolean cameraDerived(NormalizedCaptureFrame frame) {
+        return frame.qualityMetrics().measured(frame.qualityMetrics().frameCoverageRatio())
+                && frame.qualityMetrics().frameCoverageRatio() < 0.99d;
     }
 
     private Optional<CaptureMediaDiagnosticCode> selectedPublicDiagnosticCode(FrameInspection inspection) {

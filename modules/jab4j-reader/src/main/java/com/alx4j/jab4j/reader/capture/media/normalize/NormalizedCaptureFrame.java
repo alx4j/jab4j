@@ -5,6 +5,7 @@ import java.util.Objects;
 import java.util.Optional;
 import com.alx4j.jab4j.api.model.LayoutProfile;
 import com.alx4j.jab4j.reader.capture.media.CaptureMediaSourceKind;
+import com.alx4j.jab4j.reader.capture.media.cv.CvSamplingEvidence;
 import com.alx4j.jab4j.reader.capture.media.input.MediaInputFrame;
 import com.alx4j.jab4j.reader.capture.media.quality.CaptureMediaQualityMetrics;
 
@@ -27,6 +28,11 @@ public final class NormalizedCaptureFrame {
     private final Optional<Long> frameNumber;
     private final FrameCorners frameCorners;
     private final CaptureMediaQualityMetrics qualityMetrics;
+    private final Optional<CvSamplingEvidence> samplingEvidence;
+    private final Optional<String> geometrySource;
+    private final int sourceRegionRank;
+    private final int profileAlternativeRank;
+    private final int profileAlternativeCount;
     private volatile int[] argbPixels;
 
     /**
@@ -76,7 +82,12 @@ public final class NormalizedCaptureFrame {
                 Optional.empty(),
                 frameCorners,
                 qualityMetrics,
-                argbPixels
+                argbPixels,
+                Optional.empty(),
+                Optional.empty(),
+                1,
+                1,
+                1
         );
     }
 
@@ -116,6 +127,142 @@ public final class NormalizedCaptureFrame {
             CaptureMediaQualityMetrics qualityMetrics,
             int[] argbPixels
     ) {
+        this(
+                sourceId,
+                sourceKind,
+                callerOrder,
+                originalWidthPixels,
+                originalHeightPixels,
+                normalizedWidthPixels,
+                normalizedHeightPixels,
+                formatName,
+                pixelSha256,
+                layoutProfileId,
+                timestampMillis,
+                frameNumber,
+                frameCorners,
+                qualityMetrics,
+                argbPixels,
+                Optional.empty(),
+                Optional.empty(),
+                1,
+                1,
+                1
+        );
+    }
+
+    /**
+     * Creates a normalized capture frame with optional source timing and CV profile-alternative metadata.
+     *
+     * @param sourceId caller-visible source identifier
+     * @param sourceKind media source kind
+     * @param callerOrder deterministic source order
+     * @param originalWidthPixels source image width in pixels
+     * @param originalHeightPixels source image height in pixels
+     * @param normalizedWidthPixels normalized frame width in pixels
+     * @param normalizedHeightPixels normalized frame height in pixels
+     * @param formatName decoded image format name
+     * @param pixelSha256 source pixel hash
+     * @param layoutProfileId matched rendered layout profile id used for normalization
+     * @param timestampMillis optional source timestamp in milliseconds
+     * @param frameNumber optional source frame number
+     * @param frameCorners detected source-space frame corners
+     * @param qualityMetrics deterministic quality metrics
+     * @param argbPixels row-major normalized ARGB pixels
+     * @param sourceRegionRank one-based rank of the source-space region before profile alternatives are expanded
+     * @param profileAlternativeRank one-based rank of this profile alternative within the source region
+     * @param profileAlternativeCount number of profile alternatives emitted for the source region
+     */
+    public NormalizedCaptureFrame(
+            String sourceId,
+            CaptureMediaSourceKind sourceKind,
+            int callerOrder,
+            int originalWidthPixels,
+            int originalHeightPixels,
+            int normalizedWidthPixels,
+            int normalizedHeightPixels,
+            String formatName,
+            String pixelSha256,
+            String layoutProfileId,
+            Optional<Long> timestampMillis,
+            Optional<Long> frameNumber,
+            FrameCorners frameCorners,
+            CaptureMediaQualityMetrics qualityMetrics,
+            int[] argbPixels,
+            int sourceRegionRank,
+            int profileAlternativeRank,
+            int profileAlternativeCount
+    ) {
+        this(
+                sourceId,
+                sourceKind,
+                callerOrder,
+                originalWidthPixels,
+                originalHeightPixels,
+                normalizedWidthPixels,
+                normalizedHeightPixels,
+                formatName,
+                pixelSha256,
+                layoutProfileId,
+                timestampMillis,
+                frameNumber,
+                frameCorners,
+                qualityMetrics,
+                argbPixels,
+                Optional.empty(),
+                Optional.empty(),
+                sourceRegionRank,
+                profileAlternativeRank,
+                profileAlternativeCount
+        );
+    }
+
+    /**
+     * Creates a normalized capture frame with optional source timing, CV evidence, and profile-alternative metadata.
+     *
+     * @param sourceId caller-visible source identifier
+     * @param sourceKind media source kind
+     * @param callerOrder deterministic source order
+     * @param originalWidthPixels source image width in pixels
+     * @param originalHeightPixels source image height in pixels
+     * @param normalizedWidthPixels normalized frame width in pixels
+     * @param normalizedHeightPixels normalized frame height in pixels
+     * @param formatName decoded image format name
+     * @param pixelSha256 source pixel hash
+     * @param layoutProfileId matched rendered layout profile id used for normalization
+     * @param timestampMillis optional source timestamp in milliseconds
+     * @param frameNumber optional source frame number
+     * @param frameCorners detected source-space frame corners
+     * @param qualityMetrics deterministic quality metrics
+     * @param argbPixels row-major normalized ARGB pixels
+     * @param samplingEvidence backend-neutral sampling evidence measured during normalization, when available
+     * @param geometrySource optional source of the candidate quadrilateral geometry
+     * @param sourceRegionRank one-based rank of the source-space region before profile alternatives are expanded
+     * @param profileAlternativeRank one-based rank of this profile alternative within the source region
+     * @param profileAlternativeCount number of profile alternatives emitted for the source region
+     */
+    public NormalizedCaptureFrame(
+            String sourceId,
+            CaptureMediaSourceKind sourceKind,
+            int callerOrder,
+            int originalWidthPixels,
+            int originalHeightPixels,
+            int normalizedWidthPixels,
+            int normalizedHeightPixels,
+            String formatName,
+            String pixelSha256,
+            String layoutProfileId,
+            Optional<Long> timestampMillis,
+            Optional<Long> frameNumber,
+            FrameCorners frameCorners,
+            CaptureMediaQualityMetrics qualityMetrics,
+            int[] argbPixels,
+            Optional<CvSamplingEvidence> samplingEvidence,
+            Optional<String> geometrySource,
+            int sourceRegionRank,
+            int profileAlternativeRank,
+            int profileAlternativeCount
+    ) {
         if (sourceId == null || sourceId.isBlank()) {
             throw new IllegalArgumentException("sourceId must not be blank");
         }
@@ -143,8 +290,24 @@ public final class NormalizedCaptureFrame {
         Objects.requireNonNull(frameCorners, "frameCorners must not be null");
         Objects.requireNonNull(qualityMetrics, "qualityMetrics must not be null");
         Objects.requireNonNull(argbPixels, "argbPixels must not be null");
+        samplingEvidence = Objects.requireNonNull(samplingEvidence, "samplingEvidence must not be null");
+        geometrySource = Objects.requireNonNull(geometrySource, "geometrySource must not be null");
+        geometrySource.ifPresent(value -> {
+            if (value.isBlank()) {
+                throw new IllegalArgumentException("geometrySource must not be blank when present");
+            }
+        });
         if (argbPixels.length != expectedPixelCount(normalizedWidthPixels, normalizedHeightPixels)) {
             throw new IllegalArgumentException("argbPixels length must equal normalizedWidthPixels * normalizedHeightPixels");
+        }
+        if (sourceRegionRank <= 0) {
+            throw new IllegalArgumentException("sourceRegionRank must be positive");
+        }
+        if (profileAlternativeRank <= 0 || profileAlternativeCount <= 0) {
+            throw new IllegalArgumentException("profile alternative ranks must be positive");
+        }
+        if (profileAlternativeRank > profileAlternativeCount) {
+            throw new IllegalArgumentException("profileAlternativeRank must not exceed profileAlternativeCount");
         }
         this.sourceId = sourceId;
         this.sourceKind = sourceKind;
@@ -158,6 +321,11 @@ public final class NormalizedCaptureFrame {
         this.layoutProfileId = layoutProfileId;
         this.frameCorners = frameCorners;
         this.qualityMetrics = qualityMetrics;
+        this.samplingEvidence = samplingEvidence;
+        this.geometrySource = geometrySource;
+        this.sourceRegionRank = sourceRegionRank;
+        this.profileAlternativeRank = profileAlternativeRank;
+        this.profileAlternativeCount = profileAlternativeCount;
         this.argbPixels = Arrays.copyOf(argbPixels, argbPixels.length);
     }
 
@@ -269,6 +437,86 @@ public final class NormalizedCaptureFrame {
             double skewScore,
             int[] correctedArgbPixels
     ) {
+        return fromPerspectiveCorrectedFrame(
+                frame,
+                layoutProfile,
+                frameCorners,
+                frameCoverageRatio,
+                skewScore,
+                correctedArgbPixels,
+                Optional.empty(),
+                1,
+                1,
+                1
+        );
+    }
+
+    /**
+     * Creates a perspective-corrected frame with CV profile-alternative metadata.
+     *
+     * @param frame decoded media input frame
+     * @param layoutProfile matched rendered layout profile used for normalization
+     * @param frameCorners detected source-space quadrilateral corners
+     * @param frameCoverageRatio detected quadrilateral area divided by source image area
+     * @param skewScore normalized perspective skew estimate
+     * @param correctedArgbPixels row-major perspective-corrected ARGB pixels
+     * @param sourceRegionRank one-based rank of the source-space region before profile alternatives are expanded
+     * @param profileAlternativeRank one-based rank of this profile alternative within the source region
+     * @param profileAlternativeCount number of profile alternatives emitted for the source region
+     * @return normalized perspective-corrected frame with source context retained
+     */
+    public static NormalizedCaptureFrame fromPerspectiveCorrectedFrame(
+            MediaInputFrame frame,
+            LayoutProfile layoutProfile,
+            FrameCorners frameCorners,
+            double frameCoverageRatio,
+            double skewScore,
+            int[] correctedArgbPixels,
+            int sourceRegionRank,
+            int profileAlternativeRank,
+            int profileAlternativeCount
+    ) {
+        return fromPerspectiveCorrectedFrame(
+                frame,
+                layoutProfile,
+                frameCorners,
+                frameCoverageRatio,
+                skewScore,
+                correctedArgbPixels,
+                Optional.empty(),
+                sourceRegionRank,
+                profileAlternativeRank,
+                profileAlternativeCount
+        );
+    }
+
+    /**
+     * Creates a perspective-corrected frame with optional geometry source and CV profile-alternative metadata.
+     *
+     * @param frame decoded media input frame
+     * @param layoutProfile matched rendered layout profile used for normalization
+     * @param frameCorners detected source-space quadrilateral corners
+     * @param frameCoverageRatio detected quadrilateral area divided by source image area
+     * @param skewScore normalized perspective skew estimate
+     * @param correctedArgbPixels row-major perspective-corrected ARGB pixels
+     * @param geometrySource optional source of the candidate quadrilateral geometry
+     * @param sourceRegionRank one-based rank of the source-space region before profile alternatives are expanded
+     * @param profileAlternativeRank one-based rank of this profile alternative within the source region
+     * @param profileAlternativeCount number of profile alternatives emitted for the source region
+     * @return normalized perspective-corrected frame with source context retained
+     */
+    public static NormalizedCaptureFrame fromPerspectiveCorrectedFrame(
+            MediaInputFrame frame,
+            LayoutProfile layoutProfile,
+            FrameCorners frameCorners,
+            double frameCoverageRatio,
+            double skewScore,
+            int[] correctedArgbPixels,
+            Optional<String> geometrySource,
+            int sourceRegionRank,
+            int profileAlternativeRank,
+            int profileAlternativeCount
+    ) {
         Objects.requireNonNull(frame, "frame must not be null");
         Objects.requireNonNull(layoutProfile, "layoutProfile must not be null");
         Objects.requireNonNull(frameCorners, "frameCorners must not be null");
@@ -289,7 +537,12 @@ public final class NormalizedCaptureFrame {
                 frame.frameNumber(),
                 frameCorners,
                 CaptureMediaQualityMetrics.perspectiveCorrected(frameCoverageRatio, skewScore),
-                correctedArgbPixels
+                correctedArgbPixels,
+                Optional.empty(),
+                geometrySource,
+                sourceRegionRank,
+                profileAlternativeRank,
+                profileAlternativeCount
         );
     }
 
@@ -417,6 +670,51 @@ public final class NormalizedCaptureFrame {
      */
     public CaptureMediaQualityMetrics qualityMetrics() {
         return qualityMetrics;
+    }
+
+    /**
+     * Returns backend-neutral sampling evidence measured during normalization, when available.
+     *
+     * @return optional sampling evidence
+     */
+    public Optional<CvSamplingEvidence> samplingEvidence() {
+        return samplingEvidence;
+    }
+
+    /**
+     * Returns the diagnostic source of the candidate quadrilateral geometry, when available.
+     *
+     * @return optional geometry source
+     */
+    public Optional<String> geometrySource() {
+        return geometrySource;
+    }
+
+    /**
+     * Returns the one-based rank of the source-space region used for this normalized candidate.
+     *
+     * @return source-region rank
+     */
+    public int sourceRegionRank() {
+        return sourceRegionRank;
+    }
+
+    /**
+     * Returns the one-based rank of this layout profile alternative within the source region.
+     *
+     * @return profile-alternative rank
+     */
+    public int profileAlternativeRank() {
+        return profileAlternativeRank;
+    }
+
+    /**
+     * Returns the number of profile alternatives emitted for this source region.
+     *
+     * @return profile-alternative count
+     */
+    public int profileAlternativeCount() {
+        return profileAlternativeCount;
     }
 
     /**

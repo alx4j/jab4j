@@ -227,6 +227,7 @@ public final class CaptureMediaReceiverService {
                     0,
                     0,
                     0,
+                    0,
                     0
             );
 
@@ -240,7 +241,7 @@ public final class CaptureMediaReceiverService {
                         "Capture media input does not contain any normalized frame candidates"
                 ));
                 return CaptureMediaReceiverResult.incomplete(
-                        mediaSummary(intakeResult, normalizedFrames, diagnostics, 0, 0, 0, 0),
+                        mediaSummary(intakeResult, normalizedFrames, diagnostics, 0, 0, 0, 0, 0),
                         diagnostics,
                         "Capture media input is missing required unique frame content"
                 );
@@ -274,6 +275,7 @@ public final class CaptureMediaReceiverService {
                     intakeResult,
                     normalizedFrames,
                     diagnostics,
+                    decodeResult.decodedCandidateCount(),
                     assemblyResult.acceptedCandidateCount(),
                     assemblyResult.duplicateFrameCount(),
                     decodeResult.rejectedCandidateCount(),
@@ -305,6 +307,7 @@ public final class CaptureMediaReceiverService {
                                 intakeResult,
                                 normalizedFrames,
                                 diagnostics,
+                                decodeResult.decodedCandidateCount(),
                                 assemblyResult.acceptedCandidateCount(),
                                 assemblyResult.duplicateFrameCount(),
                                 decodeResult.rejectedCandidateCount(),
@@ -320,6 +323,7 @@ public final class CaptureMediaReceiverService {
                     intakeResult,
                     normalizedFrames,
                     successfulDiagnostics,
+                    decodeResult.decodedCandidateCount(),
                     assemblyResult.acceptedCandidateCount(),
                     assemblyResult.duplicateFrameCount(),
                     decodeResult.rejectedCandidateCount(),
@@ -432,6 +436,7 @@ public final class CaptureMediaReceiverService {
                             intakeResult,
                             normalizedFrames,
                             diagnostics,
+                            0,
                             0,
                             0,
                             normalizedFrames.size(),
@@ -628,6 +633,7 @@ public final class CaptureMediaReceiverService {
             List<NormalizedCaptureFrame> normalizedFrames,
             List<CaptureMediaDiagnostic> diagnostics,
             int acceptedCandidateCount,
+            int recoveredUniqueFrameCount,
             int duplicateFrameCount,
             int decodeRejectedCandidateCount,
             int decodedTileCount
@@ -645,7 +651,7 @@ public final class CaptureMediaReceiverService {
                 rejectedCandidateCount,
                 0,
                 duplicateFrameCount,
-                acceptedCandidateCount,
+                recoveredUniqueFrameCount,
                 decodedTileCount,
                 0
         );

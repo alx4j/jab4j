@@ -398,7 +398,12 @@ public final class CaptureMediaFrameNormalizer {
                 frame.frameNumber(),
                 normalizedFrame.frameCorners(),
                 normalizedFrame.qualityMetrics(),
-                normalizedFrame.argbPixels()
+                normalizedFrame.argbPixels(),
+                normalizedFrame.samplingEvidence(),
+                normalizedFrame.geometrySource(),
+                normalizedFrame.sourceRegionRank(),
+                normalizedFrame.profileAlternativeRank(),
+                normalizedFrame.profileAlternativeCount()
         );
     }
 
@@ -441,7 +446,11 @@ public final class CaptureMediaFrameNormalizer {
                 candidate.frameCorners(),
                 candidate.score().frameCoverageRatio(),
                 candidate.score().skewScore(),
-                correctedPixels
+                correctedPixels,
+                candidate.geometrySource(),
+                candidate.sourceRegionRank(),
+                candidate.profileAlternativeRank(),
+                candidate.profileAlternativeCount()
         ));
     }
 

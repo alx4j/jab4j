@@ -6,18 +6,27 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.awt.image.BufferedImage;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalInt;
+import java.util.UUID;
+import java.util.zip.CRC32C;
 import javax.imageio.ImageIO;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import com.alx4j.jab4j.api.model.FrameType;
 import com.alx4j.jab4j.api.model.LayoutProfile;
+import com.alx4j.jab4j.api.model.PayloadKind;
+import com.alx4j.jab4j.api.model.SessionId;
+import com.alx4j.jab4j.api.model.TileIndex;
+import com.alx4j.jab4j.api.model.TilePayload;
 import com.alx4j.jab4j.reader.capture.media.CaptureMediaSourceKind;
 import com.alx4j.jab4j.reader.capture.media.cv.CvGridPhase;
 import com.alx4j.jab4j.reader.capture.media.cv.CvSamplingEvidence;
@@ -29,6 +38,12 @@ import com.alx4j.jab4j.reader.capture.media.sample.CaptureMediaTilePayloadSample
 import com.alx4j.jab4j.render.layout.FixedLayoutPlan;
 import com.alx4j.jab4j.render.layout.FixedLayoutPlanner;
 import com.alx4j.jab4j.render.layout.TilePlacement;
+import com.alx4j.jab4j.render.tile.RenderedTile;
+import com.alx4j.jab4j.render.tile.TileRasterRenderer;
+import com.alx4j.jab4j.tile.LogicalTile;
+import com.alx4j.jab4j.tile.TileCodecProfiles;
+import com.alx4j.jab4j.tile.TileCodecs;
+import com.alx4j.jab4j.transfer.TilePayloadEnvelopeCodec;
 
 @DisplayName("Capture media candidate debug exporter")
 class CaptureMediaCandidateDebugExporterTest {
@@ -74,6 +89,10 @@ class CaptureMediaCandidateDebugExporterTest {
                 () -> assertTrue(metadata.contains("cv.backendId=boofcv-test")),
                 () -> assertTrue(metadata.contains("cv.backendVersion=1.2.3")),
                 () -> assertTrue(metadata.contains("candidate.rank=1")),
+                () -> assertTrue(metadata.contains("candidate.normalizationLayoutProfileId=debug-low-density")),
+                () -> assertTrue(metadata.contains("candidate.sourceRegionRank=1")),
+                () -> assertTrue(metadata.contains("candidate.profileAlternativeRank=1")),
+                () -> assertTrue(metadata.contains("candidate.profileAlternativeCount=1")),
                 () -> assertTrue(metadata.contains("candidate.sourceBounds.rightExclusivePx=1280.0")),
                 () -> assertTrue(metadata.contains("candidate.corners.bottomRightY=720.0")),
                 () -> assertTrue(metadata.contains("perspective.frameCoverageRatio=1.0")),
@@ -85,12 +104,26 @@ class CaptureMediaCandidateDebugExporterTest {
                 () -> assertTrue(metadata.contains("sampler.evidence.metric.gridSharpness=0.73")),
                 () -> assertTrue(metadata.contains("sampler.tileDecode.attemptCount=")),
                 () -> assertTrue(metadata.contains("sampler.layoutProfileId=debug-low-density")),
+                () -> assertTrue(metadata.contains("sampler.profileAttemptCount=1")),
+                () -> assertTrue(metadata.contains("sampler.profileAttempt.0.layoutProfileId=debug-low-density")),
+                () -> assertTrue(metadata.contains("sampler.profileAttempt.0.rows=1")),
+                () -> assertTrue(metadata.contains("sampler.profileAttempt.0.cols=2")),
+                () -> assertTrue(metadata.contains("sampler.profileAttempt.0.status=EMPTY")),
+                () -> assertTrue(metadata.contains("sampler.profileAttempt.0.decodedPayloadCount=0")),
+                () -> assertTrue(metadata.contains("sampler.profileAttempt.0.tileDecodeAttemptCount=0")),
+                () -> assertTrue(metadata.contains(
+                        "sampler.profileAttempt.0.slotValidation.layoutProfileMismatchCount=0")),
+                () -> assertTrue(metadata.contains("sampler.profileAttempt.0.decodedPayloadLayoutProfileId=")),
+                () -> assertTrue(metadata.contains("sampler.selectedLayoutProfileId=")),
+                () -> assertTrue(metadata.contains("sampler.profileSelectionSource=none")),
                 () -> assertTrue(metadata.contains("sampler.envelope.rejectedAttemptCount=")),
                 () -> assertTrue(metadata.contains("sampler.reason.borderNoSignatureSlotCount=2")),
                 () -> assertTrue(metadata.contains("sampler.reason.finderCandidateAttemptCount=0")),
                 () -> assertTrue(metadata.contains("sampler.slot.0.effectiveTileShiftXPx=0")),
                 () -> assertTrue(metadata.contains("sampler.slot.0.effectiveTileShiftYPx=0")),
                 () -> assertTrue(metadata.contains("sampler.slot.0.effectiveTilePlacementSource=NOMINAL")),
+                () -> assertTrue(metadata.contains(
+                        "sampler.slot.0.samplingEvidenceAlignmentStatus=NOT_CAMERA_DERIVED")),
                 () -> assertTrue(metadata.contains("sampler.slot.0.reason.noFinderAttemptCount=0")),
                 () -> assertTrue(metadata.contains("diagnostic.selectedPublicCode=SCREEN_OR_FRAME_NOT_FOUND"))
         );
@@ -150,6 +183,8 @@ class CaptureMediaCandidateDebugExporterTest {
                 () -> assertTrue(metadata.contains("sampler.slot.0.effectiveTileShiftXPx=1")),
                 () -> assertTrue(metadata.contains("sampler.slot.0.effectiveTileShiftYPx=0")),
                 () -> assertTrue(metadata.contains("sampler.slot.0.effectiveTilePlacementSource=SAMPLING_EVIDENCE")),
+                () -> assertTrue(metadata.contains(
+                        "sampler.slot.0.samplingEvidenceAlignmentStatus=USED_BORDER_SIGNATURE")),
                 () -> assertTrue(metadata.contains("sampler.slot.0.reason.noFinderAttemptCount=")),
                 () -> assertTrue(metadata.contains(".moduleSampling.offsetXPx=1")),
                 () -> assertTrue(metadata.contains(".moduleSampling.offsetYPx=0")),
@@ -178,6 +213,58 @@ class CaptureMediaCandidateDebugExporterTest {
                 () -> assertTrue(metadata.contains("sampler.evidence.backendId=reader-normalized-argb")),
                 () -> assertTrue(metadata.contains("sampler.gridPhase.available=true")),
                 () -> assertTrue(metadata.contains("sampler.evidence.metric.readerSamplingEvidenceConfidence="))
+        );
+    }
+
+    @Test
+    @DisplayName("Sidecar includes tile decode diagnostics for finder candidates rejected by tile decode")
+    void sidecarIncludesTileDecodeDiagnosticsForRejectedFinderCandidates() throws Exception {
+        CaptureMediaCandidateDebugExporter exporter = new CaptureMediaCandidateDebugExporter();
+        NormalizedCaptureFrame frame = tileDecodeRejectedFrame();
+
+        CaptureMediaCandidateDebugExporter.CandidateDebugExport exported = exporter.export(frame, tempDir);
+
+        String metadata = Files.readString(exported.metadataPath());
+        assertAll(
+                () -> assertTrue(metadata.contains(".decodeFailureReason=tileDecode: ")),
+                () -> assertTrue(metadata.contains(".tileDecode.attempted=true")),
+                () -> assertTrue(metadata.contains(".tileDecode.failureReason=tileDecode: ")),
+                () -> assertTrue(metadata.contains(".tileDecode.failureStage=")),
+                () -> assertTrue(metadata.contains(".tileDecode.encodedBytes=")),
+                () -> assertTrue(metadata.contains(".tileDecode.logicalCapacityBytes=")),
+                () -> assertTrue(metadata.contains(".tileDecode.headerBytes=")),
+                () -> assertTrue(metadata.contains(".tileDecode.parsedHeaderHex=")),
+                () -> assertTrue(metadata.contains(".tileDecode.headerPayloadLength=")),
+                () -> assertTrue(metadata.contains(".tileDecode.expectedEncodedBytes=")),
+                () -> assertTrue(metadata.contains(".tileDecode.encodedLengthDelta=")),
+                () -> assertTrue(metadata.contains(".tileDecode.logicalTile.sha256=")),
+                () -> assertTrue(metadata.contains(".tileDecode.logicalTile.prefix=")),
+                () -> assertTrue(metadata.contains(".tileDecode.logicalTile.histogram=")),
+                () -> assertTrue(metadata.contains(".finder.exact=true")),
+                () -> assertTrue(metadata.contains(".finder.canonicalized=false")),
+                () -> assertTrue(metadata.contains(".diagnostic.sampledMatrixSha256=")),
+                () -> assertTrue(metadata.contains(".diagnostic.sampledMatrixPrefix=")),
+                () -> assertTrue(metadata.contains(".diagnostic.sampledMatrixHistogram="))
+        );
+    }
+
+    @Test
+    @DisplayName("Sidecar includes partial acceptance summary fields")
+    void sidecarIncludesPartialAcceptanceSummaryFields() throws Exception {
+        CaptureMediaCandidateDebugExporter exporter = new CaptureMediaCandidateDebugExporter();
+        NormalizedCaptureFrame frame = partialAcceptedCameraFrame();
+
+        CaptureMediaCandidateDebugExporter.CandidateDebugExport exported = exporter.export(frame, tempDir);
+
+        String metadata = Files.readString(exported.metadataPath());
+        assertAll(
+                () -> assertTrue(metadata.contains("sampler.partialAccepted=true")),
+                () -> assertTrue(metadata.contains("sampler.partialRejectedSlotCount=0")),
+                () -> assertTrue(metadata.contains("sampler.partialUndecodableSlotCount=1")),
+                () -> assertTrue(metadata.contains("sampler.partialAcceptedPayloadCount=1")),
+                () -> assertTrue(metadata.contains("sampler.partialWarningCount=1")),
+                () -> assertTrue(metadata.contains("sampler.slot.0.effectiveTilePlacementSource=")),
+                () -> assertTrue(metadata.contains("sampler.slot.1.reason.tileOrEnvelopeRejectedAttemptCount="))
         );
     }
 
@@ -266,6 +353,122 @@ class CaptureMediaCandidateDebugExporterTest {
                 CaptureMediaQualityMetrics.perspectiveCorrected(0.50d, 0.05d),
                 pixels
         );
+    }
+
+    private NormalizedCaptureFrame tileDecodeRejectedFrame() {
+        int[] pixels = new int[FRAME_WIDTH * FRAME_HEIGHT];
+        Arrays.fill(pixels, 0xFF000000);
+        TilePayload payload = payload();
+        byte[] envelope = new TilePayloadEnvelopeCodec().serialize(payload);
+        LogicalTile logicalTile = TileCodecs.defaultEncoder().encode(envelope, TileCodecProfiles.balancedV1());
+        LogicalTile corrupted = corruptedDataModule(logicalTile);
+        RenderedTile renderedTile = new TileRasterRenderer().render(corrupted, LAYOUT_PLAN);
+        TilePlacement placement = LAYOUT_PLAN.tilePlacements().get(0);
+        for (int row = 0; row < renderedTile.heightPixels(); row++) {
+            for (int col = 0; col < renderedTile.widthPixels(); col++) {
+                pixels[((placement.yPx() + row) * FRAME_WIDTH) + placement.xPx() + col] =
+                        renderedTile.argbPixels().get((row * renderedTile.widthPixels()) + col);
+            }
+        }
+        return new NormalizedCaptureFrame(
+                "tile-decode-rejected.png",
+                CaptureMediaSourceKind.STILL_IMAGE_FILE,
+                0,
+                FRAME_WIDTH,
+                FRAME_HEIGHT,
+                FRAME_WIDTH,
+                FRAME_HEIGHT,
+                "png",
+                "feedface",
+                CAPTURE_LAYOUT.profileId(),
+                FrameCorners.exactFrame(FRAME_WIDTH, FRAME_HEIGHT),
+                CaptureMediaQualityMetrics.exactRenderedFrame(),
+                pixels
+        );
+    }
+
+    private NormalizedCaptureFrame partialAcceptedCameraFrame() {
+        int[] pixels = new int[FRAME_WIDTH * FRAME_HEIGHT];
+        Arrays.fill(pixels, 0xFF000000);
+        pasteRenderedTile(pixels, 0, renderedTile(payload(0), false));
+        pasteRenderedTile(pixels, 1, renderedTile(payload(1), true));
+        return new NormalizedCaptureFrame(
+                "partial-camera-candidate.jpeg",
+                CaptureMediaSourceKind.STILL_IMAGE_FILE,
+                0,
+                FRAME_WIDTH,
+                FRAME_HEIGHT,
+                FRAME_WIDTH,
+                FRAME_HEIGHT,
+                "jpeg",
+                "facefeed",
+                CAPTURE_LAYOUT.profileId(),
+                FrameCorners.exactFrame(FRAME_WIDTH, FRAME_HEIGHT),
+                CaptureMediaQualityMetrics.perspectiveCorrected(0.50d, 0.05d),
+                pixels
+        );
+    }
+
+    private RenderedTile renderedTile(TilePayload payload, boolean corruptLogicalTile) {
+        byte[] envelope = new TilePayloadEnvelopeCodec().serialize(payload);
+        LogicalTile logicalTile = TileCodecs.defaultEncoder().encode(envelope, TileCodecProfiles.balancedV1());
+        if (corruptLogicalTile) {
+            logicalTile = corruptedDataModule(logicalTile);
+        }
+        return new TileRasterRenderer().render(logicalTile, LAYOUT_PLAN);
+    }
+
+    private void pasteRenderedTile(int[] pixels, int tileIndex, RenderedTile renderedTile) {
+        TilePlacement placement = LAYOUT_PLAN.tilePlacements().get(tileIndex);
+        for (int row = 0; row < renderedTile.heightPixels(); row++) {
+            for (int col = 0; col < renderedTile.widthPixels(); col++) {
+                pixels[((placement.yPx() + row) * FRAME_WIDTH) + placement.xPx() + col] =
+                        renderedTile.argbPixels().get((row * renderedTile.widthPixels()) + col);
+            }
+        }
+    }
+
+    private LogicalTile corruptedDataModule(LogicalTile tile) {
+        List<Integer> colors = new ArrayList<>(tile.moduleColors());
+        int index = (3 * tile.widthModules()) + 3;
+        colors.set(index, (colors.get(index) + 1) % 8);
+        return new LogicalTile(
+                tile.widthModules(),
+                tile.heightModules(),
+                tile.quietZoneModules(),
+                tile.profileId(),
+                colors,
+                tile.diagnostics()
+        );
+    }
+
+    private TilePayload payload() {
+        return payload(0);
+    }
+
+    private TilePayload payload(int tileIndex) {
+        byte[] body = "debug-sidecar".getBytes(StandardCharsets.UTF_8);
+        return new TilePayload(
+                1,
+                new SessionId(UUID.fromString("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")),
+                FrameType.DATA,
+                0,
+                new TileIndex(tileIndex),
+                CAPTURE_LAYOUT.rows() * CAPTURE_LAYOUT.cols(),
+                CAPTURE_LAYOUT.profileId(),
+                PayloadKind.FILE_CHUNK,
+                tileIndex,
+                body.length,
+                crc32c(body),
+                0,
+                body
+        );
+    }
+
+    private int crc32c(byte[] body) {
+        CRC32C crc32c = new CRC32C();
+        crc32c.update(body, 0, body.length);
+        return (int) crc32c.getValue();
     }
 
     private void drawSyncBand(int[] pixels) {

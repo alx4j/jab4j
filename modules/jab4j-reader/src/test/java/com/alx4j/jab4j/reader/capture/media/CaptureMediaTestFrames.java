@@ -193,6 +193,27 @@ final class CaptureMediaTestFrames {
     }
 
     /**
+     * Renders a camera-derived normalized frame with one valid payload and one corrupted sibling envelope.
+     *
+     * @param sourceId caller-visible source id
+     * @param callerOrder zero-based caller order
+     * @param acceptedPayload payload rendered in its declared slot without corruption
+     * @param corruptedPayload payload rendered in its declared slot with corrupted envelope bytes
+     * @return camera-derived normalized frame for partial-acceptance decoder tests
+     */
+    static NormalizedCaptureFrame cameraDerivedNormalizedFrameWithCorruptedSibling(
+            String sourceId,
+            int callerOrder,
+            TilePayload acceptedPayload,
+            TilePayload corruptedPayload
+    ) {
+        return cameraDerivedNormalizedFrame(sourceId, callerOrder, renderManualPixels(List.of(
+                new TileRender(acceptedPayload.tileIndex().value(), acceptedPayload, false),
+                new TileRender(corruptedPayload.tileIndex().value(), corruptedPayload, true)
+        )));
+    }
+
+    /**
      * Writes a full rendered media PNG with wrapper bands and the supplied payload tiles.
      *
      * @param output output PNG path
@@ -220,6 +241,24 @@ final class CaptureMediaTestFrames {
                 CAPTURE_LAYOUT.profileId(),
                 FrameCorners.exactFrame(CAPTURE_LAYOUT.frameWidthPx(), CAPTURE_LAYOUT.frameHeightPx()),
                 CaptureMediaQualityMetrics.exactRenderedFrame(),
+                pixels
+        );
+    }
+
+    private static NormalizedCaptureFrame cameraDerivedNormalizedFrame(String sourceId, int callerOrder, int[] pixels) {
+        return new NormalizedCaptureFrame(
+                sourceId,
+                CaptureMediaSourceKind.STILL_IMAGE_FILE,
+                callerOrder,
+                CAPTURE_LAYOUT.frameWidthPx(),
+                CAPTURE_LAYOUT.frameHeightPx(),
+                CAPTURE_LAYOUT.frameWidthPx(),
+                CAPTURE_LAYOUT.frameHeightPx(),
+                "jpeg",
+                "abc123",
+                CAPTURE_LAYOUT.profileId(),
+                FrameCorners.exactFrame(CAPTURE_LAYOUT.frameWidthPx(), CAPTURE_LAYOUT.frameHeightPx()),
+                CaptureMediaQualityMetrics.perspectiveCorrected(0.50d, 0.05d),
                 pixels
         );
     }
