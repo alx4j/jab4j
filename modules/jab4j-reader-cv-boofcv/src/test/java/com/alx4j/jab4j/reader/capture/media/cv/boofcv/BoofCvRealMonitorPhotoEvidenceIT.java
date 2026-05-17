@@ -48,7 +48,6 @@ final class BoofCvRealMonitorPhotoEvidenceIT {
     private static final String REAL_MONITOR_PHOTO_INPUT_PROPERTY = "jab4j.boofcv.realMonitorPhotoInput";
     private static final Path EVIDENCE_ROOT = Path.of("target", "boofcv-real-monitor-evidence");
     private static final Set<String> SAMPLE_EXTENSIONS = Set.of("jpg", "jpeg", "heic", "heif");
-    private static final Set<String> MVP6_TARGET_SAMPLE_STEMS = Set.of("IMG_5865", "IMG_5867");
 
     /**
      * Evaluates local monitor-photo samples only when the manual input property is supplied.
@@ -192,7 +191,6 @@ final class BoofCvRealMonitorPhotoEvidenceIT {
                 "extension",
                 "approvedClassification",
                 "observedCandidateClassification",
-                "mvp6TargetSample",
                 "status",
                 "submitted",
                 "readable",
@@ -227,6 +225,13 @@ final class BoofCvRealMonitorPhotoEvidenceIT {
                 "samplerTileDecodeAttempts",
                 "samplerEnvelopeAcceptedPayloads",
                 "samplerEnvelopeRejectedAttempts",
+                "samplerTileDecodeFailureStages",
+                "samplerTileDecodeFailureReasons",
+                "samplerTileDecodeHeaderPayloadLengths",
+                "samplerTileDecodeExpectedEncodedBytes",
+                "samplerTileDecodeEncodedBytes",
+                "samplerTileDecodeEncodedLengthDeltas",
+                "samplerTileDecodeLogicalTileHashes",
                 "samplerSelectedPublicDiagnostic",
                 "debugGridOverlayCount",
                 "primaryDiagnostic",
@@ -241,7 +246,6 @@ final class BoofCvRealMonitorPhotoEvidenceIT {
                     row.extension,
                     row.approvedClassification.label,
                     row.observedCandidateClassification.label,
-                    Boolean.toString(row.mvp6TargetSample),
                     row.status,
                     Integer.toString(row.submittedMediaCount),
                     Integer.toString(row.readableMediaCount),
@@ -276,6 +280,13 @@ final class BoofCvRealMonitorPhotoEvidenceIT {
                     Integer.toString(row.samplerEvidence.tileDecodeAttemptCount()),
                     Integer.toString(row.samplerEvidence.envelopeAcceptedPayloadCount()),
                     Integer.toString(row.samplerEvidence.envelopeRejectedAttemptCount()),
+                    tsvValue(row.samplerEvidence.tileDecodeFailureStages()),
+                    tsvValue(row.samplerEvidence.tileDecodeFailureReasons()),
+                    tsvValue(row.samplerEvidence.tileDecodeHeaderPayloadLengths()),
+                    tsvValue(row.samplerEvidence.tileDecodeExpectedEncodedBytes()),
+                    tsvValue(row.samplerEvidence.tileDecodeEncodedBytes()),
+                    tsvValue(row.samplerEvidence.tileDecodeEncodedLengthDeltas()),
+                    tsvValue(row.samplerEvidence.tileDecodeLogicalTileHashes()),
                     row.samplerEvidence.selectedPublicDiagnostic(),
                     Integer.toString(row.samplerEvidence.gridOverlayCount()),
                     row.primaryDiagnosticCode,
@@ -361,7 +372,6 @@ final class BoofCvRealMonitorPhotoEvidenceIT {
             String extension,
             SampleClassification approvedClassification,
             SampleClassification observedCandidateClassification,
-            boolean mvp6TargetSample,
             String status,
             int submittedMediaCount,
             int readableMediaCount,
@@ -415,7 +425,6 @@ final class BoofCvRealMonitorPhotoEvidenceIT {
                     extension,
                     SampleClassification.approvedFrom(sample),
                     SampleClassification.observedFrom(extension, summary, primaryDiagnosticCode),
-                    mvp6TargetSample(sample),
                     result.status().name(),
                     summary.submittedMediaCount(),
                     summary.readableMediaCount(),
@@ -467,19 +476,6 @@ final class BoofCvRealMonitorPhotoEvidenceIT {
             return fileName.substring(dotIndex + 1).toLowerCase(Locale.ROOT);
         }
 
-        private static boolean mvp6TargetSample(Path sample) {
-            return MVP6_TARGET_SAMPLE_STEMS.contains(fileStem(sample).toUpperCase(Locale.ROOT));
-        }
-
-        private static String fileStem(Path path) {
-            String fileName = path.getFileName().toString();
-            int dotIndex = fileName.lastIndexOf('.');
-            if (dotIndex <= 0) {
-                return fileName;
-            }
-            return fileName.substring(0, dotIndex);
-        }
-
         private static Optional<CaptureMediaDiagnostic> primaryDiagnostic(List<CaptureMediaDiagnostic> diagnostics) {
             Optional<CaptureMediaDiagnostic> blockingCode = diagnostics.stream()
                     .filter(CaptureMediaDiagnostic::blocking)
@@ -515,12 +511,19 @@ final class BoofCvRealMonitorPhotoEvidenceIT {
             int tileDecodeAttemptCount,
             int envelopeAcceptedPayloadCount,
             int envelopeRejectedAttemptCount,
+            String tileDecodeFailureStages,
+            String tileDecodeFailureReasons,
+            String tileDecodeHeaderPayloadLengths,
+            String tileDecodeExpectedEncodedBytes,
+            String tileDecodeEncodedBytes,
+            String tileDecodeEncodedLengthDeltas,
+            String tileDecodeLogicalTileHashes,
             String selectedPublicDiagnostic,
             int gridOverlayCount
     ) {
 
         private static SamplerEvidence empty() {
-            return new SamplerEvidence(0, 0, 0, 0, 0, 0, 0, "", 0);
+            return new SamplerEvidence(0, 0, 0, 0, 0, 0, 0, "", "", "", "", "", "", "", "", 0);
         }
 
         private static SamplerEvidence from(Path debugOutputPath) {
@@ -545,6 +548,13 @@ final class BoofCvRealMonitorPhotoEvidenceIT {
             int tileDecodeAttempts = 0;
             int envelopeAcceptedPayloads = 0;
             int envelopeRejectedAttempts = 0;
+            List<String> tileDecodeFailureStages = new ArrayList<>();
+            List<String> tileDecodeFailureReasons = new ArrayList<>();
+            List<String> tileDecodeHeaderPayloadLengths = new ArrayList<>();
+            List<String> tileDecodeExpectedEncodedBytes = new ArrayList<>();
+            List<String> tileDecodeEncodedBytes = new ArrayList<>();
+            List<String> tileDecodeEncodedLengthDeltas = new ArrayList<>();
+            List<String> tileDecodeLogicalTileHashes = new ArrayList<>();
             List<String> selectedDiagnostics = new ArrayList<>();
             for (Path sidecar : sidecars) {
                 Map<String, String> fields = sidecarFields(sidecar);
@@ -555,6 +565,13 @@ final class BoofCvRealMonitorPhotoEvidenceIT {
                 tileDecodeAttempts += intField(fields, "sampler.tileDecode.attemptCount");
                 envelopeAcceptedPayloads += intField(fields, "sampler.envelope.acceptedPayloadCount");
                 envelopeRejectedAttempts += intField(fields, "sampler.envelope.rejectedAttemptCount");
+                addDistinctSuffixValues(fields, ".tileDecode.failureStage", tileDecodeFailureStages);
+                addDistinctSuffixValues(fields, ".tileDecode.failureReason", tileDecodeFailureReasons);
+                addDistinctSuffixValues(fields, ".tileDecode.headerPayloadLength", tileDecodeHeaderPayloadLengths);
+                addDistinctSuffixValues(fields, ".tileDecode.expectedEncodedBytes", tileDecodeExpectedEncodedBytes);
+                addDistinctSuffixValues(fields, ".tileDecode.encodedBytes", tileDecodeEncodedBytes);
+                addDistinctSuffixValues(fields, ".tileDecode.encodedLengthDelta", tileDecodeEncodedLengthDeltas);
+                addDistinctSuffixValues(fields, ".tileDecode.logicalTile.sha256", tileDecodeLogicalTileHashes);
                 String selectedDiagnostic = fields.getOrDefault("diagnostic.selectedPublicCode", "");
                 if (!selectedDiagnostic.isBlank()) {
                     selectedDiagnostics.add(selectedDiagnostic);
@@ -568,9 +585,36 @@ final class BoofCvRealMonitorPhotoEvidenceIT {
                     tileDecodeAttempts,
                     envelopeAcceptedPayloads,
                     envelopeRejectedAttempts,
+                    joined(tileDecodeFailureStages),
+                    joined(tileDecodeFailureReasons),
+                    joined(tileDecodeHeaderPayloadLengths),
+                    joined(tileDecodeExpectedEncodedBytes),
+                    joined(tileDecodeEncodedBytes),
+                    joined(tileDecodeEncodedLengthDeltas),
+                    joined(tileDecodeLogicalTileHashes),
                     selectedDiagnostics.isEmpty() ? "" : String.join(",", selectedDiagnostics),
                     gridOverlayCount
             );
+        }
+
+        private static void addDistinctSuffixValues(
+                Map<String, String> fields,
+                String keySuffix,
+                List<String> values
+        ) {
+            fields.entrySet().stream()
+                    .filter(entry -> entry.getKey().endsWith(keySuffix))
+                    .map(Map.Entry::getValue)
+                    .filter(value -> value != null && !value.isBlank())
+                    .forEach(value -> {
+                        if (!values.contains(value)) {
+                            values.add(value);
+                        }
+                    });
+        }
+
+        private static String joined(List<String> values) {
+            return values.isEmpty() ? "" : String.join("|", values);
         }
 
         private static int gridOverlayCount(Path debugOutputPath) {

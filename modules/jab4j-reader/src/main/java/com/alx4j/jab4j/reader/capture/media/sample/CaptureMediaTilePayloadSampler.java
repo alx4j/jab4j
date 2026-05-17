@@ -1,6 +1,9 @@
 package com.alx4j.jab4j.reader.capture.media.sample;
 
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
+import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -65,6 +68,7 @@ public final class CaptureMediaTilePayloadSampler {
     private static final int FINDER_SIZE_MODULES = 3;
     private static final int CAMERA_MIN_RECOVERABLE_FINDER_COUNT = 3;
     private static final int CAMERA_MIN_MATCHES_PER_RECOVERABLE_FINDER = 6;
+    private static final double MIN_CAMERA_FALLBACK_RECOVERABLE_FINDER_AVERAGE_CONFIDENCE = 0.30d;
     private static final double MAX_PROPORTIONAL_LAYOUT_SCALE_ERROR = 0.01d;
 
     private final CaptureMediaPaletteSampler paletteSampler;
@@ -208,9 +212,15 @@ public final class CaptureMediaTilePayloadSampler {
 
     private FrameSample sample(NormalizedCaptureFrame frame, FixedLayoutPlan layoutPlan) {
         Optional<CvSamplingEvidence> samplingEvidence = samplingEvidence(frame, layoutPlan);
+        boolean partialAcceptanceAllowed = cameraDerived(frame);
         List<TilePayload> payloads = new ArrayList<>();
         List<CaptureMediaDiagnostic> diagnostics = new ArrayList<>();
+        List<CaptureMediaDiagnostic> blockingDiagnostics = new ArrayList<>();
         PaletteSampleAccumulator acceptedConfidence = new PaletteSampleAccumulator();
+        boolean failedSlotEncountered = false;
+        Optional<PaletteConfidenceSummary> failedSlotConfidence = Optional.empty();
+        int partialRejectedSlotCount = 0;
+        int partialUndecodableSlotCount = 0;
         List<TilePlacement> placements = layoutPlan.tilePlacements();
         for (int tileIndex = 0; tileIndex < placements.size(); tileIndex++) {
             SlotSample slotSample = sampleSlot(frame, layoutPlan, placements.get(tileIndex), tileIndex, samplingEvidence);
@@ -220,29 +230,52 @@ public final class CaptureMediaTilePayloadSampler {
             }
             if (slotSample.status() == SlotSampleStatus.REJECTED) {
                 PaletteConfidenceSummary confidence = slotSample.paletteConfidence().orElseThrow();
-                diagnostics.add(colorDiagnostic(
+                CaptureMediaDiagnostic diagnostic = colorDiagnostic(
                         frame,
                         CaptureMediaDiagnosticSeverity.ERROR,
                         confidence,
                         "Media tile samples are outside the supported color/compression threshold"
-                ));
-                return FrameSample.rejected(List.of(), diagnostics, Optional.of(confidence));
+                );
+                if (!partialAcceptanceAllowed) {
+                    diagnostics.add(diagnostic);
+                    return FrameSample.rejected(List.of(), diagnostics, Optional.of(confidence));
+                }
+                if (!failedSlotEncountered) {
+                    failedSlotEncountered = true;
+                    failedSlotConfidence = Optional.of(confidence);
+                }
+                blockingDiagnostics.add(diagnostic);
+                partialRejectedSlotCount++;
+                continue;
             }
             if (slotSample.status() == SlotSampleStatus.UNDECODABLE) {
                 Optional<PaletteConfidenceSummary> confidence = slotSample.paletteConfidence();
-                diagnostics.add(colorDiagnostic(
+                CaptureMediaDiagnostic diagnostic = colorDiagnostic(
                         frame,
                         CaptureMediaDiagnosticSeverity.ERROR,
                         confidence.orElse(null),
                         "Media tile content passed palette sampling but failed tile decode or envelope CRC validation"
-                ));
-                return FrameSample.rejected(List.of(), diagnostics, confidence);
+                );
+                if (!partialAcceptanceAllowed) {
+                    diagnostics.add(diagnostic);
+                    return FrameSample.rejected(List.of(), diagnostics, confidence);
+                }
+                if (!failedSlotEncountered) {
+                    failedSlotEncountered = true;
+                    failedSlotConfidence = confidence;
+                }
+                blockingDiagnostics.add(diagnostic);
+                partialUndecodableSlotCount++;
+                continue;
             }
             payloads.add(slotSample.payload().orElseThrow());
             acceptedConfidence.add(slotSample.paletteConfidence().orElseThrow());
         }
 
         if (payloads.isEmpty()) {
+            if (!blockingDiagnostics.isEmpty()) {
+                return FrameSample.rejected(List.of(), blockingDiagnostics, failedSlotConfidence);
+            }
             return FrameSample.empty();
         }
         PaletteConfidenceSummary confidence = acceptedConfidence.summary();
@@ -252,6 +285,15 @@ public final class CaptureMediaTilePayloadSampler {
                     CaptureMediaDiagnosticSeverity.WARNING,
                     confidence,
                     "Media tile content decoded with low palette confidence"
+            ));
+        }
+        if (partialRejectedSlotCount > 0 || partialUndecodableSlotCount > 0) {
+            diagnostics.add(partialAcceptanceDiagnostic(
+                    frame,
+                    payloads.size(),
+                    partialRejectedSlotCount,
+                    partialUndecodableSlotCount,
+                    placements.size()
             ));
         }
         return FrameSample.accepted(payloads, diagnostics, confidence);
@@ -279,19 +321,32 @@ public final class CaptureMediaTilePayloadSampler {
                     0,
                     0,
                     0,
-                    0
+                    0,
+                    List.of(),
+                    Optional.empty(),
+                    ProfileSelectionSource.NONE
             );
         }
 
+        List<ProfileAttemptInspection> profileAttempts = new ArrayList<>();
+        FrameInspection selectedInspection = null;
         FrameInspection bestInspection = null;
         for (LayoutProfile layout : layouts) {
             FrameInspection inspection = inspect(frame, layoutPlanner.plan(layout));
+            profileAttempts.add(profileAttemptInspection(layout, inspection));
             if (inspection.decodedPayloadCount() > 0) {
-                return inspection;
+                if (selectedInspection == null) {
+                    selectedInspection = inspection;
+                }
             }
             bestInspection = betterInspection(bestInspection, inspection);
         }
-        return bestInspection;
+        FrameInspection selectedOrBest = selectedInspection == null ? bestInspection : selectedInspection;
+        Optional<String> selectedLayoutProfileId = selectedPayloadLayoutProfileId(profileAttempts);
+        ProfileSelectionSource selectionSource = selectedLayoutProfileId.isPresent()
+                ? ProfileSelectionSource.DECODED_PAYLOAD
+                : ProfileSelectionSource.NONE;
+        return selectedOrBest.withProfileAttempts(profileAttempts, selectedLayoutProfileId, selectionSource);
     }
 
     private FrameInspection inspect(NormalizedCaptureFrame frame, FixedLayoutPlan layoutPlan) {
@@ -422,6 +477,95 @@ public final class CaptureMediaTilePayloadSampler {
         return score;
     }
 
+    private ProfileAttemptInspection profileAttemptInspection(LayoutProfile layout, FrameInspection inspection) {
+        int tileDecodeAttemptCount = tileDecodeAttemptCount(inspection);
+        int layoutProfileMismatchCount = slotValidationMismatchCount(
+                inspection,
+                "slotValidation.layoutProfileMismatch"
+        );
+        int tileIndexMismatchCount = slotValidationMismatchCount(inspection, "slotValidation.tileIndexMismatch");
+        int totalTilesMismatchCount = slotValidationMismatchCount(inspection, "slotValidation.totalTilesMismatch");
+        return new ProfileAttemptInspection(
+                layout.profileId(),
+                layout.rows(),
+                layout.cols(),
+                profileAttemptStatus(inspection, tileDecodeAttemptCount),
+                inspection.decodedPayloadCount(),
+                tileDecodeAttemptCount,
+                layoutProfileMismatchCount,
+                tileIndexMismatchCount,
+                totalTilesMismatchCount,
+                decodedPayloadLayoutProfileId(inspection)
+        );
+    }
+
+    private ProfileAttemptInspectionStatus profileAttemptStatus(
+            FrameInspection inspection,
+            int tileDecodeAttemptCount
+    ) {
+        if (inspection.decodedPayloadCount() > 0) {
+            return ProfileAttemptInspectionStatus.ACCEPTED;
+        }
+        if (tileDecodeAttemptCount > 0
+                || inspection.candidateAttemptCount() > 0
+                || inspection.noFinderAttemptCount() > 0
+                || inspection.paletteRejectedAttemptCount() > 0
+                || inspection.slots().stream().anyMatch(this::hasRejectedProfileAttemptEvidence)) {
+            return ProfileAttemptInspectionStatus.REJECTED;
+        }
+        return ProfileAttemptInspectionStatus.EMPTY;
+    }
+
+    private boolean hasRejectedProfileAttemptEvidence(SlotInspection slot) {
+        return slot.interiorContent()
+                || slot.borderStatus() == BorderInspectionStatus.SIGNATURE
+                || slot.borderStatus() == BorderInspectionStatus.PALETTE_REJECTED;
+    }
+
+    private int tileDecodeAttemptCount(FrameInspection inspection) {
+        int attemptCount = 0;
+        for (SlotInspection slot : inspection.slots()) {
+            for (CandidateInspection candidate : slot.candidates()) {
+                if (candidate.decodeStatus() != DecodeInspectionStatus.NOT_ATTEMPTED) {
+                    attemptCount++;
+                }
+            }
+        }
+        return attemptCount;
+    }
+
+    private int slotValidationMismatchCount(FrameInspection inspection, String mismatchDiagnosticName) {
+        int count = 0;
+        for (SlotInspection slot : inspection.slots()) {
+            for (CandidateInspection candidate : slot.candidates()) {
+                if ("true".equals(candidate.decodeDiagnostics().get(mismatchDiagnosticName))) {
+                    count++;
+                }
+            }
+        }
+        return count;
+    }
+
+    private Optional<String> decodedPayloadLayoutProfileId(FrameInspection inspection) {
+        for (SlotInspection slot : inspection.slots()) {
+            for (CandidateInspection candidate : slot.candidates()) {
+                if (candidate.decodedPayloadLayoutProfileId().isPresent()) {
+                    return candidate.decodedPayloadLayoutProfileId();
+                }
+            }
+        }
+        return Optional.empty();
+    }
+
+    private Optional<String> selectedPayloadLayoutProfileId(List<ProfileAttemptInspection> attempts) {
+        for (ProfileAttemptInspection attempt : attempts) {
+            if (attempt.decodedPayloadLayoutProfileId().isPresent()) {
+                return attempt.decodedPayloadLayoutProfileId();
+            }
+        }
+        return Optional.empty();
+    }
+
     private SlotSample sampleSlot(
             NormalizedCaptureFrame frame,
             FixedLayoutPlan layoutPlan,
@@ -429,19 +573,88 @@ public final class CaptureMediaTilePayloadSampler {
             int tileIndex,
             Optional<CvSamplingEvidence> samplingEvidence
     ) {
-        TileAlignment alignment = alignedTilePlacement(frame, layoutPlan, placement, tileIndex, samplingEvidence);
+        if (!cameraDerived(frame)) {
+            TileAlignment alignment = TileAlignment.of(
+                    placement,
+                    placement,
+                    TileAlignmentInspectionSource.NOMINAL,
+                    TileEvidenceAlignmentStatus.NOT_CAMERA_DERIVED
+            );
+            return sampleSlotWithAlignment(frame, layoutPlan, tileIndex, samplingEvidence, alignment, false);
+        }
+
+        EvidenceAlignment evidenceAlignment = evidenceAlignedPlacement(frame, layoutPlan, placement, tileIndex, samplingEvidence);
+        if (evidenceAlignment.alignment().isPresent()) {
+            TileAlignment alignment = evidenceAlignment.alignment().orElseThrow();
+            boolean finderAssisted = alignment.samplingEvidenceAlignmentStatus()
+                    == TileEvidenceAlignmentStatus.BORDER_SIGNATURE_FAILED;
+            SlotSample evidenceSample = sampleSlotWithAlignment(
+                    frame,
+                    layoutPlan,
+                    tileIndex,
+                    samplingEvidence,
+                    finderAssisted
+                            ? alignment.withSamplingEvidenceAlignmentStatus(TileEvidenceAlignmentStatus.USED_FINDER_EVIDENCE)
+                            : alignment,
+                    finderAssisted
+            );
+            if (!finderAssisted || evidenceSample.status() == SlotSampleStatus.DECODED) {
+                return evidenceSample;
+            }
+        }
+
+        TileAlignment legacyAlignment = legacyAlignedTilePlacement(
+                frame,
+                layoutPlan,
+                placement,
+                evidenceAlignment.status()
+        );
+        return sampleSlotWithAlignment(frame, layoutPlan, tileIndex, samplingEvidence, legacyAlignment, false);
+    }
+
+    private SlotSample sampleSlotWithAlignment(
+            NormalizedCaptureFrame frame,
+            FixedLayoutPlan layoutPlan,
+            int tileIndex,
+            Optional<CvSamplingEvidence> samplingEvidence,
+            TileAlignment alignment,
+            boolean allowFinderAssistedEvidence
+    ) {
         TilePlacement effectivePlacement = alignment.placement();
         BorderSample borderSample = sampleRenderedTileBorder(frame, layoutPlan, effectivePlacement);
         if (borderSample.status() != BorderSampleStatus.SIGNATURE) {
+            boolean interiorContent = hasInteriorContent(frame, layoutPlan, effectivePlacement);
+            if (allowFinderAssistedEvidence && interiorContent) {
+                SlotSample finderAssistedSample = sampleSignedContent(
+                        frame,
+                        layoutPlan,
+                        effectivePlacement,
+                        tileIndex,
+                        samplingEvidence
+                );
+                if (finderAssistedSample.status() == SlotSampleStatus.DECODED) {
+                    return finderAssistedSample;
+                }
+            }
             if (borderSample.status() == BorderSampleStatus.REJECTED
-                    && hasInteriorContent(frame, layoutPlan, effectivePlacement)) {
+                    && interiorContent) {
                 return SlotSample.rejected(borderSample.paletteConfidence().orElseThrow());
             }
-            return hasInteriorContent(frame, layoutPlan, effectivePlacement)
+            return interiorContent
                     ? SlotSample.noSignatureContent()
                     : SlotSample.empty();
         }
 
+        return sampleSignedContent(frame, layoutPlan, effectivePlacement, tileIndex, samplingEvidence);
+    }
+
+    private SlotSample sampleSignedContent(
+            NormalizedCaptureFrame frame,
+            FixedLayoutPlan layoutPlan,
+            TilePlacement effectivePlacement,
+            int tileIndex,
+            Optional<CvSamplingEvidence> samplingEvidence
+    ) {
         List<CandidateSample> candidates = new ArrayList<>();
         CandidateSample rejectedCandidate = null;
         for (int sideVersion = tileCodecProfile.minSideVersion(); sideVersion <= tileCodecProfile.maxSideVersion(); sideVersion++) {
@@ -488,11 +701,79 @@ public final class CaptureMediaTilePayloadSampler {
             int tileIndex,
             Optional<CvSamplingEvidence> samplingEvidence
     ) {
-        TileAlignment alignment = alignedTilePlacement(frame, layoutPlan, placement, tileIndex, samplingEvidence);
+        if (!cameraDerived(frame)) {
+            TileAlignment alignment = TileAlignment.of(
+                    placement,
+                    placement,
+                    TileAlignmentInspectionSource.NOMINAL,
+                    TileEvidenceAlignmentStatus.NOT_CAMERA_DERIVED
+            );
+            return inspectSlotWithAlignment(frame, layoutPlan, tileIndex, samplingEvidence, alignment, false);
+        }
+
+        EvidenceAlignment evidenceAlignment = evidenceAlignedPlacement(frame, layoutPlan, placement, tileIndex, samplingEvidence);
+        if (evidenceAlignment.alignment().isPresent()) {
+            TileAlignment alignment = evidenceAlignment.alignment().orElseThrow();
+            boolean finderAssisted = alignment.samplingEvidenceAlignmentStatus()
+                    == TileEvidenceAlignmentStatus.BORDER_SIGNATURE_FAILED;
+            SlotInspection evidenceInspection = inspectSlotWithAlignment(
+                    frame,
+                    layoutPlan,
+                    tileIndex,
+                    samplingEvidence,
+                    finderAssisted
+                            ? alignment.withSamplingEvidenceAlignmentStatus(TileEvidenceAlignmentStatus.USED_FINDER_EVIDENCE)
+                            : alignment,
+                    finderAssisted
+            );
+            if (!finderAssisted || hasAcceptedPayload(evidenceInspection)) {
+                return evidenceInspection;
+            }
+        }
+
+        TileAlignment legacyAlignment = legacyAlignedTilePlacement(
+                frame,
+                layoutPlan,
+                placement,
+                evidenceAlignment.status()
+        );
+        return inspectSlotWithAlignment(frame, layoutPlan, tileIndex, samplingEvidence, legacyAlignment, false);
+    }
+
+    private SlotInspection inspectSlotWithAlignment(
+            NormalizedCaptureFrame frame,
+            FixedLayoutPlan layoutPlan,
+            int tileIndex,
+            Optional<CvSamplingEvidence> samplingEvidence,
+            TileAlignment alignment,
+            boolean allowFinderAssistedEvidence
+    ) {
         TilePlacement effectivePlacement = alignment.placement();
         BorderSample borderSample = sampleRenderedTileBorder(frame, layoutPlan, effectivePlacement);
         boolean interiorContent = hasInteriorContent(frame, layoutPlan, effectivePlacement);
         if (borderSample.status() != BorderSampleStatus.SIGNATURE) {
+            if (allowFinderAssistedEvidence && interiorContent) {
+                List<CandidateInspection> candidates = inspectSignedContent(
+                        frame,
+                        layoutPlan,
+                        effectivePlacement,
+                        tileIndex,
+                        samplingEvidence
+                );
+                if (candidates.stream()
+                        .anyMatch(candidate -> candidate.decodeStatus() == DecodeInspectionStatus.ACCEPTED_PAYLOAD)) {
+                    return new SlotInspection(
+                            tileIndex,
+                            inspectionStatus(borderSample.status()),
+                            interiorContent,
+                            alignment.shiftXPx(),
+                            alignment.shiftYPx(),
+                            alignment.source(),
+                            alignment.samplingEvidenceAlignmentStatus(),
+                            candidates
+                    );
+                }
+            }
             return new SlotInspection(
                     tileIndex,
                     inspectionStatus(borderSample.status()),
@@ -500,10 +781,42 @@ public final class CaptureMediaTilePayloadSampler {
                     alignment.shiftXPx(),
                     alignment.shiftYPx(),
                     alignment.source(),
+                    alignment.samplingEvidenceAlignmentStatus(),
                     List.of()
             );
         }
 
+        List<CandidateInspection> candidates = inspectSignedContent(
+                frame,
+                layoutPlan,
+                effectivePlacement,
+                tileIndex,
+                samplingEvidence
+        );
+        return new SlotInspection(
+                tileIndex,
+                inspectionStatus(borderSample.status()),
+                interiorContent,
+                alignment.shiftXPx(),
+                alignment.shiftYPx(),
+                alignment.source(),
+                alignment.samplingEvidenceAlignmentStatus(),
+                candidates
+        );
+    }
+
+    private boolean hasAcceptedPayload(SlotInspection inspection) {
+        return inspection.candidates().stream()
+                .anyMatch(candidate -> candidate.decodeStatus() == DecodeInspectionStatus.ACCEPTED_PAYLOAD);
+    }
+
+    private List<CandidateInspection> inspectSignedContent(
+            NormalizedCaptureFrame frame,
+            FixedLayoutPlan layoutPlan,
+            TilePlacement effectivePlacement,
+            int tileIndex,
+            Optional<CvSamplingEvidence> samplingEvidence
+    ) {
         List<CandidateInspection> candidates = new ArrayList<>();
         for (int sideVersion = tileCodecProfile.minSideVersion(); sideVersion <= tileCodecProfile.maxSideVersion(); sideVersion++) {
             CandidateSamplingGeometry geometry = candidateSamplingGeometry(
@@ -521,15 +834,7 @@ public final class CaptureMediaTilePayloadSampler {
             );
             candidates.add(candidate);
         }
-        return new SlotInspection(
-                tileIndex,
-                inspectionStatus(borderSample.status()),
-                interiorContent,
-                alignment.shiftXPx(),
-                alignment.shiftYPx(),
-                alignment.source(),
-                candidates
-        );
+        return List.copyOf(candidates);
     }
 
     private BorderInspectionStatus inspectionStatus(BorderSampleStatus status) {
@@ -548,35 +853,11 @@ public final class CaptureMediaTilePayloadSampler {
         };
     }
 
-    private TileAlignment alignedTilePlacement(
-            NormalizedCaptureFrame frame,
-            FixedLayoutPlan layoutPlan,
-            TilePlacement placement,
-            int tileIndex,
-            Optional<CvSamplingEvidence> samplingEvidence
-    ) {
-        if (!cameraDerived(frame)) {
-            return TileAlignment.of(placement, placement, TileAlignmentInspectionSource.NOMINAL);
-        }
-        Optional<TileAlignment> evidenceAlignment = evidenceAlignedPlacement(frame, placement, tileIndex, samplingEvidence);
-        if (evidenceAlignment.isPresent()) {
-            BorderEvidence evidenceBorder = sampleBorderEvidence(
-                    frame,
-                    evidenceAlignment.orElseThrow().placement(),
-                    layoutPlan.separatorThicknessPx(),
-                    CAMERA_SLOT_ALIGNMENT_SAMPLE_STRIDE_PX
-            );
-            if (evidenceBorder.cameraSignature()) {
-                return evidenceAlignment.orElseThrow();
-            }
-        }
-        return legacyAlignedTilePlacement(frame, layoutPlan, placement);
-    }
-
     private TileAlignment legacyAlignedTilePlacement(
             NormalizedCaptureFrame frame,
             FixedLayoutPlan layoutPlan,
-            TilePlacement placement
+            TilePlacement placement,
+            TileEvidenceAlignmentStatus evidenceAlignmentStatus
     ) {
         int border = layoutPlan.separatorThicknessPx();
         TilePlacement bestPlacement = placement;
@@ -608,27 +889,92 @@ public final class CaptureMediaTilePayloadSampler {
                 }
             }
         }
-        return TileAlignment.of(placement, bestPlacement, TileAlignmentInspectionSource.LEGACY_BORDER_SCAN);
+        return TileAlignment.of(
+                placement,
+                bestPlacement,
+                TileAlignmentInspectionSource.LEGACY_BORDER_SCAN,
+                evidenceAlignmentStatus
+        );
     }
 
-    private Optional<TileAlignment> evidenceAlignedPlacement(
+    private EvidenceAlignment evidenceAlignedPlacement(
             NormalizedCaptureFrame frame,
+            FixedLayoutPlan layoutPlan,
             TilePlacement placement,
             int tileIndex,
             Optional<CvSamplingEvidence> samplingEvidence
     ) {
-        if (samplingEvidence.filter(this::usableSamplingEvidence).isEmpty()) {
-            return Optional.empty();
+        if (samplingEvidence.isEmpty()) {
+            return EvidenceAlignment.unavailable(TileEvidenceAlignmentStatus.NO_SAMPLING_EVIDENCE);
         }
         CvSamplingEvidence evidence = samplingEvidence.orElseThrow();
-        int offsetX = roundedAlignmentOffset(alignmentOffsetXPx(evidence, tileIndex));
-        int offsetY = roundedAlignmentOffset(alignmentOffsetYPx(evidence, tileIndex));
-        return shiftedPlacement(frame, placement, offsetX, offsetY)
-                .map(effectivePlacement -> TileAlignment.of(
-                        placement,
-                        effectivePlacement,
-                        TileAlignmentInspectionSource.SAMPLING_EVIDENCE
+        if (!usableSamplingEvidence(evidence)) {
+            return EvidenceAlignment.unavailable(TileEvidenceAlignmentStatus.CONFIDENCE_BELOW_THRESHOLD);
+        }
+        TileAlignment firstInBoundsAlignment = null;
+        boolean outOfBounds = false;
+        for (AlignmentOffset offset : evidenceAlignmentOffsets(evidence, tileIndex)) {
+            Optional<TilePlacement> shiftedPlacement = shiftedPlacement(frame, placement, offset.xPx(), offset.yPx());
+            if (shiftedPlacement.isEmpty()) {
+                outOfBounds = true;
+                continue;
+            }
+            TileAlignment alignment = TileAlignment.of(
+                    placement,
+                    shiftedPlacement.orElseThrow(),
+                    TileAlignmentInspectionSource.SAMPLING_EVIDENCE,
+                    TileEvidenceAlignmentStatus.BORDER_SIGNATURE_FAILED
+            );
+            if (firstInBoundsAlignment == null) {
+                firstInBoundsAlignment = alignment;
+            }
+            BorderEvidence evidenceBorder = sampleBorderEvidence(
+                    frame,
+                    alignment.placement(),
+                    layoutPlan.separatorThicknessPx(),
+                    CAMERA_SLOT_ALIGNMENT_SAMPLE_STRIDE_PX
+            );
+            if (evidenceBorder.cameraSignature()) {
+                return EvidenceAlignment.available(
+                        alignment.withSamplingEvidenceAlignmentStatus(TileEvidenceAlignmentStatus.USED_BORDER_SIGNATURE)
+                );
+            }
+        }
+        if (firstInBoundsAlignment != null) {
+            return EvidenceAlignment.available(firstInBoundsAlignment);
+        }
+        return EvidenceAlignment.unavailable(outOfBounds
+                ? TileEvidenceAlignmentStatus.OUT_OF_BOUNDS
+                : TileEvidenceAlignmentStatus.NO_SAMPLING_EVIDENCE);
+    }
+
+    private List<AlignmentOffset> evidenceAlignmentOffsets(CvSamplingEvidence evidence, int tileIndex) {
+        List<AlignmentOffset> offsets = new ArrayList<>();
+        evidence.tileEvidence(tileIndex)
+                .filter(this::usableTileEvidence)
+                .ifPresent(tileEvidence -> addAlignmentOffset(
+                        offsets,
+                        tileEvidence.moduleCenterOffsetXPx(),
+                        tileEvidence.moduleCenterOffsetYPx()
                 ));
+        evidence.gridPhase()
+                .filter(this::usableGridPhase)
+                .ifPresent(gridPhase -> addAlignmentOffset(
+                        offsets,
+                        gridPhase.offsetXPx(),
+                        gridPhase.offsetYPx()
+                ));
+        return List.copyOf(offsets);
+    }
+
+    private void addAlignmentOffset(List<AlignmentOffset> offsets, double offsetX, double offsetY) {
+        AlignmentOffset offset = new AlignmentOffset(
+                roundedAlignmentOffset(offsetX),
+                roundedAlignmentOffset(offsetY)
+        );
+        if (!offsets.contains(offset)) {
+            offsets.add(offset);
+        }
     }
 
     private Optional<TilePlacement> shiftedPlacement(
@@ -759,17 +1105,26 @@ public final class CaptureMediaTilePayloadSampler {
         List<CandidateSample> attempts = sampleCandidates(frame, layoutPlan, placement, tileIndex, geometry);
         CandidateSample tileOrEnvelopeRejected = null;
         Optional<String> tileOrEnvelopeRejectedReason = Optional.empty();
+        Map<String, String> tileOrEnvelopeRejectedDiagnostics = Map.of();
         CandidateSample rejected = null;
         CandidateSample noFinder = null;
         for (CandidateSample attempt : attempts) {
             if (attempt.status() == CandidateSampleStatus.CANDIDATE) {
                 DecodeAttempt decodeAttempt = decodeAttempt(layoutPlan, tileIndex, attempt.logicalTile().orElseThrow());
                 if (decodeAttempt.payload().isPresent()) {
-                    return candidateInspection(attempt, DecodeInspectionStatus.ACCEPTED_PAYLOAD);
+                    TilePayload payload = decodeAttempt.payload().orElseThrow();
+                    return candidateInspection(
+                            attempt,
+                            DecodeInspectionStatus.ACCEPTED_PAYLOAD,
+                            Optional.empty(),
+                            decodeAttempt.diagnostics(),
+                            Optional.of(payload.layoutProfileId())
+                    );
                 }
                 if (tileOrEnvelopeRejected == null) {
                     tileOrEnvelopeRejected = attempt;
                     tileOrEnvelopeRejectedReason = decodeAttempt.rejectionReason();
+                    tileOrEnvelopeRejectedDiagnostics = decodeAttempt.diagnostics();
                 }
             } else if (attempt.status() == CandidateSampleStatus.REJECTED) {
                 rejected = lowerConfidence(rejected, attempt);
@@ -781,7 +1136,8 @@ public final class CaptureMediaTilePayloadSampler {
             return candidateInspection(
                     tileOrEnvelopeRejected,
                     DecodeInspectionStatus.REJECTED_BY_TILE_OR_ENVELOPE,
-                    tileOrEnvelopeRejectedReason
+                    tileOrEnvelopeRejectedReason,
+                    tileOrEnvelopeRejectedDiagnostics
             );
         }
         if (rejected != null) {
@@ -791,13 +1147,32 @@ public final class CaptureMediaTilePayloadSampler {
     }
 
     private CandidateInspection candidateInspection(CandidateSample candidate, DecodeInspectionStatus decodeStatus) {
-        return candidateInspection(candidate, decodeStatus, Optional.empty());
+        return candidateInspection(candidate, decodeStatus, Optional.empty(), Map.of(), Optional.empty());
     }
 
     private CandidateInspection candidateInspection(
             CandidateSample candidate,
             DecodeInspectionStatus decodeStatus,
             Optional<String> decodeFailureReason
+    ) {
+        return candidateInspection(candidate, decodeStatus, decodeFailureReason, Map.of(), Optional.empty());
+    }
+
+    private CandidateInspection candidateInspection(
+            CandidateSample candidate,
+            DecodeInspectionStatus decodeStatus,
+            Optional<String> decodeFailureReason,
+            Map<String, String> decodeDiagnostics
+    ) {
+        return candidateInspection(candidate, decodeStatus, decodeFailureReason, decodeDiagnostics, Optional.empty());
+    }
+
+    private CandidateInspection candidateInspection(
+            CandidateSample candidate,
+            DecodeInspectionStatus decodeStatus,
+            Optional<String> decodeFailureReason,
+            Map<String, String> decodeDiagnostics,
+            Optional<String> decodedPayloadLayoutProfileId
     ) {
         CandidateSamplingGeometry geometry = candidate.geometry();
         return new CandidateInspection(
@@ -814,7 +1189,9 @@ public final class CaptureMediaTilePayloadSampler {
                 candidate.logicalTile()
                         .map(LogicalTile::diagnostics)
                         .orElse(Map.of()),
-                decodeFailureReason
+                decodeFailureReason,
+                decodeDiagnostics,
+                decodedPayloadLayoutProfileId
         );
     }
 
@@ -870,6 +1247,14 @@ public final class CaptureMediaTilePayloadSampler {
         if (!finderSummary.supported(cameraDerivedCandidate)) {
             return CandidateSample.noFinder(Optional.of(summary), geometry);
         }
+        if (!credibleRecoverableFinderCandidate(
+                cameraDerivedCandidate,
+                finderSummary,
+                summary,
+                geometry
+        )) {
+            return CandidateSample.noFinder(Optional.of(summary), geometry);
+        }
         boolean finderCanonicalized = cameraDerivedCandidate && !finderSummary.exact();
         if (finderCanonicalized) {
             moduleColors = canonicalizedFinderPatterns(moduleColors, dimension);
@@ -889,6 +1274,9 @@ public final class CaptureMediaTilePayloadSampler {
         diagnostics.put("lowConfidenceSampleCount", Integer.toString(summary.lowConfidenceSampleCount()));
         diagnostics.put("sparseCameraOutliersAccepted", Boolean.toString(sparseCameraOutliersAccepted));
         diagnostics.put("rejectedSampleCount", Integer.toString(summary.rejectedSampleCount()));
+        diagnostics.put("sampledMatrixSha256", sha256Hex(moduleColorBytes(moduleColors)));
+        diagnostics.put("sampledMatrixPrefix", moduleColorPrefix(moduleColors, 64));
+        diagnostics.put("sampledMatrixHistogram", moduleColorHistogram(moduleColors));
         return CandidateSample.candidate(new LogicalTile(
                 dimension,
                 dimension,
@@ -897,6 +1285,64 @@ public final class CaptureMediaTilePayloadSampler {
                 moduleColors,
                 diagnostics
         ), summary, geometry);
+    }
+
+    private boolean credibleRecoverableFinderCandidate(
+            boolean cameraDerivedCandidate,
+            FinderPatternSummary finderSummary,
+            PaletteConfidenceSummary summary,
+            CandidateSamplingGeometry geometry
+    ) {
+        if (!cameraDerivedCandidate
+                || finderSummary.exact()
+                || geometry.moduleSamplingOffsetSource() != ModuleSamplingInspectionSource.FALLBACK_SEARCH) {
+            return true;
+        }
+        return summary.averageConfidence() >= MIN_CAMERA_FALLBACK_RECOVERABLE_FINDER_AVERAGE_CONFIDENCE;
+    }
+
+    private byte[] moduleColorBytes(List<Integer> moduleColors) {
+        byte[] bytes = new byte[moduleColors.size()];
+        for (int index = 0; index < moduleColors.size(); index++) {
+            bytes[index] = moduleColors.get(index).byteValue();
+        }
+        return bytes;
+    }
+
+    private String sha256Hex(byte[] bytes) {
+        try {
+            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes));
+        } catch (NoSuchAlgorithmException exception) {
+            throw new IllegalStateException("SHA-256 is not available", exception);
+        }
+    }
+
+    private String moduleColorPrefix(List<Integer> moduleColors, int limit) {
+        StringBuilder builder = new StringBuilder(Math.min(moduleColors.size(), limit));
+        for (int index = 0; index < moduleColors.size() && index < limit; index++) {
+            builder.append(Integer.toHexString(moduleColors.get(index)));
+        }
+        if (moduleColors.size() > limit) {
+            builder.append("...");
+        }
+        return builder.toString();
+    }
+
+    private String moduleColorHistogram(List<Integer> moduleColors) {
+        int[] counts = new int[paletteArgb.size()];
+        for (Integer moduleColor : moduleColors) {
+            if (moduleColor >= 0 && moduleColor < counts.length) {
+                counts[moduleColor]++;
+            }
+        }
+        StringBuilder builder = new StringBuilder();
+        for (int index = 0; index < counts.length; index++) {
+            if (index > 0) {
+                builder.append(',');
+            }
+            builder.append(index).append(':').append(counts[index]);
+        }
+        return builder.toString();
     }
 
     private boolean sparseCameraOutliersRecoverable(
@@ -1061,9 +1507,13 @@ public final class CaptureMediaTilePayloadSampler {
             NormalizedCaptureFrame frame,
             FixedLayoutPlan layoutPlan
     ) {
+        Optional<CvSamplingEvidence> frameEvidence = frame.samplingEvidence()
+                .filter(CvSamplingEvidence::available);
+        if (frameEvidence.isPresent()) {
+            return frameEvidence;
+        }
         try {
-            return samplingEvidenceProvider.evidenceFor(frame, layoutPlan)
-                    .filter(this::usableSamplingEvidence);
+            return samplingEvidenceProvider.evidenceFor(frame, layoutPlan);
         } catch (RuntimeException exception) {
             return Optional.empty();
         }
@@ -1110,26 +1560,6 @@ public final class CaptureMediaTilePayloadSampler {
                 .isPresent()
                         ? ModuleSamplingInspectionSource.TILE_EVIDENCE
                         : ModuleSamplingInspectionSource.FRAME_EVIDENCE;
-    }
-
-    private double alignmentOffsetXPx(CvSamplingEvidence evidence, int tileIndex) {
-        return evidence.tileEvidence(tileIndex)
-                .filter(this::usableTileEvidence)
-                .map(CvTileSamplingEvidence::moduleCenterOffsetXPx)
-                .orElseGet(() -> evidence.gridPhase()
-                        .filter(this::usableGridPhase)
-                        .map(CvGridPhase::offsetXPx)
-                        .orElse(0.0d));
-    }
-
-    private double alignmentOffsetYPx(CvSamplingEvidence evidence, int tileIndex) {
-        return evidence.tileEvidence(tileIndex)
-                .filter(this::usableTileEvidence)
-                .map(CvTileSamplingEvidence::moduleCenterOffsetYPx)
-                .orElseGet(() -> evidence.gridPhase()
-                        .filter(this::usableGridPhase)
-                        .map(CvGridPhase::offsetYPx)
-                        .orElse(0.0d));
     }
 
     private double moduleCenterOffsetXPx(CvSamplingEvidence evidence, int tileIndex) {
@@ -1251,54 +1681,104 @@ public final class CaptureMediaTilePayloadSampler {
         try {
             byte[] envelope = tileDecoder.decode(candidate, tileCodecProfile);
             TilePayload payload = envelopeCodec.parse(envelope, SUPPORTED_PROTOCOL_COMPATIBILITY_VERSION);
-            Optional<String> slotRejectionReason = slotRejectionReason(layoutPlan, tileIndex, payload);
-            return slotRejectionReason
-                    .map(DecodeAttempt::rejected)
+            SlotValidationResult slotValidation = slotValidationResult(layoutPlan, tileIndex, payload);
+            return slotValidation.rejectionReason()
+                    .map(reason -> DecodeAttempt.rejected(reason, slotValidation.diagnostics()))
                     .orElseGet(() -> DecodeAttempt.accepted(payload));
         } catch (TileCodecException exception) {
-            return DecodeAttempt.rejected("tileDecode: " + exception.getMessage());
+            String reason = "tileDecode: " + exception.getMessage();
+            return DecodeAttempt.rejected(
+                    reason,
+                    CaptureMediaTileDecodeDiagnostics.inspect(candidate, tileCodecProfile, Optional.of(reason))
+            );
         } catch (TransportException exception) {
-            return DecodeAttempt.rejected("envelopeValidation: " + exception.getMessage());
+            return DecodeAttempt.rejected(
+                    "envelopeValidation: " + exception.getMessage(),
+                    Map.of(
+                            "envelopeValidation.stage", "ENVELOPE_VALIDATION",
+                            "envelopeValidation.reason", exception.getMessage()
+                    )
+            );
         } catch (RuntimeException exception) {
-            return DecodeAttempt.rejected("unexpected: " + exception.getClass().getSimpleName());
+            return DecodeAttempt.rejected(
+                    "unexpected: " + exception.getClass().getSimpleName(),
+                    Map.of(
+                            "tileDecode.unexpectedStage", "UNEXPECTED",
+                            "tileDecode.unexpectedExceptionClass", exception.getClass().getSimpleName()
+                    )
+            );
         }
     }
 
     private boolean validPayloadForSlot(FixedLayoutPlan layoutPlan, int tileIndex, TilePayload payload) {
-        return slotRejectionReason(layoutPlan, tileIndex, payload).isEmpty();
+        return slotValidationResult(layoutPlan, tileIndex, payload).isAccepted();
     }
 
-    private Optional<String> slotRejectionReason(FixedLayoutPlan layoutPlan, int tileIndex, TilePayload payload) {
+    private SlotValidationResult slotValidationResult(FixedLayoutPlan layoutPlan, int tileIndex, TilePayload payload) {
         String expectedLayoutProfileId = layoutPlan.profile().profileId();
+        int expectedTotalTiles = layoutPlan.profile().rows() * layoutPlan.profile().cols();
+        Map<String, String> diagnostics = slotValidationDiagnostics(
+                expectedLayoutProfileId,
+                payload.layoutProfileId(),
+                tileIndex,
+                payload.tileIndex().value(),
+                expectedTotalTiles,
+                payload.totalTilesInFrame()
+        );
         if (!expectedLayoutProfileId.equals(payload.layoutProfileId())) {
-            return Optional.of(
+            return SlotValidationResult.rejected(
                     "slotValidation: layout profile mismatch expected "
                             + expectedLayoutProfileId
                             + " actual "
-                            + payload.layoutProfileId()
+                            + payload.layoutProfileId(),
+                    diagnostics
             );
         }
         if (payload.tileIndex().value() != tileIndex) {
-            return Optional.of(
+            return SlotValidationResult.rejected(
                     "slotValidation: tile index mismatch expected "
                             + tileIndex
                             + " actual "
-                            + payload.tileIndex().value()
+                            + payload.tileIndex().value(),
+                    diagnostics
             );
         }
-        int expectedTotalTiles = layoutPlan.profile().rows() * layoutPlan.profile().cols();
         if (payload.totalTilesInFrame() != expectedTotalTiles) {
-            return Optional.of(
+            return SlotValidationResult.rejected(
                     "slotValidation: total tile count mismatch expected "
                             + expectedTotalTiles
                             + " actual "
-                            + payload.totalTilesInFrame()
+                            + payload.totalTilesInFrame(),
+                    diagnostics
             );
         }
         if (payload.payloadKind() == PayloadKind.SESSION_END && payload.body().length == 0) {
-            return Optional.of("slotValidation: empty session-end payload body");
+            return SlotValidationResult.rejected("slotValidation: empty session-end payload body", diagnostics);
         }
-        return Optional.empty();
+        return SlotValidationResult.accepted();
+    }
+
+    private Map<String, String> slotValidationDiagnostics(
+            String expectedLayoutProfileId,
+            String actualLayoutProfileId,
+            int expectedTileIndex,
+            int actualTileIndex,
+            int expectedTotalTiles,
+            int actualTotalTiles
+    ) {
+        Map<String, String> diagnostics = new LinkedHashMap<>();
+        diagnostics.put("slotValidation.stage", "SLOT_VALIDATION");
+        diagnostics.put("slotValidation.expectedLayoutProfileId", expectedLayoutProfileId);
+        diagnostics.put("slotValidation.actualLayoutProfileId", actualLayoutProfileId);
+        diagnostics.put("slotValidation.layoutProfileMismatch",
+                Boolean.toString(!expectedLayoutProfileId.equals(actualLayoutProfileId)));
+        diagnostics.put("slotValidation.expectedTileIndex", Integer.toString(expectedTileIndex));
+        diagnostics.put("slotValidation.actualTileIndex", Integer.toString(actualTileIndex));
+        diagnostics.put("slotValidation.tileIndexMismatch", Boolean.toString(expectedTileIndex != actualTileIndex));
+        diagnostics.put("slotValidation.expectedTotalTiles", Integer.toString(expectedTotalTiles));
+        diagnostics.put("slotValidation.actualTotalTiles", Integer.toString(actualTotalTiles));
+        diagnostics.put("slotValidation.totalTilesMismatch", Boolean.toString(expectedTotalTiles != actualTotalTiles));
+        return Map.copyOf(diagnostics);
     }
 
     private List<Integer> canonicalizedFinderPatterns(List<Integer> moduleColors, int dimension) {
@@ -1376,6 +1856,28 @@ public final class CaptureMediaTilePayloadSampler {
         values.put("averagePaletteConfidence", confidence.averageConfidence());
         values.put("maximumPaletteRgbDistance", confidence.maximumRgbDistance());
         return Map.copyOf(values);
+    }
+
+    private CaptureMediaDiagnostic partialAcceptanceDiagnostic(
+            NormalizedCaptureFrame frame,
+            int decodedPayloadCount,
+            int partialRejectedSlotCount,
+            int partialUndecodableSlotCount,
+            int totalTileSlotCount
+    ) {
+        Map<String, Double> values = new LinkedHashMap<>();
+        values.put("decodedPayloadCount", (double) decodedPayloadCount);
+        values.put("partialRejectedSlotCount", (double) partialRejectedSlotCount);
+        values.put("partialUndecodableSlotCount", (double) partialUndecodableSlotCount);
+        values.put("totalTileSlotCount", (double) totalTileSlotCount);
+        values.put("partialAccepted", 1.0d);
+        return sourceDiagnostic(
+                frame,
+                CaptureMediaDiagnosticCode.COLOR_OR_COMPRESSION_SHIFT,
+                CaptureMediaDiagnosticSeverity.WARNING,
+                Map.copyOf(values),
+                "Camera-derived media frame accepted validated payloads while sibling tile slots failed validation"
+        );
     }
 
     /**
@@ -1466,6 +1968,9 @@ public final class CaptureMediaTilePayloadSampler {
      * @param noFinderAttemptCount attempts that failed finder-pattern checks
      * @param paletteRejectedAttemptCount attempts blocked by palette tolerance
      * @param decodedPayloadCount accepted payload count after tile and envelope validation
+     * @param profileAttempts all layout profile attempts evaluated for this normalized frame
+     * @param selectedLayoutProfileId payload-derived selected layout profile id, when any attempt decoded
+     * @param profileSelectionSource source used to select the layout profile
      */
     public record FrameInspection(
             String sourceId,
@@ -1475,8 +1980,48 @@ public final class CaptureMediaTilePayloadSampler {
             int candidateAttemptCount,
             int noFinderAttemptCount,
             int paletteRejectedAttemptCount,
-            int decodedPayloadCount
+            int decodedPayloadCount,
+            List<ProfileAttemptInspection> profileAttempts,
+            Optional<String> selectedLayoutProfileId,
+            ProfileSelectionSource profileSelectionSource
     ) {
+
+        /**
+         * Creates a frame inspection for one active layout attempt.
+         *
+         * @param sourceId source identifier of the normalized frame
+         * @param layoutProfileId active layout profile id
+         * @param samplingEvidence backend-neutral grid-phase and tile sampling evidence used by the sampler
+         * @param slots per-slot sampler evidence
+         * @param candidateAttemptCount side-version attempts across all signed slots
+         * @param noFinderAttemptCount attempts that failed finder-pattern checks
+         * @param paletteRejectedAttemptCount attempts blocked by palette tolerance
+         * @param decodedPayloadCount accepted payload count after tile and envelope validation
+         */
+        public FrameInspection(
+                String sourceId,
+                String layoutProfileId,
+                Optional<CvSamplingEvidence> samplingEvidence,
+                List<SlotInspection> slots,
+                int candidateAttemptCount,
+                int noFinderAttemptCount,
+                int paletteRejectedAttemptCount,
+                int decodedPayloadCount
+        ) {
+            this(
+                    sourceId,
+                    layoutProfileId,
+                    samplingEvidence,
+                    slots,
+                    candidateAttemptCount,
+                    noFinderAttemptCount,
+                    paletteRejectedAttemptCount,
+                    decodedPayloadCount,
+                    List.of(),
+                    decodedPayloadCount > 0 ? Optional.of(layoutProfileId) : Optional.empty(),
+                    decodedPayloadCount > 0 ? ProfileSelectionSource.DECODED_PAYLOAD : ProfileSelectionSource.NONE
+            );
+        }
 
         /**
          * Creates a validated immutable frame inspection.
@@ -1499,6 +2044,100 @@ public final class CaptureMediaTilePayloadSampler {
                     || decodedPayloadCount < 0) {
                 throw new IllegalArgumentException("inspection counts must be non-negative");
             }
+            profileAttempts = List.copyOf(Objects.requireNonNull(
+                    profileAttempts,
+                    "profileAttempts must not be null"
+            ));
+            if (profileAttempts.stream().anyMatch(Objects::isNull)) {
+                throw new IllegalArgumentException("profileAttempts must not contain null values");
+            }
+            selectedLayoutProfileId = Objects.requireNonNull(
+                    selectedLayoutProfileId,
+                    "selectedLayoutProfileId must not be null"
+            );
+            selectedLayoutProfileId.ifPresent(value -> {
+                if (value.isBlank()) {
+                    throw new IllegalArgumentException("selectedLayoutProfileId must not be blank when present");
+                }
+            });
+            Objects.requireNonNull(profileSelectionSource, "profileSelectionSource must not be null");
+        }
+
+        private FrameInspection withProfileAttempts(
+                List<ProfileAttemptInspection> newProfileAttempts,
+                Optional<String> newSelectedLayoutProfileId,
+                ProfileSelectionSource newProfileSelectionSource
+        ) {
+            return new FrameInspection(
+                    sourceId,
+                    layoutProfileId,
+                    samplingEvidence,
+                    slots,
+                    candidateAttemptCount,
+                    noFinderAttemptCount,
+                    paletteRejectedAttemptCount,
+                    decodedPayloadCount,
+                    newProfileAttempts,
+                    newSelectedLayoutProfileId,
+                    newProfileSelectionSource
+            );
+        }
+    }
+
+    /**
+     * Diagnostic sampler evidence for one attempted layout profile.
+     *
+     * @param layoutProfileId attempted layout profile id
+     * @param rows attempted layout row count
+     * @param cols attempted layout column count
+     * @param status attempt outcome
+     * @param decodedPayloadCount accepted payload count for this attempt
+     * @param tileDecodeAttemptCount tile-decode attempts for this profile attempt
+     * @param slotValidationLayoutProfileMismatchCount decoded payloads rejected by layout-profile mismatch
+     * @param slotValidationTileIndexMismatchCount decoded payloads rejected by tile-index mismatch
+     * @param slotValidationTotalTilesMismatchCount decoded payloads rejected by total-tile-count mismatch
+     * @param decodedPayloadLayoutProfileId payload-derived layout profile id when this attempt accepted payloads
+     */
+    public record ProfileAttemptInspection(
+            String layoutProfileId,
+            int rows,
+            int cols,
+            ProfileAttemptInspectionStatus status,
+            int decodedPayloadCount,
+            int tileDecodeAttemptCount,
+            int slotValidationLayoutProfileMismatchCount,
+            int slotValidationTileIndexMismatchCount,
+            int slotValidationTotalTilesMismatchCount,
+            Optional<String> decodedPayloadLayoutProfileId
+    ) {
+
+        /**
+         * Creates a validated immutable profile-attempt inspection.
+         */
+        public ProfileAttemptInspection {
+            if (layoutProfileId == null || layoutProfileId.isBlank()) {
+                throw new IllegalArgumentException("layoutProfileId must not be blank");
+            }
+            if (rows <= 0 || cols <= 0) {
+                throw new IllegalArgumentException("layout dimensions must be positive");
+            }
+            Objects.requireNonNull(status, "status must not be null");
+            if (decodedPayloadCount < 0
+                    || tileDecodeAttemptCount < 0
+                    || slotValidationLayoutProfileMismatchCount < 0
+                    || slotValidationTileIndexMismatchCount < 0
+                    || slotValidationTotalTilesMismatchCount < 0) {
+                throw new IllegalArgumentException("profile attempt counts must be non-negative");
+            }
+            decodedPayloadLayoutProfileId = Objects.requireNonNull(
+                    decodedPayloadLayoutProfileId,
+                    "decodedPayloadLayoutProfileId must not be null"
+            );
+            decodedPayloadLayoutProfileId.ifPresent(value -> {
+                if (value.isBlank()) {
+                    throw new IllegalArgumentException("decodedPayloadLayoutProfileId must not be blank when present");
+                }
+            });
         }
     }
 
@@ -1511,6 +2150,7 @@ public final class CaptureMediaTilePayloadSampler {
      * @param effectiveTileShiftXPx horizontal shift applied to the nominal tile slot before sampling
      * @param effectiveTileShiftYPx vertical shift applied to the nominal tile slot before sampling
      * @param effectiveTilePlacementSource source of the effective tile placement used for sampling
+     * @param samplingEvidenceAlignmentStatus diagnostic outcome of sampling-evidence placement selection
      * @param candidates per-side-version candidate evidence
      */
     public record SlotInspection(
@@ -1520,6 +2160,7 @@ public final class CaptureMediaTilePayloadSampler {
             int effectiveTileShiftXPx,
             int effectiveTileShiftYPx,
             TileAlignmentInspectionSource effectiveTilePlacementSource,
+            TileEvidenceAlignmentStatus samplingEvidenceAlignmentStatus,
             List<CandidateInspection> candidates
     ) {
 
@@ -1532,6 +2173,7 @@ public final class CaptureMediaTilePayloadSampler {
             }
             Objects.requireNonNull(borderStatus, "borderStatus must not be null");
             Objects.requireNonNull(effectiveTilePlacementSource, "effectiveTilePlacementSource must not be null");
+            Objects.requireNonNull(samplingEvidenceAlignmentStatus, "samplingEvidenceAlignmentStatus must not be null");
             candidates = List.copyOf(Objects.requireNonNull(candidates, "candidates must not be null"));
             if (candidates.stream().anyMatch(Objects::isNull)) {
                 throw new IllegalArgumentException("candidates must not contain null values");
@@ -1554,6 +2196,8 @@ public final class CaptureMediaTilePayloadSampler {
      * @param paletteConfidence aggregate palette confidence for sampled modules, when available
      * @param samplingDiagnostics sampled logical-tile diagnostics, when a tile was built
      * @param decodeFailureReason stable tile, envelope, or slot-validation reason when decode was attempted and rejected
+     * @param decodeDiagnostics compact tile-decode diagnostics when decode was attempted and rejected
+     * @param decodedPayloadLayoutProfileId payload-derived layout profile id when the attempt decoded successfully
      */
     public record CandidateInspection(
             int sideVersion,
@@ -1567,7 +2211,9 @@ public final class CaptureMediaTilePayloadSampler {
             DecodeInspectionStatus decodeStatus,
             Optional<PaletteConfidenceSummary> paletteConfidence,
             Map<String, String> samplingDiagnostics,
-            Optional<String> decodeFailureReason
+            Optional<String> decodeFailureReason,
+            Map<String, String> decodeDiagnostics,
+            Optional<String> decodedPayloadLayoutProfileId
     ) {
 
         /**
@@ -1592,6 +2238,69 @@ public final class CaptureMediaTilePayloadSampler {
                     "samplingDiagnostics must not be null"
             ));
             Objects.requireNonNull(decodeFailureReason, "decodeFailureReason must not be null");
+            decodeDiagnostics = Map.copyOf(Objects.requireNonNull(
+                    decodeDiagnostics,
+                    "decodeDiagnostics must not be null"
+            ));
+            decodedPayloadLayoutProfileId = Objects.requireNonNull(
+                    decodedPayloadLayoutProfileId,
+                    "decodedPayloadLayoutProfileId must not be null"
+            );
+            decodedPayloadLayoutProfileId.ifPresent(value -> {
+                if (value.isBlank()) {
+                    throw new IllegalArgumentException("decodedPayloadLayoutProfileId must not be blank when present");
+                }
+            });
+        }
+    }
+
+    /**
+     * Diagnostic status for a layout profile attempt.
+     */
+    public enum ProfileAttemptInspectionStatus {
+        /**
+         * At least one payload decoded and passed strict slot validation.
+         */
+        ACCEPTED,
+
+        /**
+         * Sampling or strict protocol validation found evidence but did not accept payloads.
+         */
+        REJECTED,
+
+        /**
+         * No signed tile content was found for this profile attempt.
+         */
+        EMPTY
+    }
+
+    /**
+     * Source used to choose the selected layout profile.
+     */
+    public enum ProfileSelectionSource {
+        /**
+         * The selected profile came from a validated decoded tile payload.
+         */
+        DECODED_PAYLOAD("decodedPayload"),
+
+        /**
+         * No profile was selected because no validated payload decoded.
+         */
+        NONE("none");
+
+        private final String sidecarValue;
+
+        ProfileSelectionSource(String sidecarValue) {
+            this.sidecarValue = sidecarValue;
+        }
+
+        /**
+         * Returns the compact sidecar value for this selection source.
+         *
+         * @return sidecar value
+         */
+        public String sidecarValue() {
+            return sidecarValue;
         }
     }
 
@@ -1613,6 +2322,46 @@ public final class CaptureMediaTilePayloadSampler {
          * The camera-derived border scan selected the effective tile placement.
          */
         LEGACY_BORDER_SCAN
+    }
+
+    /**
+     * Diagnostic outcome for using backend-neutral sampling evidence before legacy tile alignment.
+     */
+    public enum TileEvidenceAlignmentStatus {
+        /**
+         * Sampling evidence is not used for exact or non-camera-derived frames.
+         */
+        NOT_CAMERA_DERIVED,
+
+        /**
+         * No sampling evidence was supplied for the active layout attempt.
+         */
+        NO_SAMPLING_EVIDENCE,
+
+        /**
+         * Sampling evidence was supplied but did not meet the confidence threshold.
+         */
+        CONFIDENCE_BELOW_THRESHOLD,
+
+        /**
+         * The evidence-derived shifted tile placement would leave the normalized frame bounds.
+         */
+        OUT_OF_BOUNDS,
+
+        /**
+         * The evidence-derived placement stayed in bounds but did not pass the border signature check.
+         */
+        BORDER_SIGNATURE_FAILED,
+
+        /**
+         * Sampling evidence selected the placement because its border signature passed.
+         */
+        USED_BORDER_SIGNATURE,
+
+        /**
+         * Sampling evidence selected the placement because finder and strict tile validation succeeded.
+         */
+        USED_FINDER_EVIDENCE
     }
 
     /**
@@ -1805,22 +2554,48 @@ public final class CaptureMediaTilePayloadSampler {
         CANDIDATE
     }
 
+    private record AlignmentOffset(int xPx, int yPx) {
+    }
+
+    private record EvidenceAlignment(Optional<TileAlignment> alignment, TileEvidenceAlignmentStatus status) {
+
+        private EvidenceAlignment {
+            Objects.requireNonNull(alignment, "alignment must not be null");
+            Objects.requireNonNull(status, "status must not be null");
+        }
+
+        private static EvidenceAlignment available(TileAlignment alignment) {
+            Objects.requireNonNull(alignment, "alignment must not be null");
+            return new EvidenceAlignment(Optional.of(alignment), alignment.samplingEvidenceAlignmentStatus());
+        }
+
+        private static EvidenceAlignment unavailable(TileEvidenceAlignmentStatus status) {
+            return new EvidenceAlignment(Optional.empty(), status);
+        }
+    }
+
     private record TileAlignment(
             TilePlacement placement,
             int shiftXPx,
             int shiftYPx,
-            TileAlignmentInspectionSource source
+            TileAlignmentInspectionSource source,
+            TileEvidenceAlignmentStatus samplingEvidenceAlignmentStatus
     ) {
 
         private TileAlignment {
             Objects.requireNonNull(placement, "placement must not be null");
             Objects.requireNonNull(source, "source must not be null");
+            Objects.requireNonNull(
+                    samplingEvidenceAlignmentStatus,
+                    "samplingEvidenceAlignmentStatus must not be null"
+            );
         }
 
         private static TileAlignment of(
                 TilePlacement originalPlacement,
                 TilePlacement effectivePlacement,
-                TileAlignmentInspectionSource source
+                TileAlignmentInspectionSource source,
+                TileEvidenceAlignmentStatus samplingEvidenceAlignmentStatus
         ) {
             Objects.requireNonNull(originalPlacement, "originalPlacement must not be null");
             Objects.requireNonNull(effectivePlacement, "effectivePlacement must not be null");
@@ -1828,8 +2603,13 @@ public final class CaptureMediaTilePayloadSampler {
                     effectivePlacement,
                     effectivePlacement.xPx() - originalPlacement.xPx(),
                     effectivePlacement.yPx() - originalPlacement.yPx(),
-                    source
+                    source,
+                    samplingEvidenceAlignmentStatus
             );
+        }
+
+        private TileAlignment withSamplingEvidenceAlignmentStatus(TileEvidenceAlignmentStatus status) {
+            return new TileAlignment(placement, shiftXPx, shiftYPx, source, status);
         }
     }
 
@@ -1949,19 +2729,49 @@ public final class CaptureMediaTilePayloadSampler {
         }
     }
 
-    private record DecodeAttempt(Optional<TilePayload> payload, Optional<String> rejectionReason) {
+    private record DecodeAttempt(
+            Optional<TilePayload> payload,
+            Optional<String> rejectionReason,
+            Map<String, String> diagnostics
+    ) {
 
         private DecodeAttempt {
             Objects.requireNonNull(payload, "payload must not be null");
             Objects.requireNonNull(rejectionReason, "rejectionReason must not be null");
+            diagnostics = Map.copyOf(Objects.requireNonNull(diagnostics, "diagnostics must not be null"));
         }
 
         private static DecodeAttempt accepted(TilePayload payload) {
-            return new DecodeAttempt(Optional.of(payload), Optional.empty());
+            Objects.requireNonNull(payload, "payload must not be null");
+            return new DecodeAttempt(Optional.of(payload), Optional.empty(), Map.of(
+                    "decodedPayload.layoutProfileId", payload.layoutProfileId(),
+                    "decodedPayload.tileIndex", Integer.toString(payload.tileIndex().value()),
+                    "decodedPayload.totalTiles", Integer.toString(payload.totalTilesInFrame())
+            ));
         }
 
-        private static DecodeAttempt rejected(String reason) {
-            return new DecodeAttempt(Optional.empty(), Optional.of(reason));
+        private static DecodeAttempt rejected(String reason, Map<String, String> diagnostics) {
+            return new DecodeAttempt(Optional.empty(), Optional.of(reason), diagnostics);
+        }
+    }
+
+    private record SlotValidationResult(Optional<String> rejectionReason, Map<String, String> diagnostics) {
+
+        private SlotValidationResult {
+            Objects.requireNonNull(rejectionReason, "rejectionReason must not be null");
+            diagnostics = Map.copyOf(Objects.requireNonNull(diagnostics, "diagnostics must not be null"));
+        }
+
+        private static SlotValidationResult accepted() {
+            return new SlotValidationResult(Optional.empty(), Map.of());
+        }
+
+        private static SlotValidationResult rejected(String reason, Map<String, String> diagnostics) {
+            return new SlotValidationResult(Optional.of(reason), diagnostics);
+        }
+
+        private boolean isAccepted() {
+            return rejectionReason.isEmpty();
         }
     }
 

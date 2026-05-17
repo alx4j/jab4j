@@ -1,5 +1,6 @@
 package com.alx4j.jab4j.reader.capture.media.cv.boofcv;
 
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -14,7 +15,6 @@ import com.alx4j.jab4j.reader.capture.media.cv.CvDetectionResult;
 import com.alx4j.jab4j.reader.capture.media.cv.CvFrameCandidate;
 import com.alx4j.jab4j.reader.capture.media.cv.CvNormalizedFrame;
 import com.alx4j.jab4j.reader.capture.media.input.MediaInputFrame;
-import com.alx4j.jab4j.reader.capture.media.quality.CaptureMediaQualityMetrics;
 import com.alx4j.jab4j.reader.capture.qualify.CaptureRenderedLayoutCatalog;
 import com.alx4j.jab4j.render.layout.FixedLayoutPlanner;
 
@@ -27,6 +27,7 @@ import com.alx4j.jab4j.render.layout.FixedLayoutPlanner;
 public final class BoofCvCaptureMediaCvBackend implements CaptureMediaCvBackend {
 
     private static final int MAX_PLAUSIBLE_VALIDATION_CANDIDATES = 2;
+    private static final int MAX_NORMALIZED_FRAMES = 3;
     private static final String BACKEND_ID = new String(new char[] { 'b', 'o', 'o', 'f', 'c', 'v' });
     private static final String NOT_FOUND_MESSAGE =
             "Media normalization did not find a clean supported rendered frame region";
@@ -41,7 +42,9 @@ public final class BoofCvCaptureMediaCvBackend implements CaptureMediaCvBackend 
                     "grayscale-threshold-contour-candidate-proposal",
                     "reader-layout-profile-scoring",
                     "jab-border-sync-grid-evidence",
-                    "source-space-cv-frame-candidates",
+                    "boofcv-perspective-nearest-resampling",
+                    "boofcv-grid-phase-evidence",
+                    "top-candidate-normalized-frame-cap",
                     "stable-backend-failure-mapping",
                     "no-default-selection"
             )
@@ -50,13 +53,14 @@ public final class BoofCvCaptureMediaCvBackend implements CaptureMediaCvBackend 
     private final BoofCvCandidateRegionProposer regionProposer;
     private final BoofCvJabEvidenceScorer evidenceScorer;
     private final BoofCvPerspectiveCorrector perspectiveCorrector;
+    private final FixedLayoutPlanner layoutPlanner;
     private final boolean normalizeAcceptedCandidates;
 
     /**
      * Creates a BoofCV backend instance for explicit developer selection.
      */
     public BoofCvCaptureMediaCvBackend() {
-        this(new CaptureRenderedLayoutCatalog(), new FixedLayoutPlanner(), false);
+        this(new CaptureRenderedLayoutCatalog(), new FixedLayoutPlanner(), true);
     }
 
     /**
@@ -80,6 +84,7 @@ public final class BoofCvCaptureMediaCvBackend implements CaptureMediaCvBackend 
         this.regionProposer = new BoofCvCandidateRegionProposer();
         this.evidenceScorer = new BoofCvJabEvidenceScorer(layoutCatalog, layoutPlanner);
         this.perspectiveCorrector = new BoofCvPerspectiveCorrector();
+        this.layoutPlanner = Objects.requireNonNull(layoutPlanner, "layoutPlanner must not be null");
         this.normalizeAcceptedCandidates = normalizeAcceptedCandidates;
     }
 
@@ -150,18 +155,30 @@ public final class BoofCvCaptureMediaCvBackend implements CaptureMediaCvBackend 
             Map<String, Double> metrics
     ) {
         if (normalizeAcceptedCandidates) {
-            List<CvNormalizedFrame> normalizedFrames = acceptedCandidates.stream()
+            List<CvFrameCandidate> normalizationCandidates = selectedNormalizationCandidates(acceptedCandidates);
+            if (!hasFittedQuadrilateralGeometry(normalizationCandidates)) {
+                return acceptedCandidateResult(acceptedCandidates, metrics);
+            }
+            List<CvNormalizedFrame> normalizedFrames = normalizationCandidates.stream()
                     .map(candidate -> correctPerspective(frame, candidate))
                     .toList();
+            Map<String, Double> normalizedMetrics = withNormalizedFrameMetrics(metrics, normalizedFrames.size());
             return new CvDetectionResult(
                     CvDetectionStatus.ACCEPTED,
                     List.of(),
                     normalizedFrames,
                     Optional.empty(),
-                    metrics,
+                    normalizedMetrics,
                     "CV backend accepted normalized frames"
             );
         }
+        return acceptedCandidateResult(acceptedCandidates, metrics);
+    }
+
+    private CvDetectionResult acceptedCandidateResult(
+            List<CvFrameCandidate> acceptedCandidates,
+            Map<String, Double> metrics
+    ) {
         return new CvDetectionResult(
                 CvDetectionStatus.ACCEPTED,
                 acceptedCandidates,
@@ -172,16 +189,40 @@ public final class BoofCvCaptureMediaCvBackend implements CaptureMediaCvBackend 
         );
     }
 
+    private boolean hasFittedQuadrilateralGeometry(List<CvFrameCandidate> candidates) {
+        return candidates.stream()
+                .map(CvFrameCandidate::geometrySource)
+                .flatMap(Optional::stream)
+                .anyMatch(BoofCvCandidateRegionProposer.GeometrySource.BOOFCV_FITTED_QUADRILATERAL.sidecarValue()
+                        ::equals);
+    }
+
+    private List<CvFrameCandidate> selectedNormalizationCandidates(List<CvFrameCandidate> acceptedCandidates) {
+        if (acceptedCandidates.isEmpty()) {
+            return List.of();
+        }
+        int selectedSourceRegionRank = acceptedCandidates.stream()
+                .mapToInt(CvFrameCandidate::sourceRegionRank)
+                .min()
+                .orElseThrow();
+        return acceptedCandidates.stream()
+                .filter(candidate -> candidate.sourceRegionRank() == selectedSourceRegionRank)
+                .sorted(Comparator.comparingInt(CvFrameCandidate::profileAlternativeRank))
+                .limit(MAX_NORMALIZED_FRAMES)
+                .toList();
+    }
+
     private CvNormalizedFrame correctPerspective(MediaInputFrame frame, CvFrameCandidate candidate) {
-        return perspectiveCorrector.correct(
-                frame,
-                candidate.layoutProfile(),
-                candidate.frameCorners(),
-                CaptureMediaQualityMetrics.perspectiveCorrected(
-                        candidate.score().frameCoverageRatio(),
-                        candidate.score().skewScore()
-                )
-        );
+        return perspectiveCorrector.correct(frame, candidate, layoutPlanner.plan(candidate.layoutProfile()));
+    }
+
+    private Map<String, Double> withNormalizedFrameMetrics(Map<String, Double> metrics, int normalizedFrameCount) {
+        Map<String, Double> normalizedMetrics = new LinkedHashMap<>(metrics);
+        normalizedMetrics.put("boofCvAcceptedSourceCandidateCount",
+                metrics.getOrDefault("boofCvAcceptedCandidateCount", 0.0d));
+        normalizedMetrics.put("boofCvNormalizedFrameCount", (double) normalizedFrameCount);
+        normalizedMetrics.put("boofCvAcceptedCandidateCount", (double) normalizedFrameCount);
+        return Map.copyOf(normalizedMetrics);
     }
 
     private CvDetectionResult rejectedWithCandidates(
@@ -237,8 +278,28 @@ public final class BoofCvCaptureMediaCvBackend implements CaptureMediaCvBackend 
             metrics.put("boofCvSelectedSyncBandScore", candidate.score().syncBandScore());
             metrics.put("boofCvSelectedGridScore", candidate.score().gridScore());
             metrics.put("boofCvSelectedLayoutAspectScore", candidate.score().layoutAspectScore());
+            candidate.geometrySource()
+                    .flatMap(this::geometrySourceCode)
+                    .ifPresent(code -> metrics.put("boofCvSelectedGeometrySourceCode", code));
         });
         return Map.copyOf(metrics);
+    }
+
+    private Optional<Double> geometrySourceCode(String geometrySource) {
+        if (BoofCvCandidateRegionProposer.GeometrySource.BOOFCV_FITTED_QUADRILATERAL.sidecarValue()
+                .equals(geometrySource)) {
+            return Optional.of(BoofCvCandidateRegionProposer.GeometrySource.BOOFCV_FITTED_QUADRILATERAL.metricCode());
+        }
+        if (BoofCvCandidateRegionProposer.GeometrySource.BOOFCV_REDUCED_FITTED_QUADRILATERAL.sidecarValue()
+                .equals(geometrySource)) {
+            return Optional.of(
+                    BoofCvCandidateRegionProposer.GeometrySource.BOOFCV_REDUCED_FITTED_QUADRILATERAL.metricCode()
+            );
+        }
+        if (BoofCvCandidateRegionProposer.GeometrySource.CONTOUR_EXTREMA.sidecarValue().equals(geometrySource)) {
+            return Optional.of(BoofCvCandidateRegionProposer.GeometrySource.CONTOUR_EXTREMA.metricCode());
+        }
+        return Optional.empty();
     }
 
     private List<CvFrameCandidate> acceptedCandidates(
@@ -249,6 +310,9 @@ public final class BoofCvCaptureMediaCvBackend implements CaptureMediaCvBackend 
                         acceptedStrictCandidates.stream(),
                         plausibleValidationCandidates.stream()
                 )
+                .sorted(Comparator
+                        .comparingInt(CvFrameCandidate::sourceRegionRank)
+                        .thenComparingInt(CvFrameCandidate::profileAlternativeRank))
                 .toList();
     }
 

@@ -2,7 +2,11 @@ package com.alx4j.jab4j.reader.capture.media.cv.boofcv;
 
 import java.awt.Color;
 import java.awt.Graphics2D;
+import java.awt.RenderingHints;
+import java.awt.geom.AffineTransform;
 import java.awt.image.BufferedImage;
+import java.awt.image.ConvolveOp;
+import java.awt.image.Kernel;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.nio.ByteBuffer;
@@ -42,6 +46,7 @@ final class BoofCvGeneratedFixtureFactory {
 
     static final String CAMERA_LIKE_MONITOR_PNG = "CM-MVP3-GENERATED-CAMERA-LIKE-MONITOR-PNG";
     static final String CAMERA_LIKE_MONITOR_JPEG = "CM-MVP3-GENERATED-CAMERA-LIKE-MONITOR-JPEG";
+    static final String SKEWED_BLURRED_MONITOR_PNG = "CM-MVP7-GENERATED-SKEWED-BLURRED-MONITOR-PNG";
     static final String BRIGHT_MONITOR_WITHOUT_JAB = "CM-MVP4-GENERATED-BRIGHT-MONITOR-WITHOUT-JAB";
     static final String UI_CHROME_WITHOUT_JAB = "CM-MVP4-GENERATED-UI-CHROME-WITHOUT-JAB";
     static final String REPEATED_STRIPES_WITHOUT_JAB = "CM-MVP4-GENERATED-REPEATED-STRIPES-WITHOUT-JAB";
@@ -84,6 +89,15 @@ final class BoofCvGeneratedFixtureFactory {
      */
     static MediaInputFrame cameraLikeMonitorJpegDecoded() {
         return jpegFrame(CAMERA_LIKE_MONITOR_JPEG, cameraLikeMonitorImage(renderJabFrame()));
+    }
+
+    /**
+     * Returns a generated monitor fixture with affine camera skew and mild blur.
+     *
+     * @return decoded media input frame
+     */
+    static MediaInputFrame skewedBlurredMonitorPng() {
+        return pngFrame(SKEWED_BLURRED_MONITOR_PNG, skewedBlurredMonitorImage(renderJabFrame()));
     }
 
     /**
@@ -254,6 +268,26 @@ final class BoofCvGeneratedFixtureFactory {
         return canvas;
     }
 
+    private static BufferedImage skewedBlurredMonitorImage(RenderedFrame frame) {
+        BufferedImage frameImage = boxBlurredImage(colorShiftedImage(frame, 22));
+        BufferedImage canvas = monitorCanvas();
+        Graphics2D graphics = canvas.createGraphics();
+        try {
+            graphics.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BILINEAR);
+            graphics.drawImage(frameImage, new AffineTransform(
+                    1.0d,
+                    0.035d,
+                    -0.075d,
+                    1.0d,
+                    260.0d,
+                    150.0d
+            ), null);
+        } finally {
+            graphics.dispose();
+        }
+        return canvas;
+    }
+
     private static BufferedImage monitorCanvas() {
         int canvasWidth = 1700;
         int canvasHeight = 1000;
@@ -280,6 +314,17 @@ final class BoofCvGeneratedFixtureFactory {
             }
         }
         return image;
+    }
+
+    private static BufferedImage boxBlurredImage(BufferedImage image) {
+        float weight = 1.0f / 9.0f;
+        float[] weights = {
+                weight, weight, weight,
+                weight, weight, weight,
+                weight, weight, weight
+        };
+        BufferedImage blurred = new BufferedImage(image.getWidth(), image.getHeight(), BufferedImage.TYPE_INT_ARGB);
+        return new ConvolveOp(new Kernel(3, 3, weights), ConvolveOp.EDGE_NO_OP, null).filter(image, blurred);
     }
 
     private static int shiftPaletteColor(int argb, int colorShift) {

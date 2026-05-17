@@ -15,11 +15,9 @@ import com.alx4j.jab4j.reader.capture.media.cv.CaptureMediaCvBackend;
 import com.alx4j.jab4j.reader.capture.media.cv.CaptureMediaCvBackends;
 import com.alx4j.jab4j.reader.capture.media.cv.CvDetectionResult;
 import com.alx4j.jab4j.reader.capture.media.cv.CvDetectionStatus;
-import com.alx4j.jab4j.reader.capture.media.cv.CvFrameCandidate;
 import com.alx4j.jab4j.reader.capture.media.cv.CvNormalizedFrame;
 import com.alx4j.jab4j.reader.capture.media.input.MediaInputFrame;
 import com.alx4j.jab4j.reader.capture.media.normalize.CaptureMediaFrameNormalizer;
-import com.alx4j.jab4j.reader.capture.media.quality.CaptureMediaQualityMetrics;
 
 @DisplayName("Optional BoofCV capture-media backend")
 class BoofCvCaptureMediaCvBackendTest {
@@ -92,27 +90,43 @@ class BoofCvCaptureMediaCvBackendTest {
     }
 
     @Test
-    @DisplayName("Default production backend returns source-space candidates for accepted generated monitor frames")
-    void defaultProductionBackendReturnsSourceSpaceCandidatesForAcceptedGeneratedMonitorFrames() {
+    @DisplayName("Default production backend emits bounded normalized candidates for fitted generated monitor frames")
+    void defaultProductionBackendEmitsBoundedNormalizedCandidatesForFittedGeneratedMonitorFrames() {
         CvDetectionResult result = new BoofCvCaptureMediaCvBackend()
                 .detect(BoofCvGeneratedFixtureFactory.cameraLikeMonitorPng());
+        CvNormalizedFrame normalizedFrame = result.normalizedFrames().get(0);
 
         assertAll(
                 () -> assertEquals(CvDetectionStatus.ACCEPTED, result.status()),
-                () -> assertFalse(result.candidates().isEmpty()),
-                () -> assertTrue(result.normalizedFrames().isEmpty()),
+                () -> assertTrue(result.candidates().isEmpty()),
+                () -> assertEquals(3, result.normalizedFrames().size()),
                 () -> assertTrue(result.diagnosticCode().isEmpty()),
+                () -> assertEquals(3.0d, result.metrics().get("boofCvAcceptedCandidateCount")),
+                () -> assertEquals(3.0d, result.metrics().get("boofCvNormalizedFrameCount")),
+                () -> assertEquals(3.0d, result.metrics().get("boofCvAcceptedSourceCandidateCount")),
                 () -> assertEquals(
-                        (double) result.candidates().size(),
-                        result.metrics().get("boofCvAcceptedCandidateCount")
-                ),
-                () -> assertEquals(
-                        (double) result.candidates().size(),
+                        result.metrics().get("boofCvAcceptedSourceCandidateCount"),
                         result.metrics().get("boofCvStrictEvidenceCandidateCount")
                 ),
                 () -> assertEquals(0.0d, result.metrics().get("boofCvPlausibleValidationCandidateCount")),
                 () -> assertEquals(1.0d, result.metrics().get("boofCvSelectedAdmissionBandCode")),
-                () -> assertEquals(0.0d, result.metrics().get("boofCvSelectedRejectionReasonCode"))
+                () -> assertEquals(0.0d, result.metrics().get("boofCvSelectedRejectionReasonCode")),
+                () -> assertEquals("debug-low-density", normalizedFrame.layoutProfile().profileId()),
+                () -> assertEquals(
+                        "boofcv-fitted-quadrilateral",
+                        normalizedFrame.geometrySource().orElseThrow()
+                ),
+                () -> assertEquals(1, normalizedFrame.sourceRegionRank()),
+                () -> assertEquals(1, normalizedFrame.profileAlternativeRank()),
+                () -> assertEquals(3, normalizedFrame.profileAlternativeCount()),
+                () -> assertEquals(
+                        "boofcv",
+                        normalizedFrame.samplingEvidence().orElseThrow().backendId()
+                ),
+                () -> assertTrue(normalizedFrame.samplingEvidence().orElseThrow().gridPhase().isPresent()),
+                () -> assertTrue(normalizedFrame.samplingEvidence().orElseThrow()
+                        .metrics()
+                        .containsKey("boofCvGeometrySourceCode"))
         );
     }
 
@@ -126,10 +140,15 @@ class BoofCvCaptureMediaCvBackendTest {
 
         assertAll(
                 () -> assertEquals(CvDetectionStatus.ACCEPTED, first.status()),
-                () -> assertFalse(first.candidates().isEmpty()),
-                () -> assertTrue(first.normalizedFrames().isEmpty()),
+                () -> assertTrue(first.candidates().isEmpty()),
+                () -> assertEquals(2, first.normalizedFrames().size()),
                 () -> assertTrue(first.diagnosticCode().isEmpty()),
-                () -> assertEquals(first, second),
+                () -> assertEquals(first.status(), second.status()),
+                () -> assertEquals(first.metrics(), second.metrics()),
+                () -> assertEquals(first.normalizedFrames().get(0).layoutProfile(),
+                        second.normalizedFrames().get(0).layoutProfile()),
+                () -> assertEquals(first.normalizedFrames().get(0).frameCorners(),
+                        second.normalizedFrames().get(0).frameCorners()),
                 () -> assertEquals(
                         0.0d,
                         first.metrics().get("boofCvStrictEvidenceCandidateCount"),
@@ -145,44 +164,53 @@ class BoofCvCaptureMediaCvBackendTest {
                                 && first.metrics().get("boofCvPlausibleValidationCandidateCount") <= 2.0d
                 ),
                 () -> assertEquals(
-                        (double) first.candidates().size(),
+                        2.0d,
                         first.metrics().get("boofCvAcceptedCandidateCount")
                 ),
+                () -> assertEquals(2.0d, first.metrics().get("boofCvAcceptedSourceCandidateCount")),
+                () -> assertEquals(2.0d, first.metrics().get("boofCvNormalizedFrameCount")),
                 () -> assertEquals(2.0d, first.metrics().get("boofCvSelectedAdmissionBandCode")),
                 () -> assertEquals(0.0d, first.metrics().get("boofCvSelectedRejectionReasonCode")),
-                () -> assertTrue(first.candidates().get(0).score().syncBandScore() < 0.395d)
+                () -> assertTrue(first.metrics().get("boofCvSelectedSyncBandScore") < 0.395d),
+                () -> assertEquals(
+                        "boofcv-fitted-quadrilateral",
+                        first.normalizedFrames().get(0).geometrySource().orElseThrow()
+                )
         );
     }
 
     @Test
-    @DisplayName("Opt-in backend path returns normalized frames instead of source-space candidates")
-    void optInBackendPathReturnsNormalizedFramesInsteadOfSourceSpaceCandidates() {
+    @DisplayName("Opt-in backend path remains the same normalized top-candidate path")
+    void optInBackendPathRemainsTheSameNormalizedTopCandidatePath() {
         MediaInputFrame frame = BoofCvGeneratedFixtureFactory.cameraLikeMonitorPng();
         CvDetectionResult defaultResult = new BoofCvCaptureMediaCvBackend().detect(frame);
-        CvFrameCandidate acceptedCandidate = defaultResult.candidates().get(0);
         CvDetectionResult optInResult = BoofCvCaptureMediaCvBackend.withPerspectiveCorrection().detect(frame);
         CvNormalizedFrame normalizedFrame = optInResult.normalizedFrames().get(0);
-        CaptureMediaQualityMetrics expectedQuality = CaptureMediaQualityMetrics.perspectiveCorrected(
-                acceptedCandidate.score().frameCoverageRatio(),
-                acceptedCandidate.score().skewScore()
-        );
         int[] normalizedPixels = normalizedFrame.argbPixels();
 
         assertAll(
                 () -> assertEquals(CvDetectionStatus.ACCEPTED, optInResult.status()),
                 () -> assertTrue(optInResult.candidates().isEmpty()),
-                () -> assertEquals(defaultResult.candidates().size(), optInResult.normalizedFrames().size()),
+                () -> assertEquals(defaultResult.normalizedFrames().size(), optInResult.normalizedFrames().size()),
                 () -> assertTrue(optInResult.diagnosticCode().isEmpty()),
+                () -> assertEquals(defaultResult.metrics(), optInResult.metrics()),
                 () -> assertEquals(
                         (double) optInResult.normalizedFrames().size(),
                         optInResult.metrics().get("boofCvAcceptedCandidateCount")
                 ),
-                () -> assertEquals(acceptedCandidate.layoutProfile(), normalizedFrame.layoutProfile()),
-                () -> assertEquals(acceptedCandidate.frameCorners(), normalizedFrame.frameCorners()),
-                () -> assertEquals(expectedQuality, normalizedFrame.qualityMetrics()),
+                () -> assertEquals(defaultResult.normalizedFrames().get(0).layoutProfile(), normalizedFrame.layoutProfile()),
+                () -> assertEquals(defaultResult.normalizedFrames().get(0).frameCorners(), normalizedFrame.frameCorners()),
                 () -> assertEquals(
-                        acceptedCandidate.layoutProfile().frameWidthPx()
-                                * acceptedCandidate.layoutProfile().frameHeightPx(),
+                        defaultResult.normalizedFrames().get(0).qualityMetrics(),
+                        normalizedFrame.qualityMetrics()
+                ),
+                () -> assertEquals(
+                        "boofcv",
+                        normalizedFrame.samplingEvidence().orElseThrow().backendId()
+                ),
+                () -> assertEquals(
+                        normalizedFrame.layoutProfile().frameWidthPx()
+                                * normalizedFrame.layoutProfile().frameHeightPx(),
                         normalizedPixels.length
                 ),
                 () -> assertEquals(0xFF000000, normalizedPixels[0] & 0xFF000000),

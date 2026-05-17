@@ -2,9 +2,9 @@ package com.alx4j.jab4j.reader.capture.media.cv.boofcv;
 
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.util.Arrays;
 import java.util.Map;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
@@ -14,10 +14,9 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
 import com.alx4j.jab4j.reader.capture.media.CaptureMediaDiagnosticCode;
-import com.alx4j.jab4j.reader.capture.media.cv.CvCandidateScore;
 import com.alx4j.jab4j.reader.capture.media.cv.CvDetectionResult;
 import com.alx4j.jab4j.reader.capture.media.cv.CvDetectionStatus;
-import com.alx4j.jab4j.reader.capture.media.cv.CvFrameCandidate;
+import com.alx4j.jab4j.reader.capture.media.cv.CvNormalizedFrame;
 import com.alx4j.jab4j.reader.capture.media.input.MediaInputFrame;
 
 /**
@@ -29,8 +28,8 @@ class BoofCvCaptureMediaCvBackendGeneratedTest {
     private final BoofCvCaptureMediaCvBackend backend = new BoofCvCaptureMediaCvBackend();
 
     @Test
-    @DisplayName("CM-MVP3-GENERATED-CAMERA-LIKE-MONITOR-PNG returns accepted source-space candidates")
-    void generatedCameraLikeMonitorPngReturnsAcceptedSourceSpaceCandidates() {
+    @DisplayName("CM-MVP3-GENERATED-CAMERA-LIKE-MONITOR-PNG returns bounded normalized candidates")
+    void generatedCameraLikeMonitorPngReturnsBoundedNormalizedCandidates() {
         // CM-MVP3-GENERATED-CAMERA-LIKE-MONITOR-PNG: local generated camera-like monitor PNG fixture.
         assertAcceptedCandidateResult(
                 BoofCvGeneratedFixtureFactory.CAMERA_LIKE_MONITOR_PNG,
@@ -39,12 +38,36 @@ class BoofCvCaptureMediaCvBackendGeneratedTest {
     }
 
     @Test
-    @DisplayName("CM-MVP3-GENERATED-CAMERA-LIKE-MONITOR-JPEG returns accepted source-space candidates")
-    void generatedCameraLikeMonitorJpegReturnsAcceptedSourceSpaceCandidates() {
+    @DisplayName("CM-MVP3-GENERATED-CAMERA-LIKE-MONITOR-JPEG returns bounded normalized candidates")
+    void generatedCameraLikeMonitorJpegReturnsBoundedNormalizedCandidates() {
         // CM-MVP3-GENERATED-CAMERA-LIKE-MONITOR-JPEG: local generated camera-like monitor JPEG-decoded fixture.
         assertAcceptedCandidateResult(
                 BoofCvGeneratedFixtureFactory.CAMERA_LIKE_MONITOR_JPEG,
                 BoofCvGeneratedFixtureFactory::cameraLikeMonitorJpegDecoded
+        );
+    }
+
+    @Test
+    @DisplayName("Generated skewed blurred monitor evidence emits fitted quadrilateral geometry")
+    void generatedSkewedBlurredMonitorEvidenceEmitsFittedQuadrilateralGeometry() {
+        BoofCvCandidateRegionProposer.ProposalResult proposal = new BoofCvCandidateRegionProposer()
+                .propose(BoofCvGeneratedFixtureFactory.skewedBlurredMonitorPng());
+        BoofCvCandidateRegionProposer.CandidateRegion region = proposal.regions().get(0);
+
+        assertAll(
+                () -> assertEquals(
+                        BoofCvCandidateRegionProposer.GeometrySource.BOOFCV_FITTED_QUADRILATERAL,
+                        region.geometrySource()
+                ),
+                () -> assertEquals(4, region.fittedVertexCount()),
+                () -> assertTrue(
+                        Math.abs(region.corners().topLeftY() - region.corners().topRightY()) > 10.0d
+                                || Math.abs(region.corners().topLeftX() - region.corners().bottomLeftX()) > 10.0d
+                ),
+                () -> assertTrue(
+                        proposal.metrics().get("boofCvFittedQuadrilateralCandidateCount") >= 1.0d,
+                        proposal.metrics().toString()
+                )
         );
     }
 
@@ -128,6 +151,8 @@ class BoofCvCaptureMediaCvBackendGeneratedTest {
         MediaInputFrame firstFrame = fixture.get();
         CvDetectionResult first = backend.detect(firstFrame);
         CvDetectionResult second = backend.detect(fixture.get());
+        CvNormalizedFrame firstNormalizedFrame = first.normalizedFrames().get(0);
+        CvNormalizedFrame secondNormalizedFrame = second.normalizedFrames().get(0);
 
         assertAll(
                 () -> assertEquals(
@@ -135,31 +160,34 @@ class BoofCvCaptureMediaCvBackendGeneratedTest {
                         first.status(),
                         scenarioId + " must be accepted by the optional production backend: " + first.message()
                 ),
-                () -> assertFalse(
-                        first.candidates().isEmpty(),
-                        scenarioId + " must expose real CvFrameCandidate output"
-                ),
                 () -> assertTrue(
-                        first.normalizedFrames().isEmpty(),
-                        scenarioId + " must leave normalized frames empty when source-space candidates are returned"
+                        first.candidates().isEmpty(),
+                        scenarioId + " must not expose source-space candidates after BoofCV-owned correction"
+                ),
+                () -> assertEquals(
+                        3,
+                        first.normalizedFrames().size(),
+                        scenarioId + " must expose the bounded normalized candidate output"
                 ),
                 () -> assertTrue(
                         first.diagnosticCode().isEmpty(),
                         scenarioId + " must not expose a diagnostic code for accepted output"
                 ),
+                () -> assertEquals(first.status(), second.status()),
+                () -> assertEquals(first.metrics(), second.metrics()),
+                () -> assertEquals(first.diagnosticMetrics(), second.diagnosticMetrics()),
+                () -> assertEquals(firstNormalizedFrame.layoutProfile(), secondNormalizedFrame.layoutProfile()),
+                () -> assertEquals(firstNormalizedFrame.frameCorners(), secondNormalizedFrame.frameCorners()),
+                () -> assertEquals(firstNormalizedFrame.qualityMetrics(), secondNormalizedFrame.qualityMetrics()),
+                () -> assertEquals(firstNormalizedFrame.samplingEvidence(), secondNormalizedFrame.samplingEvidence()),
+                () -> assertEquals(firstNormalizedFrame.geometrySource(), secondNormalizedFrame.geometrySource()),
+                () -> assertTrue(Arrays.equals(
+                        firstNormalizedFrame.argbPixels(),
+                        secondNormalizedFrame.argbPixels()
+                )),
+                () -> assertAcceptedCandidateCountMetric(scenarioId, first, 3),
                 () -> assertEquals(
-                        first,
-                        second,
-                        scenarioId + " must produce deterministic repeated backend output"
-                ),
-                () -> assertEquals(
-                        (double) first.candidates().size(),
-                        first.diagnosticMetrics().get("detectedCandidateCount"),
-                        scenarioId + " must report deterministic detected candidate count diagnostics"
-                ),
-                () -> assertAcceptedCandidateCountMetric(scenarioId, first, first.candidates().size()),
-                () -> assertEquals(
-                        (double) first.candidates().size(),
+                        first.metrics().get("boofCvAcceptedSourceCandidateCount"),
                         first.metrics().get("boofCvStrictEvidenceCandidateCount"),
                         scenarioId + " must keep generated positives on the strict evidence path"
                 ),
@@ -179,41 +207,59 @@ class BoofCvCaptureMediaCvBackendGeneratedTest {
                         scenarioId + " must not report rejection for accepted strict evidence"
                 ),
                 () -> assertFiniteMetrics(scenarioId, first.metrics()),
-                () -> assertAcceptedCandidates(scenarioId, firstFrame, first)
+                () -> assertEquals(
+                        "debug-low-density",
+                        firstNormalizedFrame.layoutProfile().profileId(),
+                        scenarioId + " primary candidate should remain the generated fixture layout"
+                ),
+                () -> assertTrue(
+                        firstNormalizedFrame.geometrySource().isPresent(),
+                        scenarioId + " must preserve geometry-source evidence"
+                ),
+                () -> assertEquals(
+                        3,
+                        firstNormalizedFrame.profileAlternativeCount(),
+                        scenarioId + " must preserve the source-region profile alternative count"
+                ),
+                () -> assertEquals(
+                        "boofcv",
+                        firstNormalizedFrame.samplingEvidence().orElseThrow().backendId(),
+                        scenarioId + " must carry BoofCV sampling evidence into the sampler path"
+                ),
+                () -> assertTrue(
+                        firstNormalizedFrame.samplingEvidence().orElseThrow().gridPhase().isPresent(),
+                        scenarioId + " must carry frame-level grid-phase evidence"
+                ),
+                () -> assertSelectedBoundsInsideSourceFrame(scenarioId, firstFrame, first),
+                () -> assertFiniteScoreMetric(scenarioId, first, "boofCvSelectedCandidateScore"),
+                () -> assertFiniteScoreMetric(scenarioId, first, "boofCvSelectedGridScore"),
+                () -> assertFiniteScoreMetric(scenarioId, first, "boofCvSelectedGeometrySourceCode")
         );
     }
 
-    private static void assertAcceptedCandidates(
+    private static void assertSelectedBoundsInsideSourceFrame(
             String scenarioId,
             MediaInputFrame inputFrame,
             CvDetectionResult result
     ) {
-        for (CvFrameCandidate candidate : result.candidates()) {
-            assertAll(
-                    () -> assertTrue(
-                            candidate.sourceLeftPx() >= 0,
-                            scenarioId + " candidate left bound must stay inside the source frame"
-                    ),
-                    () -> assertTrue(
-                            candidate.sourceTopPx() >= 0,
-                            scenarioId + " candidate top bound must stay inside the source frame"
-                    ),
-                    () -> assertTrue(
-                            candidate.sourceRightExclusivePx() <= inputFrame.widthPixels(),
-                            scenarioId + " candidate right bound must stay inside the source frame"
-                    ),
-                    () -> assertTrue(
-                            candidate.sourceBottomExclusivePx() <= inputFrame.heightPixels(),
-                            scenarioId + " candidate bottom bound must stay inside the source frame"
-                    ),
-                    () -> assertEquals(
-                            "debug-low-density",
-                            candidate.layoutProfile().profileId(),
-                            scenarioId + " candidate must resolve the generated fixture layout"
-                    ),
-                    () -> assertFiniteScoreMetrics(scenarioId, candidate.score())
-            );
-        }
+        assertAll(
+                () -> assertTrue(
+                        result.metrics().get("boofCvSelectedLeftPx") >= 0,
+                        scenarioId + " selected candidate left bound must stay inside the source frame"
+                ),
+                () -> assertTrue(
+                        result.metrics().get("boofCvSelectedTopPx") >= 0,
+                        scenarioId + " selected candidate top bound must stay inside the source frame"
+                ),
+                () -> assertTrue(
+                        result.metrics().get("boofCvSelectedRightExclusivePx") <= inputFrame.widthPixels(),
+                        scenarioId + " selected candidate right bound must stay inside the source frame"
+                ),
+                () -> assertTrue(
+                        result.metrics().get("boofCvSelectedBottomExclusivePx") <= inputFrame.heightPixels(),
+                        scenarioId + " selected candidate bottom bound must stay inside the source frame"
+                )
+        );
     }
 
     private static void assertFiniteMetrics(String scenarioId, Map<String, Double> metrics) {
@@ -223,8 +269,16 @@ class BoofCvCaptureMediaCvBackendGeneratedTest {
         ));
     }
 
-    private static void assertFiniteScoreMetrics(String scenarioId, CvCandidateScore score) {
-        assertFiniteMetrics(scenarioId, score.metrics());
+    private static void assertFiniteScoreMetric(
+            String scenarioId,
+            CvDetectionResult result,
+            String metricName
+    ) {
+        assertTrue(
+                result.metrics().containsKey(metricName)
+                        && Double.isFinite(result.metrics().get(metricName)),
+                scenarioId + " must expose finite selected metric " + metricName
+        );
     }
 
     private static void assertAcceptedCandidateCountMetric(

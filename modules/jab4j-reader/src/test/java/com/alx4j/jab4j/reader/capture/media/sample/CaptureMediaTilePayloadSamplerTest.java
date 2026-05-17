@@ -9,6 +9,7 @@ import java.awt.image.BufferedImage;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
@@ -43,8 +44,10 @@ import com.alx4j.jab4j.reader.capture.media.sample.CaptureMediaTilePayloadSample
 import com.alx4j.jab4j.reader.capture.media.sample.CaptureMediaTilePayloadSampler.DecodeInspectionStatus;
 import com.alx4j.jab4j.reader.capture.media.sample.CaptureMediaTilePayloadSampler.FrameInspection;
 import com.alx4j.jab4j.reader.capture.media.sample.CaptureMediaTilePayloadSampler.ModuleSamplingInspectionSource;
+import com.alx4j.jab4j.reader.capture.media.sample.CaptureMediaTilePayloadSampler.ProfileSelectionSource;
 import com.alx4j.jab4j.reader.capture.media.sample.CaptureMediaTilePayloadSampler.SlotInspection;
 import com.alx4j.jab4j.reader.capture.media.sample.CaptureMediaTilePayloadSampler.TileAlignmentInspectionSource;
+import com.alx4j.jab4j.reader.capture.media.sample.CaptureMediaTilePayloadSampler.TileEvidenceAlignmentStatus;
 import com.alx4j.jab4j.render.layout.FixedLayoutPlan;
 import com.alx4j.jab4j.render.layout.FixedLayoutPlanner;
 import com.alx4j.jab4j.render.layout.TilePlacement;
@@ -133,6 +136,64 @@ class CaptureMediaTilePayloadSamplerTest {
                 () -> assertEquals(ModuleSamplingInspectionSource.NONE,
                         acceptedCandidate.moduleSamplingOffsetSource()),
                 () -> assertEquals(0, acceptedCandidate.areaSampleRadiusPx())
+        );
+    }
+
+    @Test
+    @DisplayName("Camera-derived frames accept a validated tile when a later sibling slot is undecodable")
+    void cameraDerivedFramesAcceptValidatedTileWhenLaterSiblingSlotIsUndecodable() {
+        PartialFrameFixture fixture = partialFrameFixture(0, 1);
+        NormalizedCaptureFrame cameraFrame = cameraDerivedFrame(fixture.exactFrame().copyArgbPixels());
+
+        FrameSample sample = sampler.sample(cameraFrame);
+        CaptureMediaDiagnostic partialDiagnostic = partialAcceptanceDiagnostic(sample);
+
+        assertAll(
+                () -> assertEquals(FrameSampleStatus.ACCEPTED, sample.status()),
+                () -> assertEquals(List.of(fixture.acceptedPayload()), sample.payloads()),
+                () -> assertEquals(CaptureMediaDiagnosticCode.COLOR_OR_COMPRESSION_SHIFT, partialDiagnostic.code()),
+                () -> assertEquals(CaptureMediaDiagnosticSeverity.WARNING, partialDiagnostic.severity()),
+                () -> assertFalse(partialDiagnostic.blocking()),
+                () -> assertEquals(1.0d, partialDiagnostic.metrics().get("decodedPayloadCount")),
+                () -> assertEquals(0.0d, partialDiagnostic.metrics().get("partialRejectedSlotCount")),
+                () -> assertEquals(1.0d, partialDiagnostic.metrics().get("partialUndecodableSlotCount")),
+                () -> assertEquals(2.0d, partialDiagnostic.metrics().get("totalTileSlotCount")),
+                () -> assertEquals(1.0d, partialDiagnostic.metrics().get("partialAccepted"))
+        );
+    }
+
+    @Test
+    @DisplayName("Camera-derived frames accept a validated tile when an earlier sibling slot is undecodable")
+    void cameraDerivedFramesAcceptValidatedTileWhenEarlierSiblingSlotIsUndecodable() {
+        PartialFrameFixture fixture = partialFrameFixture(1, 0);
+        NormalizedCaptureFrame cameraFrame = cameraDerivedFrame(fixture.exactFrame().copyArgbPixels());
+
+        FrameSample sample = sampler.sample(cameraFrame);
+        CaptureMediaDiagnostic partialDiagnostic = partialAcceptanceDiagnostic(sample);
+
+        assertAll(
+                () -> assertEquals(FrameSampleStatus.ACCEPTED, sample.status()),
+                () -> assertEquals(List.of(fixture.acceptedPayload()), sample.payloads()),
+                () -> assertTrue(sample.diagnostics().stream().noneMatch(CaptureMediaDiagnostic::blocking)),
+                () -> assertEquals(1.0d, partialDiagnostic.metrics().get("decodedPayloadCount")),
+                () -> assertEquals(1.0d, partialDiagnostic.metrics().get("partialUndecodableSlotCount"))
+        );
+    }
+
+    @Test
+    @DisplayName("Exact frames keep fail-fast rejection when a sibling slot is undecodable")
+    void exactFramesKeepFailFastRejectionWhenSiblingSlotIsUndecodable() {
+        PartialFrameFixture fixture = partialFrameFixture(0, 1);
+
+        FrameSample sample = sampler.sample(fixture.exactFrame());
+        CaptureMediaDiagnostic diagnostic = sample.diagnostics().get(0);
+
+        assertAll(
+                () -> assertEquals(FrameSampleStatus.REJECTED, sample.status()),
+                () -> assertTrue(sample.payloads().isEmpty()),
+                () -> assertEquals(CaptureMediaDiagnosticCode.COLOR_OR_COMPRESSION_SHIFT, diagnostic.code()),
+                () -> assertEquals(CaptureMediaDiagnosticSeverity.ERROR, diagnostic.severity()),
+                () -> assertTrue(diagnostic.blocking())
         );
     }
 
@@ -363,6 +424,8 @@ class CaptureMediaTilePayloadSamplerTest {
                 () -> assertEquals(-40, slot.effectiveTileShiftYPx()),
                 () -> assertEquals(TileAlignmentInspectionSource.LEGACY_BORDER_SCAN,
                         slot.effectiveTilePlacementSource()),
+                () -> assertEquals(TileEvidenceAlignmentStatus.NO_SAMPLING_EVIDENCE,
+                        slot.samplingEvidenceAlignmentStatus()),
                 () -> assertEquals(1, inspection.decodedPayloadCount())
         );
     }
@@ -385,6 +448,8 @@ class CaptureMediaTilePayloadSamplerTest {
                 () -> assertEquals(-72, slot.effectiveTileShiftYPx()),
                 () -> assertEquals(TileAlignmentInspectionSource.LEGACY_BORDER_SCAN,
                         slot.effectiveTilePlacementSource()),
+                () -> assertEquals(TileEvidenceAlignmentStatus.NO_SAMPLING_EVIDENCE,
+                        slot.samplingEvidenceAlignmentStatus()),
                 () -> assertEquals(1, inspection.decodedPayloadCount())
         );
     }
@@ -467,6 +532,11 @@ class CaptureMediaTilePayloadSamplerTest {
                 () -> assertEquals(FrameSampleStatus.ACCEPTED, sample.status()),
                 () -> assertEquals(List.of(fixture.payload()), sample.payloads()),
                 () -> assertEquals("debug-low-density", inspection.layoutProfileId()),
+                () -> assertEquals("debug-low-density", inspection.selectedLayoutProfileId().orElseThrow()),
+                () -> assertEquals(ProfileSelectionSource.DECODED_PAYLOAD, inspection.profileSelectionSource()),
+                () -> assertEquals(3, inspection.profileAttempts().size()),
+                () -> assertEquals("debug-low-density",
+                        inspection.profileAttempts().get(2).decodedPayloadLayoutProfileId().orElseThrow()),
                 () -> assertEquals(1, inspection.decodedPayloadCount())
         );
     }
@@ -495,7 +565,53 @@ class CaptureMediaTilePayloadSamplerTest {
                 () -> assertEquals(FrameSampleStatus.ACCEPTED, sample.status()),
                 () -> assertEquals(List.of(fixture.payload()), sample.payloads()),
                 () -> assertEquals("desktop-1080p-safe", inspection.layoutProfileId()),
+                () -> assertEquals("desktop-1080p-safe", inspection.selectedLayoutProfileId().orElseThrow()),
+                () -> assertEquals(ProfileSelectionSource.DECODED_PAYLOAD, inspection.profileSelectionSource()),
                 () -> assertEquals(1, inspection.decodedPayloadCount())
+        );
+    }
+
+    @Test
+    @DisplayName("Decoded payloads with wrong layout profile remain rejected with slot diagnostics")
+    void decodedPayloadsWithWrongLayoutProfileRemainRejectedWithSlotDiagnostics() {
+        TilePayload mismatchedPayload = payload(
+                DESKTOP_1080P_SAFE_LAYOUT,
+                0,
+                CAPTURE_LAYOUT.profileId(),
+                CAPTURE_LAYOUT.rows() * CAPTURE_LAYOUT.cols()
+        );
+        FixedLayoutPlan layoutPlan = new FixedLayoutPlanner().plan(DESKTOP_1080P_SAFE_LAYOUT);
+        byte[] envelope = envelopeCodec.serialize(mismatchedPayload);
+        LogicalTile logicalTile = TileCodecs.defaultEncoder().encode(envelope, TILE_PROFILE);
+        RenderedTile renderedTile = new TileRasterRenderer().render(logicalTile, layoutPlan);
+        int[] framePixels = new int[DESKTOP_1080P_SAFE_LAYOUT.frameWidthPx()
+                * DESKTOP_1080P_SAFE_LAYOUT.frameHeightPx()];
+        Arrays.fill(framePixels, 0xFF000000);
+        pasteTile(framePixels, DESKTOP_1080P_SAFE_LAYOUT.frameWidthPx(),
+                layoutPlan.tilePlacements().get(0), renderedTile, 0);
+        NormalizedCaptureFrame frame = frame(framePixels, DESKTOP_1080P_SAFE_LAYOUT);
+
+        FrameSample sample = sampler.sample(frame);
+        FrameInspection inspection = sampler.inspect(frame);
+        CandidateInspection rejectedCandidate = inspection.slots().get(0).candidates().stream()
+                .filter(candidate -> candidate.decodeStatus() == DecodeInspectionStatus.REJECTED_BY_TILE_OR_ENVELOPE)
+                .findFirst()
+                .orElseThrow();
+
+        assertAll(
+                () -> assertEquals(FrameSampleStatus.REJECTED, sample.status()),
+                () -> assertEquals(ProfileSelectionSource.NONE, inspection.profileSelectionSource()),
+                () -> assertTrue(inspection.selectedLayoutProfileId().isEmpty()),
+                () -> assertEquals(1, inspection.profileAttempts().size()),
+                () -> assertTrue(inspection.profileAttempts().get(0).slotValidationLayoutProfileMismatchCount() > 0),
+                () -> assertEquals("desktop-1080p-safe",
+                        rejectedCandidate.decodeDiagnostics().get("slotValidation.expectedLayoutProfileId")),
+                () -> assertEquals("debug-low-density",
+                        rejectedCandidate.decodeDiagnostics().get("slotValidation.actualLayoutProfileId")),
+                () -> assertEquals("0", rejectedCandidate.decodeDiagnostics().get("slotValidation.expectedTileIndex")),
+                () -> assertEquals("0", rejectedCandidate.decodeDiagnostics().get("slotValidation.actualTileIndex")),
+                () -> assertEquals("4", rejectedCandidate.decodeDiagnostics().get("slotValidation.expectedTotalTiles")),
+                () -> assertEquals("2", rejectedCandidate.decodeDiagnostics().get("slotValidation.actualTotalTiles"))
         );
     }
 
@@ -515,6 +631,66 @@ class CaptureMediaTilePayloadSamplerTest {
                 () -> assertEquals(FrameSampleStatus.ACCEPTED, sample.status()),
                 () -> assertEquals(List.of(fixture.payload()), sample.payloads()),
                 () -> assertEquals(BorderInspectionStatus.SIGNATURE, inspection.slots().get(0).borderStatus()),
+                () -> assertEquals(TileAlignmentInspectionSource.SAMPLING_EVIDENCE,
+                        inspection.slots().get(0).effectiveTilePlacementSource()),
+                () -> assertEquals(TileEvidenceAlignmentStatus.USED_BORDER_SIGNATURE,
+                        inspection.slots().get(0).samplingEvidenceAlignmentStatus()),
+                () -> assertEquals(1, inspection.decodedPayloadCount())
+        );
+    }
+
+    @Test
+    @DisplayName("Low-confidence sampling evidence reports why legacy border scan was used")
+    void lowConfidenceSamplingEvidenceReportsWhyLegacyBorderScanWasUsed() {
+        RenderedTileFixture fixture = renderedTileFixture(18, 36, -40);
+        NormalizedCaptureFrame cameraFrame = cameraDerivedFrame(fixture.frame().copyArgbPixels());
+        CaptureMediaTilePayloadSampler evidenceSampler = new CaptureMediaTilePayloadSampler(
+                (frame, layoutPlan) -> Optional.of(samplingEvidence(36, -40, 0, 0, 0.54d))
+        );
+
+        FrameSample sample = evidenceSampler.sample(cameraFrame);
+        SlotInspection slot = evidenceSampler.inspect(cameraFrame).slots().get(0);
+
+        assertAll(
+                () -> assertEquals(FrameSampleStatus.ACCEPTED, sample.status()),
+                () -> assertEquals(TileAlignmentInspectionSource.LEGACY_BORDER_SCAN,
+                        slot.effectiveTilePlacementSource()),
+                () -> assertEquals(TileEvidenceAlignmentStatus.CONFIDENCE_BELOW_THRESHOLD,
+                        slot.samplingEvidenceAlignmentStatus()),
+                () -> assertEquals(36, slot.effectiveTileShiftXPx()),
+                () -> assertEquals(-40, slot.effectiveTileShiftYPx())
+        );
+    }
+
+    @Test
+    @DisplayName("High-confidence sampling evidence can validate a finder-aligned tile with eroded border")
+    void highConfidenceSamplingEvidenceCanValidateFinderAlignedTileWithErodedBorder() {
+        RenderedTileFixture fixture = renderedTileFixture(0);
+        int[] pixels = fixture.frame().copyArgbPixels();
+        paintTileBorderColor(pixels, 0xFF000000);
+        NormalizedCaptureFrame cameraFrame = cameraDerivedFrame(pixels);
+        CaptureMediaTilePayloadSampler evidenceSampler = new CaptureMediaTilePayloadSampler(
+                (frame, layoutPlan) -> Optional.of(samplingEvidence(0, 0, 0, 0, 0.92d))
+        );
+
+        FrameSample sample = evidenceSampler.sample(cameraFrame);
+        FrameInspection inspection = evidenceSampler.inspect(cameraFrame);
+        SlotInspection slot = inspection.slots().get(0);
+        CandidateInspection acceptedCandidate = slot.candidates().stream()
+                .filter(candidate -> candidate.decodeStatus() == DecodeInspectionStatus.ACCEPTED_PAYLOAD)
+                .findFirst()
+                .orElseThrow();
+
+        assertAll(
+                () -> assertEquals(FrameSampleStatus.ACCEPTED, sample.status()),
+                () -> assertEquals(List.of(fixture.payload()), sample.payloads()),
+                () -> assertTrue(sample.diagnostics().stream().noneMatch(CaptureMediaDiagnostic::blocking)),
+                () -> assertEquals(BorderInspectionStatus.NO_SIGNATURE, slot.borderStatus()),
+                () -> assertEquals(TileAlignmentInspectionSource.SAMPLING_EVIDENCE,
+                        slot.effectiveTilePlacementSource()),
+                () -> assertEquals(TileEvidenceAlignmentStatus.USED_FINDER_EVIDENCE,
+                        slot.samplingEvidenceAlignmentStatus()),
+                () -> assertEquals(DecodeInspectionStatus.ACCEPTED_PAYLOAD, acceptedCandidate.decodeStatus()),
                 () -> assertEquals(1, inspection.decodedPayloadCount())
         );
     }
@@ -570,6 +746,10 @@ class CaptureMediaTilePayloadSamplerTest {
         FrameSample sample = sampler.sample(corruptedFrame);
         FrameInspection inspection = sampler.inspect(corruptedFrame);
         CaptureMediaDiagnostic diagnostic = sample.diagnostics().get(0);
+        CandidateInspection rejectedCandidate = inspection.slots().get(0).candidates().stream()
+                .filter(candidate -> candidate.decodeStatus() == DecodeInspectionStatus.REJECTED_BY_TILE_OR_ENVELOPE)
+                .findFirst()
+                .orElseThrow();
 
         assertAll(
                 () -> assertEquals(FrameSampleStatus.REJECTED, sample.status()),
@@ -577,9 +757,13 @@ class CaptureMediaTilePayloadSamplerTest {
                 () -> assertEquals(CaptureMediaDiagnosticCode.COLOR_OR_COMPRESSION_SHIFT, diagnostic.code()),
                 () -> assertEquals(CaptureMediaDiagnosticSeverity.ERROR, diagnostic.severity()),
                 () -> assertTrue(diagnostic.blocking()),
-                () -> assertTrue(inspection.slots().get(0).candidates().stream()
-                        .anyMatch(candidate ->
-                                candidate.decodeStatus() == DecodeInspectionStatus.REJECTED_BY_TILE_OR_ENVELOPE))
+                () -> assertTrue(rejectedCandidate.decodeFailureReason().orElseThrow().startsWith("tileDecode: ")),
+                () -> assertTrue(rejectedCandidate.decodeDiagnostics().containsKey("failureStage")),
+                () -> assertTrue(rejectedCandidate.decodeDiagnostics().containsKey("encodedBytes")),
+                () -> assertTrue(rejectedCandidate.decodeDiagnostics().containsKey("parsedHeaderHex")),
+                () -> assertTrue(rejectedCandidate.samplingDiagnostics().containsKey("sampledMatrixSha256")),
+                () -> assertTrue(rejectedCandidate.samplingDiagnostics().containsKey("sampledMatrixPrefix")),
+                () -> assertTrue(rejectedCandidate.samplingDiagnostics().containsKey("sampledMatrixHistogram"))
         );
     }
 
@@ -630,11 +814,70 @@ class CaptureMediaTilePayloadSamplerTest {
         return new RenderedTileFixture(frame(framePixels), payload, logicalTile);
     }
 
+    private PartialFrameFixture partialFrameFixture(int acceptedTileIndex, int undecodableTileIndex) {
+        TilePayload acceptedPayload = payload(CAPTURE_LAYOUT, acceptedTileIndex);
+        TilePayload undecodablePayload = payload(CAPTURE_LAYOUT, undecodableTileIndex);
+        int[] framePixels = new int[CAPTURE_LAYOUT.frameWidthPx() * CAPTURE_LAYOUT.frameHeightPx()];
+        Arrays.fill(framePixels, 0xFF000000);
+        pasteEncodedTile(framePixels, acceptedPayload, false);
+        pasteEncodedTile(framePixels, undecodablePayload, true);
+        return new PartialFrameFixture(frame(framePixels), acceptedPayload);
+    }
+
+    private void pasteEncodedTile(int[] framePixels, TilePayload payload, boolean corruptLogicalTile) {
+        LogicalTile logicalTile = logicalTile(payload);
+        if (corruptLogicalTile) {
+            logicalTile = corruptedDataModule(logicalTile);
+        }
+        RenderedTile renderedTile = new TileRasterRenderer().render(logicalTile, LAYOUT_PLAN);
+        pasteTile(
+                framePixels,
+                CAPTURE_LAYOUT.frameWidthPx(),
+                LAYOUT_PLAN.tilePlacements().get(payload.tileIndex().value()),
+                renderedTile,
+                0
+        );
+    }
+
+    private LogicalTile logicalTile(TilePayload payload) {
+        return TileCodecs.defaultEncoder().encode(envelopeCodec.serialize(payload), TILE_PROFILE);
+    }
+
+    private LogicalTile corruptedDataModule(LogicalTile tile) {
+        List<Integer> colors = new ArrayList<>(tile.moduleColors());
+        int index = (3 * tile.widthModules()) + 3;
+        colors.set(index, (colors.get(index) + 1) % PALETTE.size());
+        return new LogicalTile(
+                tile.widthModules(),
+                tile.heightModules(),
+                tile.quietZoneModules(),
+                tile.profileId(),
+                colors,
+                tile.diagnostics()
+        );
+    }
+
+    private CaptureMediaDiagnostic partialAcceptanceDiagnostic(FrameSample sample) {
+        return sample.diagnostics().stream()
+                .filter(diagnostic -> diagnostic.metrics().containsKey("partialAccepted"))
+                .findFirst()
+                .orElseThrow();
+    }
+
     private TilePayload payload() {
         return payload(CAPTURE_LAYOUT, 0);
     }
 
     private TilePayload payload(LayoutProfile layoutProfile, int tileIndex) {
+        return payload(layoutProfile, tileIndex, layoutProfile.profileId(), layoutProfile.rows() * layoutProfile.cols());
+    }
+
+    private TilePayload payload(
+            LayoutProfile layoutProfile,
+            int tileIndex,
+            String layoutProfileId,
+            int totalTiles
+    ) {
         byte[] body = "media-tile-payload".getBytes(StandardCharsets.UTF_8);
         return new TilePayload(
                 1,
@@ -642,8 +885,8 @@ class CaptureMediaTilePayloadSamplerTest {
                 FrameType.DATA,
                 0,
                 new TileIndex(tileIndex),
-                layoutProfile.rows() * layoutProfile.cols(),
-                layoutProfile.profileId(),
+                totalTiles,
+                layoutProfileId,
                 PayloadKind.FILE_CHUNK,
                 0,
                 body.length,
@@ -700,6 +943,10 @@ class CaptureMediaTilePayloadSamplerTest {
     }
 
     private void paintTileBorder(int[] framePixels) {
+        paintTileBorderColor(framePixels, 0xFFFFFFFF);
+    }
+
+    private void paintTileBorderColor(int[] framePixels, int argb) {
         TilePlacement placement = LAYOUT_PLAN.tilePlacements().get(0);
         int border = LAYOUT_PLAN.separatorThicknessPx();
         for (int row = 0; row < placement.heightPx(); row++) {
@@ -707,7 +954,7 @@ class CaptureMediaTilePayloadSamplerTest {
                 if (row < border || row >= placement.heightPx() - border
                         || col < border || col >= placement.widthPx() - border) {
                     framePixels[((placement.yPx() + row) * CAPTURE_LAYOUT.frameWidthPx()) + placement.xPx() + col] =
-                            0xFFFFFFFF;
+                            argb;
                 }
             }
         }
@@ -1162,6 +1409,12 @@ class CaptureMediaTilePayloadSamplerTest {
             NormalizedCaptureFrame frame,
             TilePayload payload,
             LogicalTile logicalTile
+    ) {
+    }
+
+    private record PartialFrameFixture(
+            NormalizedCaptureFrame exactFrame,
+            TilePayload acceptedPayload
     ) {
     }
 }

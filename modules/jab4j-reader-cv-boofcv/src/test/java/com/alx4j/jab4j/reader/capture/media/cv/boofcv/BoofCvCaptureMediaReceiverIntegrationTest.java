@@ -20,7 +20,7 @@ import com.alx4j.jab4j.reader.capture.media.CaptureMediaReceiverService;
 import com.alx4j.jab4j.reader.capture.media.CaptureMediaReceiverStatus;
 import com.alx4j.jab4j.reader.capture.media.cv.CaptureMediaCvBackends;
 import com.alx4j.jab4j.reader.capture.media.cv.CvDetectionResult;
-import com.alx4j.jab4j.reader.capture.media.cv.CvFrameCandidate;
+import com.alx4j.jab4j.reader.capture.media.cv.CvNormalizedFrame;
 import com.alx4j.jab4j.reader.capture.media.input.MediaInputFrame;
 import com.alx4j.jab4j.reader.capture.media.normalize.CaptureMediaFrameNormalizer;
 import com.alx4j.jab4j.reader.capture.media.normalize.MediaNormalizationResult;
@@ -42,7 +42,7 @@ class BoofCvCaptureMediaReceiverIntegrationTest {
             CaptureMediaFrameNormalizer normalizer = new CaptureMediaFrameNormalizer();
             MediaInputFrame inputFrame = BoofCvGeneratedFixtureFactory.cameraLikeMonitorPng();
             CvDetectionResult backendResult = new BoofCvCaptureMediaCvBackend().detect(inputFrame);
-            CvFrameCandidate selectedCandidate = backendResult.candidates().get(0);
+            CvNormalizedFrame selectedFrame = backendResult.normalizedFrames().get(0);
 
             MediaNormalizationResult normalizationResult = normalizer.normalize(inputFrame);
             NormalizedCaptureFrame normalizedFrame = normalizationResult.frame().orElseThrow();
@@ -60,18 +60,29 @@ class BoofCvCaptureMediaReceiverIntegrationTest {
                     () -> assertEquals(inputFrame.pixelSha256(), normalizedFrame.pixelSha256()),
                     () -> assertEquals("debug-low-density", normalizedFrame.layoutProfileId()),
                     () -> assertEquals(
-                            selectedCandidate.layoutProfile().frameWidthPx(),
+                            selectedFrame.layoutProfile().frameWidthPx(),
                             normalizedFrame.normalizedWidthPixels()
                     ),
                     () -> assertEquals(
-                            selectedCandidate.layoutProfile().frameHeightPx(),
+                            selectedFrame.layoutProfile().frameHeightPx(),
                             normalizedFrame.normalizedHeightPixels()
                     ),
-                    () -> assertEquals(selectedCandidate.frameCorners(), normalizedFrame.frameCorners()),
-                    () -> assertEquals(selectedCandidate.score().frameCoverageRatio(), qualityMetrics.frameCoverageRatio()),
-                    () -> assertEquals(selectedCandidate.score().skewScore(), qualityMetrics.skewScore()),
+                    () -> assertEquals(selectedFrame.frameCorners(), normalizedFrame.frameCorners()),
+                    () -> assertEquals(
+                            selectedFrame.qualityMetrics().frameCoverageRatio(),
+                            qualityMetrics.frameCoverageRatio()
+                    ),
+                    () -> assertEquals(selectedFrame.qualityMetrics().skewScore(), qualityMetrics.skewScore()),
                     () -> assertEquals(CaptureMediaQualityMetrics.NOT_MEASURED, qualityMetrics.blurScore()),
                     () -> assertEquals(CaptureMediaQualityMetrics.NOT_MEASURED, qualityMetrics.glareScore()),
+                    () -> assertEquals(selectedFrame.geometrySource(), normalizedFrame.geometrySource()),
+                    () -> assertEquals(
+                            selectedFrame.samplingEvidence().orElseThrow().backendId(),
+                            normalizedFrame.samplingEvidence().orElseThrow().backendId()
+                    ),
+                    () -> assertEquals(selectedFrame.sourceRegionRank(), normalizedFrame.sourceRegionRank()),
+                    () -> assertEquals(selectedFrame.profileAlternativeRank(), normalizedFrame.profileAlternativeRank()),
+                    () -> assertEquals(selectedFrame.profileAlternativeCount(), normalizedFrame.profileAlternativeCount()),
                     () -> assertEquals(
                             normalizedFrame.normalizedWidthPixels() * normalizedFrame.normalizedHeightPixels(),
                             normalizedFrame.copyArgbPixels().length
@@ -101,8 +112,9 @@ class BoofCvCaptureMediaReceiverIntegrationTest {
                     () -> assertFalse(result.restoreAttempted()),
                     () -> assertEquals(1, result.summary().submittedMediaCount()),
                     () -> assertEquals(1, result.summary().readableMediaCount()),
-                    () -> assertEquals(1, result.summary().acceptedCandidateCount()),
+                    () -> assertEquals(3, result.summary().acceptedCandidateCount()),
                     () -> assertEquals(0, result.summary().rejectedCandidateCount()),
+                    () -> assertEquals(2, result.summary().duplicateMediaFrameCount()),
                     () -> assertEquals(1, result.summary().recoveredUniqueFrameCount()),
                     () -> assertEquals(2, result.summary().decodedTileCount()),
                     () -> assertEquals(0L, result.summary().restoredFileCount()),
@@ -138,6 +150,9 @@ class BoofCvCaptureMediaReceiverIntegrationTest {
                     () -> assertTrue(metadata.contains("sourceId=" + image.toAbsolutePath().normalize())),
                     () -> assertTrue(metadata.contains("cv.backendId=boofcv")),
                     () -> assertTrue(metadata.contains("candidate.rank=1")),
+                    () -> assertTrue(metadata.contains("candidate.normalizationLayoutProfileId=debug-low-density")),
+                    () -> assertTrue(metadata.contains("candidate.geometrySource=boofcv-fitted-quadrilateral")),
+                    () -> assertTrue(metadata.contains("candidate.profileAlternativeCount=3")),
                     () -> assertTrue(metadata.contains("candidate.sourceBounds.leftPx=")),
                     () -> assertTrue(metadata.contains("candidate.sourceBounds.rightExclusivePx=")),
                     () -> assertTrue(metadata.contains("candidate.corners.topLeftX=")),
@@ -148,6 +163,12 @@ class BoofCvCaptureMediaReceiverIntegrationTest {
                     () -> assertTrue(metadata.contains("sampler.decodedPayloadCount=")),
                     () -> assertTrue(metadata.contains("sampler.slotCount=")),
                     () -> assertTrue(metadata.contains("sampler.tileDecode.attemptCount=")),
+                    () -> assertTrue(metadata.contains("sampler.profileAttemptCount=")),
+                    () -> assertTrue(metadata.contains("sampler.evidence.backendId=boofcv")),
+                    () -> assertTrue(metadata.contains("sampler.gridPhase.available=true")),
+                    () -> assertTrue(metadata.contains("sampler.evidence.metric.boofCvGeometrySourceCode=")),
+                    () -> assertTrue(metadata.contains("sampler.selectedLayoutProfileId=debug-low-density")),
+                    () -> assertTrue(metadata.contains("sampler.profileSelectionSource=decodedPayload")),
                     () -> assertTrue(metadata.contains("sampler.envelope.acceptedPayloadCount=")),
                     () -> assertTrue(metadata.contains("sampler.envelope.rejectedAttemptCount=")),
                     () -> assertTrue(metadata.contains("diagnostic.selectedPublicCode="))
