@@ -18,6 +18,9 @@ import com.alx4j.jab4j.api.model.TilePayload;
 import com.alx4j.jab4j.reader.capture.decode.DecodedCaptureFrame;
 import com.alx4j.jab4j.reader.capture.media.decode.CaptureMediaFrameDecodeResult;
 import com.alx4j.jab4j.reader.capture.media.decode.CaptureMediaFrameDecoder;
+import com.alx4j.jab4j.reader.capture.media.input.MediaInputFrame;
+import com.alx4j.jab4j.reader.capture.media.input.RetainedMediaInputFrame;
+import com.alx4j.jab4j.reader.capture.media.input.RetainedMediaInputFrameBatch;
 import com.alx4j.jab4j.reader.capture.media.normalize.FrameCorners;
 import com.alx4j.jab4j.reader.capture.media.normalize.NormalizedCaptureFrame;
 import com.alx4j.jab4j.reader.capture.media.quality.CaptureMediaQualityMetrics;
@@ -69,6 +72,76 @@ class CaptureMediaFrameDecoderTest {
     }
 
     @Test
+    @DisplayName("Retained source-space decode preserves exact PNG normalized outcome")
+    void retainedSourceSpaceDecodePreservesExactPngNormalizedOutcome() {
+        TilePayload payload = CaptureMediaTestFrames.payload(
+                FrameType.DATA,
+                3L,
+                0,
+                PayloadKind.FILE_CHUNK,
+                "exact-retained-source"
+        );
+        NormalizedCaptureFrame frame = CaptureMediaTestFrames.normalizedFrame("exact-retained.png", 0, payload);
+
+        CaptureMediaFrameDecodeResult result = decodeWithRetainedSource(frame, frame.copyArgbPixels());
+
+        assertAll(
+                () -> assertEquals(1, result.decodedCandidateCount()),
+                () -> assertEquals(0, result.rejectedCandidateCount()),
+                () -> assertTrue(result.diagnostics().isEmpty()),
+                () -> assertEquals(List.of(payload), result.decodedFrames().get(0).tilePayloads())
+        );
+    }
+
+    @Test
+    @DisplayName("Retained source-space decode falls back to normalized sampling when validation fails")
+    void retainedSourceSpaceDecodeFallsBackToNormalizedSamplingWhenValidationFails() {
+        TilePayload payload = CaptureMediaTestFrames.payload(
+                FrameType.DATA,
+                3L,
+                0,
+                PayloadKind.FILE_CHUNK,
+                "normalized-fallback"
+        );
+        NormalizedCaptureFrame frame = CaptureMediaTestFrames.normalizedFrame("fallback-retained.png", 0, payload);
+
+        CaptureMediaFrameDecodeResult result = decodeWithRetainedSource(frame, blackPixels(frame));
+
+        assertAll(
+                () -> assertEquals(1, result.decodedCandidateCount()),
+                () -> assertEquals(0, result.rejectedCandidateCount()),
+                () -> assertTrue(result.diagnostics().isEmpty()),
+                () -> assertEquals(List.of(payload), result.decodedFrames().get(0).tilePayloads())
+        );
+    }
+
+    @Test
+    @DisplayName("Retained decode can disable source-space sampling and use normalized fallback")
+    void retainedDecodeCanDisableSourceSpaceSamplingAndUseNormalizedFallback() {
+        TilePayload payload = CaptureMediaTestFrames.payload(
+                FrameType.DATA,
+                3L,
+                0,
+                PayloadKind.FILE_CHUNK,
+                "source-space-disabled"
+        );
+        NormalizedCaptureFrame frame = CaptureMediaTestFrames.normalizedFrame("source-space-disabled.png", 0, payload);
+
+        CaptureMediaFrameDecodeResult result = decodeWithRetainedSource(
+                new CaptureMediaFrameDecoder(false, true),
+                frame,
+                blackPixels(frame)
+        );
+
+        assertAll(
+                () -> assertEquals(1, result.decodedCandidateCount()),
+                () -> assertEquals(0, result.rejectedCandidateCount()),
+                () -> assertTrue(result.diagnostics().isEmpty()),
+                () -> assertEquals(List.of(payload), result.decodedFrames().get(0).tilePayloads())
+        );
+    }
+
+    @Test
     @DisplayName("Sampler-accepted partial camera-derived payloads become decoded candidates")
     void samplerAcceptedPartialCameraDerivedPayloadsBecomeDecodedCandidates() {
         TilePayload accepted = CaptureMediaTestFrames.payload(
@@ -104,6 +177,42 @@ class CaptureMediaFrameDecoderTest {
                 () -> assertEquals("partial-camera-frame.jpeg", decodedFrame.sourceId()),
                 () -> assertEquals(8, decodedFrame.callerOrder()),
                 () -> assertEquals(List.of(accepted), decodedFrame.tilePayloads())
+        );
+    }
+
+    @Test
+    @DisplayName("Retained source-space decode preserves camera-derived normalized outcome")
+    void retainedSourceSpaceDecodePreservesCameraDerivedNormalizedOutcome() {
+        TilePayload accepted = CaptureMediaTestFrames.payload(
+                FrameType.DATA,
+                3L,
+                0,
+                PayloadKind.FILE_CHUNK,
+                "left-tile"
+        );
+        TilePayload corruptedSibling = CaptureMediaTestFrames.payload(
+                FrameType.DATA,
+                3L,
+                1,
+                PayloadKind.FILE_CHUNK,
+                "right-tile"
+        );
+        NormalizedCaptureFrame frame = CaptureMediaTestFrames.cameraDerivedNormalizedFrameWithCorruptedSibling(
+                "partial-camera-retained.jpeg",
+                8,
+                accepted,
+                corruptedSibling
+        );
+
+        CaptureMediaFrameDecodeResult result = decodeWithRetainedSource(frame, blackPixels(frame));
+
+        assertAll(
+                () -> assertEquals(1, result.decodedCandidateCount()),
+                () -> assertEquals(0, result.rejectedCandidateCount()),
+                () -> assertTrue(result.diagnostics().stream().noneMatch(CaptureMediaDiagnostic::blocking)),
+                () -> assertTrue(result.diagnostics().stream()
+                        .anyMatch(diagnostic -> diagnostic.metrics().containsKey("partialAccepted"))),
+                () -> assertEquals(List.of(accepted), result.decodedFrames().get(0).tilePayloads())
         );
     }
 
@@ -312,6 +421,40 @@ class CaptureMediaFrameDecoderTest {
                 CaptureMediaQualityMetrics.exactRenderedFrame(),
                 pixels
         );
+    }
+
+    private CaptureMediaFrameDecodeResult decodeWithRetainedSource(
+            NormalizedCaptureFrame frame,
+            int[] sourcePixels
+    ) {
+        return decodeWithRetainedSource(decoder, frame, sourcePixels);
+    }
+
+    private CaptureMediaFrameDecodeResult decodeWithRetainedSource(
+            CaptureMediaFrameDecoder decoder,
+            NormalizedCaptureFrame frame,
+            int[] sourcePixels
+    ) {
+        MediaInputFrame sourceFrame = new MediaInputFrame(
+                frame.sourceId(),
+                frame.sourceKind(),
+                frame.callerOrder(),
+                frame.originalWidthPixels(),
+                frame.originalHeightPixels(),
+                frame.formatName(),
+                frame.pixelSha256(),
+                sourcePixels
+        );
+        return decoder.decode(new RetainedMediaInputFrameBatch(List.of(new RetainedMediaInputFrame(
+                sourceFrame,
+                List.of(frame)
+        ))));
+    }
+
+    private int[] blackPixels(NormalizedCaptureFrame frame) {
+        int[] pixels = new int[frame.originalWidthPixels() * frame.originalHeightPixels()];
+        Arrays.fill(pixels, 0xFF000000);
+        return pixels;
     }
 
     private void assertRejectedAsDiagnostic(

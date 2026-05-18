@@ -33,6 +33,16 @@ import com.alx4j.jab4j.reader.capture.media.CaptureMediaSourceKind;
 import com.alx4j.jab4j.reader.capture.media.cv.CvGridPhase;
 import com.alx4j.jab4j.reader.capture.media.cv.CvSamplingEvidence;
 import com.alx4j.jab4j.reader.capture.media.cv.CvTileSamplingEvidence;
+import com.alx4j.jab4j.reader.capture.media.evidence.CaptureMediaCandidateId;
+import com.alx4j.jab4j.reader.capture.media.evidence.GeometryCandidateEvidence;
+import com.alx4j.jab4j.reader.capture.media.evidence.GeometryFitEvidence;
+import com.alx4j.jab4j.reader.capture.media.evidence.GeometryFitModelType;
+import com.alx4j.jab4j.reader.capture.media.evidence.GeometryFitStatus;
+import com.alx4j.jab4j.reader.capture.media.evidence.ReprojectionMetrics;
+import com.alx4j.jab4j.reader.capture.media.geometry.CaptureMediaPatternEvidenceDetector;
+import com.alx4j.jab4j.reader.capture.media.input.MediaInputFrame;
+import com.alx4j.jab4j.reader.capture.media.input.RetainedMediaInputFrame;
+import com.alx4j.jab4j.reader.capture.media.input.RetainedMediaInputFrameBatch;
 import com.alx4j.jab4j.reader.capture.media.normalize.FrameCorners;
 import com.alx4j.jab4j.reader.capture.media.normalize.NormalizedCaptureFrame;
 import com.alx4j.jab4j.reader.capture.media.quality.CaptureMediaQualityMetrics;
@@ -178,7 +188,11 @@ class CaptureMediaCandidateDebugExporterTest {
                 () -> assertTrue(metadata.contains("overlay.finderCandidateAttemptCount=")),
                 () -> assertTrue(metadata.contains("overlay.tileDecodeAttemptCount=")),
                 () -> assertTrue(metadata.contains("overlay.envelope.acceptedPayloadCount=")),
-                () -> assertTrue(metadata.contains("overlay.envelope.rejectedAttemptCount="))
+                () -> assertTrue(metadata.contains("overlay.envelope.rejectedAttemptCount=")),
+                () -> assertTrue(metadata.contains("overlay.patternFeatureCount=")),
+                () -> assertTrue(metadata.contains("overlay.geometryRetainedCandidateCount=")),
+                () -> assertTrue(metadata.contains("overlay.sourceSamplingSummaryDrawn=")),
+                () -> assertTrue(metadata.contains("overlay.localResidualVectorCount="))
         );
     }
 
@@ -322,6 +336,221 @@ class CaptureMediaCandidateDebugExporterTest {
     }
 
     @Test
+    @DisplayName("Sidecar includes compact direct pattern evidence keys")
+    void sidecarIncludesCompactDirectPatternEvidenceKeys() throws Exception {
+        CaptureMediaCandidateDebugExporter exporter = new CaptureMediaCandidateDebugExporter();
+        NormalizedCaptureFrame frame = acceptedPayloadFrame();
+
+        CaptureMediaCandidateDebugExporter.CandidateDebugExport exported = exporter.export(frame, tempDir);
+
+        String metadata = Files.readString(exported.metadataPath());
+        assertAll(
+                () -> assertEquals("1", metadataValue(metadata, "pattern.schemaVersion")),
+                () -> assertTrue(metadataValue(metadata, "pattern.candidateId").endsWith("/pattern-v1")),
+                () -> assertEquals("debug-low-density", metadataValue(metadata, "pattern.layoutProfileId")),
+                () -> assertEquals("DETECTED", metadataValue(metadata, "pattern.status")),
+                () -> assertEquals("1.0", metadataValue(metadata, "pattern.confidence")),
+                () -> assertEquals("4", metadataValue(metadata, "pattern.featureCount")),
+                () -> assertEquals("4", metadataValue(metadata, "pattern.finderFeatureCount")),
+                () -> assertEquals("false", metadataValue(metadata, "pattern.alignmentExpected")),
+                () -> assertEquals("NOT_SUPPORTED_FOR_PROFILE", metadataValue(metadata, "pattern.alignmentStatus")),
+                () -> assertEquals("NORMALIZED_CANDIDATE", metadataValue(metadata, "pattern.observationSource")),
+                () -> assertEquals("ALIGNMENT_NOT_EXPECTED", metadataValue(metadata, "pattern.reasonCodes")),
+                () -> assertEquals("", metadataValue(metadata, "pattern.downstreamConflictReasons")),
+                () -> assertTrue(metadataValue(metadata, "pattern.orientationCandidates")
+                        .startsWith("rotation-0:1.0")),
+                () -> assertEquals("debug-low-density:1.0",
+                        metadataValue(metadata, "pattern.layoutProfileCandidates")),
+                () -> assertEquals("1", metadataValue(metadata, "pattern.finder.TOP_LEFT.featureCount")),
+                () -> assertEquals("9", metadataValue(metadata, "pattern.finder.TOP_LEFT.matchedModuleCount")),
+                () -> assertEquals("9", metadataValue(metadata, "pattern.finder.TOP_LEFT.expectedModuleCount")),
+                () -> assertEquals("1.0", metadataValue(metadata, "pattern.finder.BOTTOM_RIGHT.confidence")),
+                () -> assertTrue(metadata.contains("sampler.reason.finderCandidateAttemptCount="))
+        );
+    }
+
+    @Test
+    @DisplayName("Sidecar includes compact normalized-only geometry evidence keys")
+    void sidecarIncludesCompactNormalizedOnlyGeometryEvidenceKeys() throws Exception {
+        CaptureMediaCandidateDebugExporter exporter = new CaptureMediaCandidateDebugExporter();
+        NormalizedCaptureFrame frame = acceptedPayloadFrame();
+
+        CaptureMediaCandidateDebugExporter.CandidateDebugExport exported = exporter.export(frame, tempDir);
+
+        String metadata = Files.readString(exported.metadataPath());
+        assertAll(
+                () -> assertEquals("1", metadataValue(metadata, "geometry.schemaVersion")),
+                () -> assertTrue(metadataValue(metadata, "geometry.candidateId").endsWith("/pattern-v1")),
+                () -> assertEquals("WITHHELD", metadataValue(metadata, "geometry.status")),
+                () -> assertEquals("", metadataValue(metadata, "geometry.selectedGeometryCandidateId")),
+                () -> assertEquals("", metadataValue(metadata, "geometry.downstreamSelectedGeometryCandidateId")),
+                () -> assertEquals("3", metadataValue(metadata, "geometry.retainedCandidateCount")),
+                () -> assertEquals("NORMALIZED_CANDIDATE_ONLY", metadataValue(metadata, "geometry.reasonCodes")),
+                () -> assertEquals("0.0", metadataValue(metadata, "geometry.meanErrorModules")),
+                () -> assertEquals("0.0", metadataValue(metadata, "geometry.p95ErrorModules")),
+                () -> assertEquals("0.0", metadataValue(metadata, "geometry.maxErrorModules")),
+                () -> assertEquals("false", metadataValue(metadata, "geometry.downstreamConflict")),
+                () -> assertEquals("", metadataValue(metadata, "geometry.downstreamConflictSummary")),
+                () -> assertEquals("", metadataValue(metadata, "geometry.downstreamConflictReasonCodes")),
+                () -> assertEquals("1", metadataValue(metadata, "geometry.retainedCandidate.0.rank")),
+                () -> assertTrue(metadataValue(metadata, "geometry.retainedCandidate.0.geometryCandidateId")
+                        .endsWith("/geom1")),
+                () -> assertEquals("WITHHELD", metadataValue(metadata, "geometry.retainedCandidate.0.status")),
+                () -> assertEquals("HOMOGRAPHY", metadataValue(metadata, "geometry.retainedCandidate.0.model")),
+                () -> assertEquals("false",
+                        metadataValue(metadata, "geometry.retainedCandidate.0.retainedForSampling")),
+                () -> assertEquals("false",
+                        metadataValue(metadata, "geometry.retainedCandidate.0.downstreamSelected")),
+                () -> assertEquals("16", metadataValue(metadata, "geometry.retainedCandidate.0.observedPointCount")),
+                () -> assertEquals("16", metadataValue(metadata, "geometry.retainedCandidate.0.expectedPointCount")),
+                () -> assertEquals("16", metadataValue(metadata, "geometry.retainedCandidate.0.matchedPointCount")),
+                () -> assertEquals("16", metadataValue(metadata, "geometry.retainedCandidate.0.inlierCount")),
+                () -> assertEquals("0", metadataValue(metadata, "geometry.retainedCandidate.0.outlierCount")),
+                () -> assertEquals("0",
+                        metadataValue(metadata, "geometry.retainedCandidate.0.missingExpectedPointCount")),
+                () -> assertEquals("0.0",
+                        metadataValue(metadata, "geometry.retainedCandidate.0.reprojection.maxErrorModules")),
+                () -> assertEquals("NORMALIZED_CANDIDATE_ONLY",
+                        metadataValue(metadata, "geometry.retainedCandidate.0.degeneracyFlags")),
+                () -> assertEquals("NORMALIZED_CANDIDATE_ONLY",
+                        metadataValue(metadata, "geometry.retainedCandidate.0.reasonCodes")),
+                () -> assertEquals("3", metadataValue(metadata, "geometry.retainedCandidate.2.rank")),
+                () -> assertEquals("1", metadataValue(metadata, "sampler.reason.acceptedPayloadCount")),
+                () -> assertEquals("", metadataValue(metadata, "diagnostic.selectedPublicCode"))
+        );
+    }
+
+    @Test
+    @DisplayName("Sidecar always includes compact MVP-9 summary keys in stable order")
+    void sidecarAlwaysIncludesCompactMvp9SummaryKeysInStableOrder() throws Exception {
+        CaptureMediaCandidateDebugExporter exporter = new CaptureMediaCandidateDebugExporter();
+        NormalizedCaptureFrame frame = acceptedPayloadFrame();
+
+        CaptureMediaCandidateDebugExporter.CandidateDebugExport exported = exporter.export(frame, tempDir);
+
+        String metadata = Files.readString(exported.metadataPath());
+        assertAll(
+                () -> assertEquals("1", metadataValue(metadata, "evidence.schemaVersion")),
+                () -> assertEquals("DETECTED", metadataValue(metadata, "evidence.patternStatus")),
+                () -> assertEquals("ALIGNMENT_NOT_EXPECTED",
+                        metadataValue(metadata, "evidence.patternReasonCodes")),
+                () -> assertEquals("WITHHELD", metadataValue(metadata, "evidence.geometryStatus")),
+                () -> assertEquals("3", metadataValue(metadata, "evidence.geometryRetainedCandidateCount")),
+                () -> assertEquals("", metadataValue(metadata, "evidence.geometrySelectedCandidateId")),
+                () -> assertEquals("meanModules:0.0,p95Modules:0.0,maxModules:0.0",
+                        metadataValue(metadata, "evidence.geometryReprojectionSummary")),
+                () -> assertEquals("NOT_AVAILABLE", metadataValue(metadata, "evidence.sourceSamplingStatus")),
+                () -> assertEquals("NOT_AVAILABLE", metadataValue(metadata, "sourceSampling.status")),
+                () -> assertEquals("false", metadataValue(metadata, "sourceSampling.evidenceAvailable")),
+                () -> assertEquals("NOT_AVAILABLE", metadataValue(metadata, "sourceSampling.totalModuleCount")),
+                () -> assertEquals("NOT_AVAILABLE", metadataValue(metadata, "sourceSampling.tileDecodeAttempted")),
+                () -> assertEquals("NOT_AVAILABLE", metadataValue(metadata, "sourceSampling.validatedTileCount")),
+                () -> assertEquals("false", metadataValue(metadata, "sourceSampling.moduleDetailIncluded")),
+                () -> assertEquals("0", metadataValue(metadata, "sourceSampling.moduleDetailCount")),
+                () -> assertFalse(metadata.contains("sourceSampling.module.0.")),
+                () -> assertEquals("VALIDATED_TILE_AVAILABLE", metadataValue(metadata, "downstream.summary")),
+                () -> assertEquals("true", metadataValue(metadata, "downstream.restoreEligible")),
+                () -> assertEquals("CANDIDATE_PAYLOAD_AVAILABLE",
+                        metadataValue(metadata, "downstream.restoreEligibility")),
+                () -> assertEquals("1", metadataValue(metadata, "downstream.validatedTileCount")),
+                () -> assertTrue(lineIndex(metadata, "evidence.schemaVersion")
+                        < lineIndex(metadata, "pattern.schemaVersion")),
+                () -> assertTrue(lineIndex(metadata, "geometry.schemaVersion")
+                        < lineIndex(metadata, "sourceSampling.evidenceAvailable")),
+                () -> assertTrue(lineIndex(metadata, "sourceSampling.evidenceAvailable")
+                        < lineIndex(metadata, "localRefinement.schemaVersion")),
+                () -> assertTrue(lineIndex(metadata, "localRefinement.schemaVersion")
+                        < lineIndex(metadata, "downstream.summary"))
+        );
+    }
+
+    @Test
+    @DisplayName("Accepted geometry with no accepted sampler payload records debug-only downstream conflict")
+    void acceptedGeometryWithNoAcceptedSamplerPayloadRecordsDebugOnlyDownstreamConflict() throws Exception {
+        CaptureMediaCandidateDebugExporter exporter = new CaptureMediaCandidateDebugExporter(
+                new CaptureMediaTilePayloadSampler(),
+                "legacy",
+                "",
+                new CaptureMediaPatternEvidenceDetector(),
+                (frame, patternEvidence) -> acceptedGeometry(patternEvidence.candidateId()),
+                new CaptureMediaModuleGridOverlayRenderer()
+        );
+        NormalizedCaptureFrame frame = normalizedFrame();
+
+        CaptureMediaCandidateDebugExporter.CandidateDebugExport exported = exporter.export(frame, tempDir);
+
+        String metadata = Files.readString(exported.metadataPath());
+        assertAll(
+                () -> assertEquals("ACCEPTED", metadataValue(metadata, "geometry.status")),
+                () -> assertTrue(metadataValue(metadata, "geometry.selectedGeometryCandidateId").endsWith("/geom1")),
+                () -> assertEquals("true", metadataValue(metadata, "geometry.retainedCandidate.0.retainedForSampling")),
+                () -> assertEquals("false", metadataValue(metadata, "geometry.retainedCandidate.0.downstreamSelected")),
+                () -> assertEquals("true", metadataValue(metadata, "geometry.downstreamConflict")),
+                () -> assertEquals("ACCEPTED_GEOMETRY_NO_ACCEPTED_PAYLOAD",
+                        metadataValue(metadata, "geometry.downstreamConflictSummary")),
+                () -> assertEquals(
+                        "DOWNSTREAM_CONFLICT,DOWNSTREAM_SAMPLING_FAILED,TILE_DECODE_NOT_ATTEMPTED",
+                        metadataValue(metadata, "geometry.downstreamConflictReasonCodes")
+                ),
+                () -> assertEquals("NOT_AVAILABLE", metadataValue(metadata, "localRefinement.status")),
+                () -> assertTrue(metadataValue(metadata, "localRefinement.geometryCandidateId")
+                        .endsWith("/geom1")),
+                () -> assertTrue(metadataValue(metadata, "localRefinement.reasonCodes")
+                        .contains("NO_SOURCE_SPACE_SAMPLING_EVIDENCE")),
+                () -> assertEquals("false", metadataValue(metadata, "localRefinement.appliedToSampling")),
+                () -> assertEquals("0", metadataValue(metadata, "sampler.reason.acceptedPayloadCount")),
+                () -> assertEquals(CaptureMediaDiagnosticCode.SCREEN_OR_FRAME_NOT_FOUND.name(),
+                        metadataValue(metadata, "diagnostic.selectedPublicCode"))
+        );
+    }
+
+    @Test
+    @DisplayName("Retained source debug export writes compact source-sampling and overlay evidence")
+    void retainedSourceDebugExportWritesCompactSourceSamplingAndOverlayEvidence() throws Exception {
+        CaptureMediaCandidateDebugExporter exporter = new CaptureMediaCandidateDebugExporter(
+                new CaptureMediaTilePayloadSampler(),
+                "legacy",
+                "",
+                new CaptureMediaPatternEvidenceDetector(),
+                (frame, patternEvidence) -> acceptedGeometry(patternEvidence.candidateId()),
+                new CaptureMediaModuleGridOverlayRenderer()
+        );
+        NormalizedCaptureFrame frame = acceptedPayloadFrame();
+        RetainedMediaInputFrameBatch retainedSources = new RetainedMediaInputFrameBatch(List.of(
+                new RetainedMediaInputFrame(sourceFrame(frame), List.of(frame))
+        ));
+
+        List<CaptureMediaCandidateDebugExporter.CandidateDebugExport> exported =
+                exporter.export(retainedSources, tempDir, "legacy", "");
+
+        Path overlayPath = tempDir.resolve("candidate-0000-grid-overlay.png");
+        String metadata = Files.readString(exported.get(0).metadataPath());
+        assertAll(
+                () -> assertEquals(1, exported.size()),
+                () -> assertTrue(Files.isRegularFile(overlayPath)),
+                () -> assertEquals("SOURCE_SPACE", metadataValue(metadata, "pattern.observationSource")),
+                () -> assertEquals("ACCEPTED", metadataValue(metadata, "geometry.status")),
+                () -> assertEquals("true", metadataValue(metadata, "sourceSampling.evidenceAvailable")),
+                () -> assertEquals("3", metadataValue(metadata, "sourceSampling.variantCount")),
+                () -> assertEquals("SAMPLED", metadataValue(metadata, "sourceSampling.status")),
+                () -> assertEquals("debug-low-density",
+                        metadataValue(metadata, "sourceSampling.layoutProfileId")),
+                () -> assertEquals("882", metadataValue(metadata, "sourceSampling.totalModuleCount")),
+                () -> assertEquals("882", metadataValue(metadata, "sourceSampling.sampledModuleCount")),
+                () -> assertEquals("true", metadataValue(metadata, "sourceSampling.tileDecodeAttempted")),
+                () -> assertEquals("1", metadataValue(metadata, "sourceSampling.validatedTileCount")),
+                () -> assertEquals("false", metadataValue(metadata, "sourceSampling.moduleDetailIncluded")),
+                () -> assertFalse(metadata.contains("sourceSampling.module.0.")),
+                () -> assertEquals("1", metadataValue(metadata, "downstream.sourceSamplingValidatedTileCount")),
+                () -> assertEquals("true", metadataValue(metadata, "overlay.sourceSamplingSummaryDrawn")),
+                () -> assertTrue(Integer.parseInt(metadataValue(
+                        metadata,
+                        "overlay.localResidualVectorCount"
+                )) > 0)
+        );
+    }
+
+    @Test
     @DisplayName("Sidecar includes calibrated palette evidence for shifted camera-derived candidates")
     void sidecarIncludesCalibratedPaletteEvidenceForShiftedCameraDerivedCandidates() throws Exception {
         CaptureMediaCandidateDebugExporter exporter = new CaptureMediaCandidateDebugExporter();
@@ -441,6 +670,47 @@ class CaptureMediaCandidateDebugExporterTest {
         );
     }
 
+    private GeometryFitEvidence acceptedGeometry(CaptureMediaCandidateId patternCandidateId) {
+        CaptureMediaCandidateId geometryCandidateId = CaptureMediaCandidateId.geometryCandidate(patternCandidateId, 1);
+        GeometryCandidateEvidence candidate = new GeometryCandidateEvidence(
+                geometryCandidateId,
+                1,
+                GeometryFitStatus.ACCEPTED,
+                GeometryFitModelType.HOMOGRAPHY,
+                "test-canonical",
+                "test-source",
+                List.of(
+                        1.0d, 0.0d, 0.0d,
+                        0.0d, 1.0d, 0.0d,
+                        0.0d, 0.0d, 1.0d
+                ),
+                1.0d,
+                List.of(),
+                true,
+                4,
+                4,
+                4,
+                4,
+                0,
+                0,
+                ReprojectionMetrics.zero(),
+                1.0d,
+                1.0d,
+                true,
+                false,
+                List.of()
+        );
+        return new GeometryFitEvidence(
+                1,
+                patternCandidateId,
+                GeometryFitStatus.ACCEPTED,
+                List.of(candidate),
+                geometryCandidateId.geometryCandidateId(),
+                Optional.empty(),
+                List.of()
+        );
+    }
+
     private boolean imagesDiffer(BufferedImage first, BufferedImage second) {
         if (first == null || second == null
                 || first.getWidth() != second.getWidth()
@@ -463,6 +733,29 @@ class CaptureMediaCandidateDebugExporterTest {
                 .map(line -> line.substring(key.length() + 1))
                 .findFirst()
                 .orElseThrow();
+    }
+
+    private int lineIndex(String metadata, String key) {
+        List<String> lines = metadata.lines().toList();
+        for (int index = 0; index < lines.size(); index++) {
+            if (lines.get(index).startsWith(key + "=")) {
+                return index;
+            }
+        }
+        throw new AssertionError("Missing metadata key " + key);
+    }
+
+    private MediaInputFrame sourceFrame(NormalizedCaptureFrame frame) {
+        return new MediaInputFrame(
+                frame.sourceId(),
+                frame.sourceKind(),
+                frame.callerOrder(),
+                frame.normalizedWidthPixels(),
+                frame.normalizedHeightPixels(),
+                frame.formatName(),
+                frame.pixelSha256(),
+                frame.copyArgbPixels()
+        );
     }
 
     private NormalizedCaptureFrame normalizedFrame() {

@@ -11,13 +11,35 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.function.BiFunction;
+import java.util.function.ToIntFunction;
 import javax.imageio.ImageIO;
 import com.alx4j.jab4j.reader.capture.media.CaptureMediaDiagnosticCode;
 import com.alx4j.jab4j.reader.capture.media.cv.CvGridPhase;
 import com.alx4j.jab4j.reader.capture.media.cv.CvSamplingEvidence;
 import com.alx4j.jab4j.reader.capture.media.cv.CvTileSamplingEvidence;
+import com.alx4j.jab4j.reader.capture.media.evidence.CaptureMediaEvidenceReasonCode;
+import com.alx4j.jab4j.reader.capture.media.evidence.CoordinateObservationSource;
+import com.alx4j.jab4j.reader.capture.media.evidence.FinderRole;
+import com.alx4j.jab4j.reader.capture.media.evidence.GeometryCandidateEvidence;
+import com.alx4j.jab4j.reader.capture.media.evidence.GeometryFitEvidence;
+import com.alx4j.jab4j.reader.capture.media.evidence.GeometryFitStatus;
+import com.alx4j.jab4j.reader.capture.media.evidence.LocalRefinementEvidence;
+import com.alx4j.jab4j.reader.capture.media.evidence.ModuleSamplingEvidence;
+import com.alx4j.jab4j.reader.capture.media.evidence.ModuleSamplingStatus;
+import com.alx4j.jab4j.reader.capture.media.evidence.PatternEvidence;
+import com.alx4j.jab4j.reader.capture.media.evidence.PatternFeatureEvidence;
+import com.alx4j.jab4j.reader.capture.media.evidence.PatternFeatureType;
+import com.alx4j.jab4j.reader.capture.media.evidence.ReprojectionMetrics;
+import com.alx4j.jab4j.reader.capture.media.geometry.CaptureMediaGeometryFitter;
+import com.alx4j.jab4j.reader.capture.media.geometry.CaptureMediaLocalLatticeRefiner;
+import com.alx4j.jab4j.reader.capture.media.geometry.CaptureMediaPatternEvidenceDetector;
+import com.alx4j.jab4j.reader.capture.media.input.MediaInputFrame;
+import com.alx4j.jab4j.reader.capture.media.input.RetainedMediaInputFrame;
+import com.alx4j.jab4j.reader.capture.media.input.RetainedMediaInputFrameBatch;
 import com.alx4j.jab4j.reader.capture.media.normalize.FrameCorners;
 import com.alx4j.jab4j.reader.capture.media.normalize.NormalizedCaptureFrame;
+import com.alx4j.jab4j.reader.capture.media.sample.CaptureMediaSourceSpaceModuleSampler;
 import com.alx4j.jab4j.reader.capture.media.sample.CaptureMediaTilePayloadSampler;
 import com.alx4j.jab4j.reader.capture.media.sample.CaptureMediaTilePayloadSampler.BorderInspectionStatus;
 import com.alx4j.jab4j.reader.capture.media.sample.CaptureMediaTilePayloadSampler.CandidateInspection;
@@ -37,6 +59,10 @@ import com.alx4j.jab4j.reader.capture.media.sample.CaptureMediaTilePayloadSample
 public final class CaptureMediaCandidateDebugExporter {
 
     private final CaptureMediaTilePayloadSampler tilePayloadSampler;
+    private final CaptureMediaPatternEvidenceDetector patternEvidenceDetector;
+    private final BiFunction<NormalizedCaptureFrame, PatternEvidence, GeometryFitEvidence> geometryFitProvider;
+    private final CaptureMediaSourceSpaceModuleSampler sourceSpaceModuleSampler;
+    private final CaptureMediaLocalLatticeRefiner localLatticeRefiner;
     private final CaptureMediaModuleGridOverlayRenderer overlayRenderer;
     private final String cvBackendId;
     private final String cvBackendVersion;
@@ -73,21 +99,132 @@ public final class CaptureMediaCandidateDebugExporter {
                 tilePayloadSampler,
                 cvBackendId,
                 cvBackendVersion,
+                new CaptureMediaPatternEvidenceDetector(),
+                new CaptureMediaGeometryFitter()::fit,
+                new CaptureMediaSourceSpaceModuleSampler(),
                 new CaptureMediaModuleGridOverlayRenderer()
         );
     }
 
+    /**
+     * Creates a debug exporter with explicit sampler, pattern detector, backend metadata, and overlay renderer.
+     *
+     * @param tilePayloadSampler sampler used to inspect normalized candidates
+     * @param cvBackendId selected backend identifier
+     * @param cvBackendVersion selected backend implementation version, or blank when unavailable
+     * @param patternEvidenceDetector detector used for direct pattern evidence sidecar summaries
+     * @param overlayRenderer renderer used for bounded grid overlays
+     */
+    CaptureMediaCandidateDebugExporter(
+            CaptureMediaTilePayloadSampler tilePayloadSampler,
+            String cvBackendId,
+            String cvBackendVersion,
+            CaptureMediaPatternEvidenceDetector patternEvidenceDetector,
+            CaptureMediaModuleGridOverlayRenderer overlayRenderer
+    ) {
+        this(
+                tilePayloadSampler,
+                cvBackendId,
+                cvBackendVersion,
+                patternEvidenceDetector,
+                new CaptureMediaGeometryFitter()::fit,
+                new CaptureMediaSourceSpaceModuleSampler(),
+                overlayRenderer
+        );
+    }
+
+    /**
+     * Creates a debug exporter with explicit evidence providers for focused tests and debug-only wiring.
+     *
+     * @param tilePayloadSampler sampler used to inspect normalized candidates
+     * @param cvBackendId selected backend identifier
+     * @param cvBackendVersion selected backend implementation version, or blank when unavailable
+     * @param patternEvidenceDetector detector used for direct pattern evidence sidecar summaries
+     * @param geometryFitProvider fitter used after pattern evidence exists
+     * @param overlayRenderer renderer used for bounded grid overlays
+     */
+    CaptureMediaCandidateDebugExporter(
+            CaptureMediaTilePayloadSampler tilePayloadSampler,
+            String cvBackendId,
+            String cvBackendVersion,
+            CaptureMediaPatternEvidenceDetector patternEvidenceDetector,
+            BiFunction<NormalizedCaptureFrame, PatternEvidence, GeometryFitEvidence> geometryFitProvider,
+            CaptureMediaModuleGridOverlayRenderer overlayRenderer
+    ) {
+        this(
+                tilePayloadSampler,
+                cvBackendId,
+                cvBackendVersion,
+                patternEvidenceDetector,
+                geometryFitProvider,
+                new CaptureMediaSourceSpaceModuleSampler(),
+                overlayRenderer
+        );
+    }
+
+    /**
+     * Creates a debug exporter with explicit evidence providers for focused tests and debug-only wiring.
+     *
+     * @param tilePayloadSampler sampler used to inspect normalized candidates
+     * @param cvBackendId selected backend identifier
+     * @param cvBackendVersion selected backend implementation version, or blank when unavailable
+     * @param patternEvidenceDetector detector used for direct pattern evidence sidecar summaries
+     * @param geometryFitProvider fitter used after pattern evidence exists
+     * @param sourceSpaceModuleSampler sampler used for retained source-space evidence summaries
+     * @param overlayRenderer renderer used for bounded grid overlays
+     */
+    CaptureMediaCandidateDebugExporter(
+            CaptureMediaTilePayloadSampler tilePayloadSampler,
+            String cvBackendId,
+            String cvBackendVersion,
+            CaptureMediaPatternEvidenceDetector patternEvidenceDetector,
+            BiFunction<NormalizedCaptureFrame, PatternEvidence, GeometryFitEvidence> geometryFitProvider,
+            CaptureMediaSourceSpaceModuleSampler sourceSpaceModuleSampler,
+            CaptureMediaModuleGridOverlayRenderer overlayRenderer
+    ) {
+        this.tilePayloadSampler = Objects.requireNonNull(tilePayloadSampler, "tilePayloadSampler");
+        this.patternEvidenceDetector = Objects.requireNonNull(
+                patternEvidenceDetector,
+                "patternEvidenceDetector must not be null"
+        );
+        this.geometryFitProvider = Objects.requireNonNull(
+                geometryFitProvider,
+                "geometryFitProvider must not be null"
+        );
+        this.sourceSpaceModuleSampler = Objects.requireNonNull(
+                sourceSpaceModuleSampler,
+                "sourceSpaceModuleSampler must not be null"
+        );
+        this.localLatticeRefiner = new CaptureMediaLocalLatticeRefiner();
+        this.overlayRenderer = Objects.requireNonNull(overlayRenderer, "overlayRenderer must not be null");
+        requireBackendId(cvBackendId);
+        this.cvBackendId = cvBackendId;
+        this.cvBackendVersion = Objects.requireNonNull(cvBackendVersion, "cvBackendVersion must not be null");
+    }
+
+    /**
+     * Creates a debug exporter with explicit sampler, backend metadata, and overlay renderer.
+     *
+     * @param tilePayloadSampler sampler used to inspect normalized candidates
+     * @param cvBackendId selected backend identifier
+     * @param cvBackendVersion selected backend implementation version, or blank when unavailable
+     * @param overlayRenderer renderer used for bounded grid overlays
+     */
     CaptureMediaCandidateDebugExporter(
             CaptureMediaTilePayloadSampler tilePayloadSampler,
             String cvBackendId,
             String cvBackendVersion,
             CaptureMediaModuleGridOverlayRenderer overlayRenderer
     ) {
-        this.tilePayloadSampler = Objects.requireNonNull(tilePayloadSampler, "tilePayloadSampler");
-        this.overlayRenderer = Objects.requireNonNull(overlayRenderer, "overlayRenderer must not be null");
-        requireBackendId(cvBackendId);
-        this.cvBackendId = cvBackendId;
-        this.cvBackendVersion = Objects.requireNonNull(cvBackendVersion, "cvBackendVersion must not be null");
+        this(
+                tilePayloadSampler,
+                cvBackendId,
+                cvBackendVersion,
+                new CaptureMediaPatternEvidenceDetector(),
+                new CaptureMediaGeometryFitter()::fit,
+                new CaptureMediaSourceSpaceModuleSampler(),
+                overlayRenderer
+        );
     }
 
     /**
@@ -166,13 +303,58 @@ public final class CaptureMediaCandidateDebugExporter {
             CandidateSourceKey sourceKey = new CandidateSourceKey(frame.sourceId(), frame.callerOrder());
             int rank = candidateRanks.merge(sourceKey, 1, Integer::sum);
             CandidateDebugContext debugContext = new CandidateDebugContext(cvBackendId, cvBackendVersion, rank);
-            exports.add(exportCandidate(frame, outputDirectory, index, debugContext));
+            exports.add(exportCandidate(frame, Optional.empty(), outputDirectory, index, debugContext));
+        }
+        return List.copyOf(exports);
+    }
+
+    /**
+     * Exports retained normalized candidates with source-space debug summaries while source pixels are still available.
+     *
+     * @param retainedSources retained source frames and derived normalized candidates
+     * @param outputDirectory destination directory, created when missing
+     * @param cvBackendId selected backend identifier
+     * @param cvBackendVersion selected backend implementation version, or blank when unavailable
+     * @return paths written for each candidate, in source and candidate order
+     * @throws IOException when the destination cannot be written
+     */
+    public List<CandidateDebugExport> export(
+            RetainedMediaInputFrameBatch retainedSources,
+            Path outputDirectory,
+            String cvBackendId,
+            String cvBackendVersion
+    ) throws IOException {
+        Objects.requireNonNull(retainedSources, "retainedSources must not be null");
+        Objects.requireNonNull(outputDirectory, "outputDirectory");
+        requireBackendId(cvBackendId);
+        Objects.requireNonNull(cvBackendVersion, "cvBackendVersion must not be null");
+        Files.createDirectories(outputDirectory);
+
+        List<CandidateDebugExport> exports = new ArrayList<>(retainedSources.normalizedFrames().size());
+        Map<CandidateSourceKey, Integer> candidateRanks = new LinkedHashMap<>();
+        int index = 0;
+        for (RetainedMediaInputFrame retainedSource : retainedSources.retainedSourceFrames()) {
+            MediaInputFrame sourceFrame = retainedSource.sourceFrame();
+            for (NormalizedCaptureFrame frame : retainedSource.normalizedFrames()) {
+                CandidateSourceKey sourceKey = new CandidateSourceKey(frame.sourceId(), frame.callerOrder());
+                int rank = candidateRanks.merge(sourceKey, 1, Integer::sum);
+                CandidateDebugContext debugContext = new CandidateDebugContext(cvBackendId, cvBackendVersion, rank);
+                exports.add(exportCandidate(
+                        frame,
+                        Optional.of(sourceFrame),
+                        outputDirectory,
+                        index,
+                        debugContext
+                ));
+                index++;
+            }
         }
         return List.copyOf(exports);
     }
 
     private CandidateDebugExport exportCandidate(
             NormalizedCaptureFrame frame,
+            Optional<MediaInputFrame> sourceFrame,
             Path outputDirectory,
             int index,
             CandidateDebugContext debugContext
@@ -200,14 +382,115 @@ public final class CaptureMediaCandidateDebugExporter {
         writePng(image, imagePath);
 
         FrameInspection inspection = tilePayloadSampler.inspect(frame);
-        writePng(overlayRenderer.render(frame, inspection), overlayPath);
+        PatternEvidence patternEvidence = sourceFrame
+                .map(source -> patternEvidenceDetector.detect(source, frame))
+                .orElseGet(() -> patternEvidenceDetector.detect(frame));
+        GeometryFitEvidence geometryEvidence = Objects.requireNonNull(
+                geometryFitProvider.apply(frame, patternEvidence),
+                "geometryEvidence must not be null"
+        );
+        CaptureMediaSourceSpaceModuleSampler.SourceSpaceValidationSample sourceSamplingSample =
+                sourceSamplingEvidence(sourceFrame, frame, geometryEvidence);
+        List<ModuleSamplingEvidence> sourceSamplingEvidence = sourceSamplingSample.evidence();
+        Optional<ModuleSamplingEvidence> selectedSourceSamplingEvidence =
+                selectedSourceSamplingEvidence(sourceSamplingEvidence);
+        LocalRefinementEvidence localRefinementEvidence = selectedLocalRefinementEvidence(
+                sourceSamplingSample.localRefinementEvidence(),
+                selectedSourceSamplingEvidence
+        ).orElseGet(() -> localLatticeRefiner.diagnose(geometryEvidence, selectedSourceSamplingEvidence.orElse(null)));
+        List<ModuleSamplingEvidence> selectedSamplingVariants = sourceSamplingEvidence;
+        Optional<ModuleSamplingEvidence> selectedRefinedOrBaselineSamplingEvidence =
+                selectedAppliedSamplingEvidence(selectedSamplingVariants, localRefinementEvidence)
+                        .or(() -> selectedSourceSamplingEvidence(selectedSamplingVariants));
+        writePng(overlayRenderer.render(
+                frame,
+                inspection,
+                patternEvidence,
+                geometryEvidence,
+                selectedRefinedOrBaselineSamplingEvidence,
+                localRefinementEvidence
+        ), overlayPath);
 
         Files.writeString(
                 metadataPath,
-                metadata(frame, inspection, debugContext, overlayPath),
+                metadata(
+                        frame,
+                        inspection,
+                        patternEvidence,
+                        geometryEvidence,
+                        selectedSamplingVariants,
+                        selectedRefinedOrBaselineSamplingEvidence,
+                        localRefinementEvidence,
+                        debugContext,
+                        overlayPath
+                ),
                 StandardCharsets.UTF_8
         );
         return new CandidateDebugExport(imagePath, metadataPath, Optional.of(overlayPath));
+    }
+
+    private CaptureMediaSourceSpaceModuleSampler.SourceSpaceValidationSample sourceSamplingEvidence(
+            Optional<MediaInputFrame> sourceFrame,
+            NormalizedCaptureFrame frame,
+            GeometryFitEvidence geometryEvidence
+    ) {
+        if (sourceFrame.isEmpty()) {
+            return new CaptureMediaSourceSpaceModuleSampler.SourceSpaceValidationSample(List.of(), List.of());
+        }
+        return sourceSpaceModuleSampler.sampleAndValidate(
+                sourceFrame.orElseThrow(),
+                frame,
+                geometryEvidence
+        );
+    }
+
+    private Optional<ModuleSamplingEvidence> selectedSourceSamplingEvidence(List<ModuleSamplingEvidence> evidence) {
+        return evidence.stream()
+                .filter(candidate -> candidate.acceptedPayloadCount() > 0)
+                .findFirst()
+                .or(() -> evidence.stream()
+                        .filter(candidate -> candidate.status() == ModuleSamplingStatus.SAMPLED)
+                        .findFirst())
+                .or(() -> evidence.stream()
+                .filter(candidate -> candidate.status() == ModuleSamplingStatus.PARTIAL)
+                .findFirst())
+                .or(() -> evidence.stream().findFirst());
+    }
+
+    private Optional<LocalRefinementEvidence> selectedLocalRefinementEvidence(
+            List<LocalRefinementEvidence> evidence,
+            Optional<ModuleSamplingEvidence> selectedSamplingEvidence
+    ) {
+        Optional<LocalRefinementEvidence> applied = evidence.stream()
+                .filter(LocalRefinementEvidence::appliedToSampling)
+                .findFirst();
+        if (applied.isPresent() || selectedSamplingEvidence.isEmpty()) {
+            return applied.or(() -> evidence.stream().findFirst());
+        }
+        String samplingCandidateId = selectedSamplingEvidence.orElseThrow()
+                .candidateId()
+                .samplingCandidateId()
+                .orElse("");
+        return evidence.stream()
+                .filter(candidate -> candidate.baseSamplingCandidateId().equals(samplingCandidateId))
+                .findFirst()
+                .or(() -> evidence.stream().findFirst());
+    }
+
+    private Optional<ModuleSamplingEvidence> selectedAppliedSamplingEvidence(
+            List<ModuleSamplingEvidence> samplingEvidence,
+            LocalRefinementEvidence localRefinementEvidence
+    ) {
+        if (!localRefinementEvidence.appliedToSampling()) {
+            return Optional.empty();
+        }
+        String refinementCandidateId = localRefinementEvidence.candidateId().refinementCandidateId().orElse("");
+        return samplingEvidence.stream()
+                .filter(candidate -> candidate.candidateId()
+                        .refinementCandidateId()
+                        .filter(refinementCandidateId::equals)
+                        .isPresent())
+                .findFirst();
     }
 
     private void writePng(BufferedImage image, Path outputPath) throws IOException {
@@ -219,10 +502,16 @@ public final class CaptureMediaCandidateDebugExporter {
     private String metadata(
             NormalizedCaptureFrame frame,
             FrameInspection inspection,
+            PatternEvidence patternEvidence,
+            GeometryFitEvidence geometryEvidence,
+            List<ModuleSamplingEvidence> sourceSamplingEvidence,
+            Optional<ModuleSamplingEvidence> selectedSourceSamplingEvidence,
+            LocalRefinementEvidence localRefinementEvidence,
             CandidateDebugContext debugContext,
             Path overlayPath
     ) {
         FrameCorners corners = frame.frameCorners();
+        DownstreamSummary downstreamSummary = downstreamSummary(inspection, selectedSourceSamplingEvidence);
         List<String> lines = new ArrayList<>();
         lines.add("sourceId=" + frame.sourceId());
         lines.add("sourceKind=" + frame.sourceKind());
@@ -300,6 +589,26 @@ public final class CaptureMediaCandidateDebugExporter {
         lines.add("sampler.reason.tileOrEnvelopeRejectedAttemptCount=" + envelopeRejectedAttemptCount(inspection));
         lines.add("sampler.reason.postPaletteRejectedAttemptCount=" + postPaletteRejectedAttemptCount(inspection));
         lines.add("sampler.reason.acceptedPayloadCount=" + inspection.decodedPayloadCount());
+        addEvidenceSummary(
+                lines,
+                patternEvidence,
+                geometryEvidence,
+                selectedSourceSamplingEvidence,
+                localRefinementEvidence,
+                downstreamSummary
+        );
+        addPatternEvidence(lines, patternEvidence);
+        addGeometryEvidence(lines, geometryEvidence, inspection);
+        addSourceSamplingEvidence(lines, sourceSamplingEvidence, selectedSourceSamplingEvidence);
+        addLocalRefinementEvidence(lines, localRefinementEvidence);
+        addDownstreamSummary(lines, downstreamSummary);
+        addOverlayEvidenceCounts(
+                lines,
+                patternEvidence,
+                geometryEvidence,
+                selectedSourceSamplingEvidence,
+                localRefinementEvidence
+        );
         addProfileAttempts(lines, inspection);
         addSamplingEvidence(lines, inspection);
         addSlotInspection(lines, inspection);
@@ -309,6 +618,503 @@ public final class CaptureMediaCandidateDebugExporter {
         lines.add("diagnostic.selectedFailureStage=" + selectedFailureStage(inspection).orElse(""));
         lines.add("");
         return String.join(System.lineSeparator(), lines);
+    }
+
+    private void addEvidenceSummary(
+            List<String> lines,
+            PatternEvidence patternEvidence,
+            GeometryFitEvidence geometryEvidence,
+            Optional<ModuleSamplingEvidence> sourceSamplingEvidence,
+            LocalRefinementEvidence localRefinementEvidence,
+            DownstreamSummary downstreamSummary
+    ) {
+        ReprojectionMetrics summaryMetrics = selectedOrFirstGeometryCandidate(geometryEvidence)
+                .map(GeometryCandidateEvidence::reprojectionMetrics)
+                .orElseGet(ReprojectionMetrics::zero);
+        lines.add("evidence.schemaVersion=1");
+        lines.add("evidence.sourceImageId=" + patternEvidence.candidateId().sourceImageId());
+        lines.add("evidence.proposalCandidateId="
+                + patternEvidence.candidateId().proposalCandidateId().orElse(""));
+        lines.add("evidence.patternEvidenceId="
+                + patternEvidence.candidateId().patternEvidenceId().orElse(""));
+        lines.add("evidence.geometryCandidateId="
+                + geometryEvidence.selectedGeometryCandidateId().orElse(""));
+        lines.add("evidence.samplingCandidateId=" + sourceSamplingEvidence
+                .flatMap(evidence -> evidence.candidateId().samplingCandidateId())
+                .orElse(""));
+        lines.add("evidence.refinementCandidateId="
+                + localRefinementEvidence.candidateId().refinementCandidateId().orElse(""));
+        lines.add("evidence.patternStatus=" + patternEvidence.status());
+        lines.add("evidence.patternReasonCodes=" + reasonCodes(patternEvidence.reasonCodes()));
+        lines.add("evidence.geometryStatus=" + geometryEvidence.status());
+        lines.add("evidence.geometryRetainedCandidateCount=" + geometryEvidence.retainedCandidates().size());
+        lines.add("evidence.geometrySelectedCandidateId="
+                + geometryEvidence.selectedGeometryCandidateId().orElse(""));
+        lines.add("evidence.geometryReprojectionSummary=" + reprojectionSummary(summaryMetrics));
+        lines.add("evidence.sourceSamplingStatus=" + sourceSamplingEvidence
+                .map(evidence -> evidence.status().name())
+                .orElse(ModuleSamplingStatus.NOT_AVAILABLE.name()));
+        lines.add("evidence.localRefinementStatus=" + localRefinementEvidence.status());
+        lines.add("evidence.downstreamStatus=" + downstreamSummary.summary());
+        lines.add("evidence.restoreEligibility=" + downstreamSummary.restoreEligibility());
+    }
+
+    private void addSourceSamplingEvidence(
+            List<String> lines,
+            List<ModuleSamplingEvidence> sourceSamplingEvidence,
+            Optional<ModuleSamplingEvidence> selectedEvidence
+    ) {
+        lines.add("sourceSampling.evidenceAvailable=" + selectedEvidence.isPresent());
+        lines.add("sourceSampling.variantCount=" + sourceSamplingEvidence.size());
+        lines.add("sourceSampling.status=" + selectedEvidence
+                .map(evidence -> evidence.status().name())
+                .orElse(ModuleSamplingStatus.NOT_AVAILABLE.name()));
+        lines.add("sourceSampling.schemaVersion=" + selectedEvidence
+                .map(evidence -> Integer.toString(evidence.schemaVersion()))
+                .orElse(ModuleSamplingStatus.NOT_AVAILABLE.name()));
+        lines.add("sourceSampling.sourceImageId=" + selectedEvidence
+                .map(evidence -> evidence.candidateId().sourceImageId())
+                .orElse(""));
+        lines.add("sourceSampling.proposalCandidateId=" + selectedEvidence
+                .flatMap(evidence -> evidence.candidateId().proposalCandidateId())
+                .orElse(""));
+        lines.add("sourceSampling.patternEvidenceId=" + selectedEvidence
+                .flatMap(evidence -> evidence.candidateId().patternEvidenceId())
+                .orElse(""));
+        lines.add("sourceSampling.geometryCandidateId=" + selectedEvidence
+                .map(ModuleSamplingEvidence::geometryCandidateId)
+                .orElse(""));
+        lines.add("sourceSampling.samplingCandidateId=" + selectedEvidence
+                .flatMap(evidence -> evidence.candidateId().samplingCandidateId())
+                .orElse(""));
+        lines.add("sourceSampling.candidateId=" + selectedEvidence
+                .map(evidence -> evidence.candidateId().value())
+                .orElse(""));
+        lines.add("sourceSampling.layoutProfileId=" + selectedEvidence
+                .map(ModuleSamplingEvidence::layoutProfileId)
+                .orElse(""));
+        lines.add("sourceSampling.coordinateSystem=" + selectedEvidence
+                .map(ModuleSamplingEvidence::coordinateSystem)
+                .orElse(""));
+        lines.add("sourceSampling.geometrySource=" + selectedEvidence
+                .map(ModuleSamplingEvidence::geometrySource)
+                .orElse(""));
+        lines.add("sourceSampling.centralScale=" + selectedEvidence
+                .map(evidence -> Double.toString(evidence.centralScale()))
+                .orElse(""));
+        lines.add("sourceSampling.aggregationMethod=" + selectedEvidence
+                .map(evidence -> evidence.aggregationMethod().name())
+                .orElse(""));
+        lines.add("sourceSampling.centralRegionPolicy=" + selectedEvidence
+                .map(ModuleSamplingEvidence::centralRegionPolicy)
+                .orElse(""));
+        lines.add("sourceSampling.totalModuleCount=" + selectedEvidence
+                .map(evidence -> Integer.toString(evidence.totalModuleCount()))
+                .orElse(ModuleSamplingStatus.NOT_AVAILABLE.name()));
+        lines.add("sourceSampling.sampledModuleCount=" + selectedEvidence
+                .map(evidence -> Integer.toString(evidence.sampledModuleCount()))
+                .orElse(ModuleSamplingStatus.NOT_AVAILABLE.name()));
+        lines.add("sourceSampling.readableModuleCount=" + selectedEvidence
+                .map(evidence -> Integer.toString(evidence.readableModuleCount()))
+                .orElse(ModuleSamplingStatus.NOT_AVAILABLE.name()));
+        lines.add("sourceSampling.ambiguousModuleCount=" + selectedEvidence
+                .map(evidence -> Integer.toString(evidence.ambiguousModuleCount()))
+                .orElse(ModuleSamplingStatus.NOT_AVAILABLE.name()));
+        lines.add("sourceSampling.unreadableModuleCount=" + selectedEvidence
+                .map(evidence -> Integer.toString(evidence.unreadableModuleCount()))
+                .orElse(ModuleSamplingStatus.NOT_AVAILABLE.name()));
+        lines.add("sourceSampling.clippedModuleCount=" + selectedEvidence
+                .map(evidence -> Integer.toString(evidence.clippedModuleCount()))
+                .orElse(ModuleSamplingStatus.NOT_AVAILABLE.name()));
+        lines.add("sourceSampling.outOfBoundsModuleCount=" + selectedEvidence
+                .map(evidence -> Integer.toString(evidence.outOfBoundsModuleCount()))
+                .orElse(ModuleSamplingStatus.NOT_AVAILABLE.name()));
+        addMetricSummary(lines, "sourceSampling.confidenceMargin", selectedEvidence.isPresent(), selectedEvidence
+                .map(ModuleSamplingEvidence::confidenceMarginSummary)
+                .orElse(Map.of()));
+        addMetricSummary(lines, "sourceSampling.colorVariance", selectedEvidence.isPresent(), selectedEvidence
+                .map(ModuleSamplingEvidence::colorVarianceSummary)
+                .orElse(Map.of()));
+        lines.add("sourceSampling.tileDecodeAttempted=" + selectedEvidence
+                .map(evidence -> Boolean.toString(evidence.tileDecodeAttempted()))
+                .orElse(ModuleSamplingStatus.NOT_AVAILABLE.name()));
+        lines.add("sourceSampling.tileDecodeAttemptCount="
+                + sourceSamplingInt(selectedEvidence, ModuleSamplingEvidence::tileDecodeAttemptCount));
+        lines.add("sourceSampling.validatedTileCount="
+                + sourceSamplingInt(selectedEvidence, ModuleSamplingEvidence::acceptedPayloadCount));
+        lines.add("sourceSampling.tileDecodeFailureStages=" + selectedEvidence
+                .map(evidence -> textList(evidence.tileDecodeFailureStages()))
+                .orElse(""));
+        lines.add("sourceSampling.reasonCodes=" + selectedEvidence
+                .map(evidence -> reasonCodes(evidence.reasonCodes()))
+                .orElse(CaptureMediaEvidenceReasonCode.SOURCE_PIXELS_UNAVAILABLE.name()));
+        lines.add("sourceSampling.moduleDetailIncluded=false");
+        lines.add("sourceSampling.moduleDetailCount=0");
+    }
+
+    private void addDownstreamSummary(List<String> lines, DownstreamSummary summary) {
+        lines.add("downstream.summary=" + summary.summary());
+        lines.add("downstream.restoreEligible=" + summary.restoreEligible());
+        lines.add("downstream.restoreEligibility=" + summary.restoreEligibility());
+        lines.add("downstream.tileDecodeAttempted=" + summary.tileDecodeAttempted());
+        lines.add("downstream.tileDecodeAttemptCount=" + summary.tileDecodeAttemptCount());
+        lines.add("downstream.normalizedTileDecodeAttemptCount=" + summary.normalizedTileDecodeAttemptCount());
+        lines.add("downstream.sourceSamplingTileDecodeAttemptCount="
+                + summary.sourceSamplingTileDecodeAttemptCount());
+        lines.add("downstream.validatedTileCount=" + summary.validatedTileCount());
+        lines.add("downstream.normalizedValidatedTileCount=" + summary.normalizedValidatedTileCount());
+        lines.add("downstream.sourceSamplingValidatedTileCount="
+                + summary.sourceSamplingValidatedTileCount());
+        lines.add("downstream.failureStage=" + summary.failureStage());
+        lines.add("downstream.sourceSamplingFailureStages=" + summary.sourceSamplingFailureStages());
+    }
+
+    private void addOverlayEvidenceCounts(
+            List<String> lines,
+            PatternEvidence patternEvidence,
+            GeometryFitEvidence geometryEvidence,
+            Optional<ModuleSamplingEvidence> sourceSamplingEvidence,
+            LocalRefinementEvidence localRefinementEvidence
+    ) {
+        lines.add("overlay.patternFeatureCount=" + patternEvidence.features().size());
+        lines.add("overlay.geometryRetainedCandidateCount=" + geometryEvidence.retainedCandidates().size());
+        lines.add("overlay.sourceSamplingSummaryDrawn=" + sourceSamplingEvidence.isPresent());
+        lines.add("overlay.localResidualVectorCount=" + localRefinementEvidence.controlPoints().size());
+    }
+
+    private void addPatternEvidence(List<String> lines, PatternEvidence evidence) {
+        lines.add("pattern.schemaVersion=" + evidence.schemaVersion());
+        lines.add("pattern.sourceImageId=" + evidence.candidateId().sourceImageId());
+        lines.add("pattern.proposalCandidateId=" + evidence.candidateId().proposalCandidateId().orElse(""));
+        lines.add("pattern.patternEvidenceId=" + evidence.candidateId().patternEvidenceId().orElse(""));
+        lines.add("pattern.candidateId=" + evidence.candidateId().value());
+        lines.add("pattern.layoutProfileId=" + evidence.layoutProfileId());
+        lines.add("pattern.status=" + evidence.status());
+        lines.add("pattern.confidence=" + evidence.confidence());
+        lines.add("pattern.dominanceMargin=" + evidence.dominanceMargin());
+        lines.add("pattern.featureCount=" + evidence.features().size());
+        lines.add("pattern.finderFeatureCount=" + finderFeatureCount(evidence));
+        lines.add("pattern.alignmentExpected=" + evidence.alignmentExpected());
+        lines.add("pattern.alignmentStatus=NOT_SUPPORTED_FOR_PROFILE");
+        lines.add("pattern.observationSource=" + observationSource(evidence).map(Enum::name).orElse(""));
+        lines.add("pattern.reasonCodes=" + reasonCodes(evidence.reasonCodes()));
+        lines.add("pattern.downstreamConflictReasons=" + reasonCodes(evidence.downstreamConflictReasons()));
+        lines.add("pattern.orientationCandidates=" + scoreMap(evidence.orientationCandidates()));
+        lines.add("pattern.layoutProfileCandidates=" + scoreMap(evidence.layoutProfileCandidates()));
+        for (FinderRole role : FinderRole.values()) {
+            FinderRoleSummary summary = finderRoleSummary(evidence, role);
+            String rolePrefix = "pattern.finder." + role;
+            lines.add(rolePrefix + ".featureCount=" + summary.featureCount());
+            lines.add(rolePrefix + ".matchedModuleCount=" + summary.matchedModuleCount());
+            lines.add(rolePrefix + ".expectedModuleCount=" + summary.expectedModuleCount());
+            lines.add(rolePrefix + ".confidence=" + summary.confidence());
+        }
+    }
+
+    private void addGeometryEvidence(
+            List<String> lines,
+            GeometryFitEvidence evidence,
+            FrameInspection inspection
+    ) {
+        List<CaptureMediaEvidenceReasonCode> downstreamConflictReasons =
+                geometryDownstreamConflictReasons(evidence, inspection);
+        ReprojectionMetrics summaryMetrics = selectedOrFirstGeometryCandidate(evidence)
+                .map(GeometryCandidateEvidence::reprojectionMetrics)
+                .orElseGet(ReprojectionMetrics::zero);
+
+        lines.add("geometry.schemaVersion=" + evidence.schemaVersion());
+        lines.add("geometry.sourceImageId=" + evidence.candidateId().sourceImageId());
+        lines.add("geometry.proposalCandidateId=" + evidence.candidateId().proposalCandidateId().orElse(""));
+        lines.add("geometry.patternEvidenceId=" + evidence.candidateId().patternEvidenceId().orElse(""));
+        lines.add("geometry.candidateId=" + evidence.candidateId().value());
+        lines.add("geometry.status=" + evidence.status());
+        lines.add("geometry.selectedGeometryCandidateId=" + evidence.selectedGeometryCandidateId().orElse(""));
+        lines.add("geometry.downstreamSelectedGeometryCandidateId="
+                + evidence.downstreamSelectedGeometryCandidateId().orElse(""));
+        lines.add("geometry.retainedCandidateCount=" + evidence.retainedCandidates().size());
+        lines.add("geometry.reasonCodes=" + reasonCodes(evidence.reasonCodes()));
+        lines.add("geometry.meanErrorModules=" + summaryMetrics.meanErrorModules());
+        lines.add("geometry.p95ErrorModules=" + summaryMetrics.p95ErrorModules());
+        lines.add("geometry.maxErrorModules=" + summaryMetrics.maxErrorModules());
+        lines.add("geometry.downstreamConflict=" + !downstreamConflictReasons.isEmpty());
+        lines.add("geometry.downstreamConflictSummary="
+                + (downstreamConflictReasons.isEmpty() ? "" : "ACCEPTED_GEOMETRY_NO_ACCEPTED_PAYLOAD"));
+        lines.add("geometry.downstreamConflictReasonCodes=" + reasonCodes(downstreamConflictReasons));
+
+        for (int index = 0; index < evidence.retainedCandidates().size(); index++) {
+            GeometryCandidateEvidence candidate = evidence.retainedCandidates().get(index);
+            String prefix = "geometry.retainedCandidate." + index;
+            lines.add(prefix + ".rank=" + candidate.rank());
+            lines.add(prefix + ".sourceImageId=" + candidate.candidateId().sourceImageId());
+            lines.add(prefix + ".proposalCandidateId=" + candidate.candidateId().proposalCandidateId().orElse(""));
+            lines.add(prefix + ".patternEvidenceId=" + candidate.candidateId().patternEvidenceId().orElse(""));
+            lines.add(prefix + ".geometryCandidateId=" + candidate.candidateId().geometryCandidateId().orElse(""));
+            lines.add(prefix + ".candidateId=" + candidate.candidateId().value());
+            lines.add(prefix + ".status=" + candidate.status());
+            lines.add(prefix + ".model=" + candidate.fitModelType());
+            lines.add(prefix + ".score=" + candidate.score());
+            lines.add(prefix + ".dominanceMargin=" + candidate.dominanceMargin());
+            lines.add(prefix + ".retainedForSampling=" + candidate.retainedForSampling());
+            lines.add(prefix + ".downstreamSelected=" + candidate.downstreamSelected());
+            lines.add(prefix + ".observedPointCount=" + candidate.observedPointCount());
+            lines.add(prefix + ".expectedPointCount=" + candidate.expectedPointCount());
+            lines.add(prefix + ".matchedPointCount=" + candidate.matchedPointCount());
+            lines.add(prefix + ".inlierCount=" + candidate.inlierCount());
+            lines.add(prefix + ".outlierCount=" + candidate.outlierCount());
+            lines.add(prefix + ".missingExpectedPointCount=" + candidate.missingExpectedPointCount());
+            addReprojectionMetrics(lines, prefix + ".reprojection", candidate.reprojectionMetrics());
+            lines.add(prefix + ".degeneracyFlags=" + textList(candidate.degeneracyFlags()));
+            lines.add(prefix + ".reasonCodes=" + reasonCodes(candidate.reasonCodes()));
+        }
+    }
+
+    private Optional<GeometryCandidateEvidence> selectedOrFirstGeometryCandidate(GeometryFitEvidence evidence) {
+        Optional<String> selectedId = evidence.selectedGeometryCandidateId();
+        if (selectedId.isPresent()) {
+            String selected = selectedId.orElseThrow();
+            for (GeometryCandidateEvidence candidate : evidence.retainedCandidates()) {
+                if (candidate.candidateId().geometryCandidateId().filter(selected::equals).isPresent()) {
+                    return Optional.of(candidate);
+                }
+            }
+        }
+        return evidence.retainedCandidates().stream().findFirst();
+    }
+
+    private List<CaptureMediaEvidenceReasonCode> geometryDownstreamConflictReasons(
+            GeometryFitEvidence evidence,
+            FrameInspection inspection
+    ) {
+        if (evidence.status() != GeometryFitStatus.ACCEPTED || inspection.decodedPayloadCount() > 0) {
+            return List.of();
+        }
+        List<CaptureMediaEvidenceReasonCode> reasonCodes = new ArrayList<>();
+        reasonCodes.add(CaptureMediaEvidenceReasonCode.DOWNSTREAM_CONFLICT);
+        if (tileDecodeAttemptCount(inspection) == 0) {
+            reasonCodes.add(CaptureMediaEvidenceReasonCode.DOWNSTREAM_SAMPLING_FAILED);
+            reasonCodes.add(CaptureMediaEvidenceReasonCode.TILE_DECODE_NOT_ATTEMPTED);
+        } else {
+            reasonCodes.add(CaptureMediaEvidenceReasonCode.DOWNSTREAM_TILE_VALIDATION_FAILED);
+        }
+        return reasonCodes;
+    }
+
+    private DownstreamSummary downstreamSummary(
+            FrameInspection inspection,
+            Optional<ModuleSamplingEvidence> sourceSamplingEvidence
+    ) {
+        int normalizedTileDecodeAttemptCount = tileDecodeAttemptCount(inspection);
+        int sourceSamplingTileDecodeAttemptCount = sourceSamplingEvidence
+                .map(ModuleSamplingEvidence::tileDecodeAttemptCount)
+                .orElse(0);
+        int normalizedValidatedTileCount = inspection.decodedPayloadCount();
+        int sourceSamplingValidatedTileCount = sourceSamplingEvidence
+                .map(ModuleSamplingEvidence::acceptedPayloadCount)
+                .orElse(0);
+        int validatedTileCount = Math.max(normalizedValidatedTileCount, sourceSamplingValidatedTileCount);
+        boolean tileDecodeAttempted = normalizedTileDecodeAttemptCount > 0
+                || sourceSamplingEvidence.map(ModuleSamplingEvidence::tileDecodeAttempted).orElse(false);
+        String sourceSamplingFailureStages = sourceSamplingEvidence
+                .map(evidence -> textList(evidence.tileDecodeFailureStages()))
+                .orElse("");
+        String failureStage = selectedFailureStage(inspection)
+                .or(() -> firstText(sourceSamplingEvidence
+                        .map(ModuleSamplingEvidence::tileDecodeFailureStages)
+                        .orElse(List.of())))
+                .orElse("");
+        String summary;
+        String restoreEligibility;
+        boolean restoreEligible = validatedTileCount > 0;
+        if (restoreEligible) {
+            summary = "VALIDATED_TILE_AVAILABLE";
+            restoreEligibility = "CANDIDATE_PAYLOAD_AVAILABLE";
+        } else if (tileDecodeAttempted) {
+            summary = "TILE_DECODE_ATTEMPTED_NO_VALIDATED_TILE";
+            restoreEligibility = "RESTORE_GATES_NOT_MET";
+        } else {
+            summary = "TILE_DECODE_NOT_ATTEMPTED";
+            restoreEligibility = "RESTORE_GATES_NOT_MET";
+        }
+        return new DownstreamSummary(
+                summary,
+                restoreEligible,
+                restoreEligibility,
+                tileDecodeAttempted,
+                normalizedTileDecodeAttemptCount + sourceSamplingTileDecodeAttemptCount,
+                normalizedTileDecodeAttemptCount,
+                sourceSamplingTileDecodeAttemptCount,
+                validatedTileCount,
+                normalizedValidatedTileCount,
+                sourceSamplingValidatedTileCount,
+                failureStage,
+                sourceSamplingFailureStages
+        );
+    }
+
+    private Optional<String> firstText(List<String> values) {
+        return values.stream()
+                .filter(value -> value != null && !value.isBlank())
+                .findFirst();
+    }
+
+    private void addReprojectionMetrics(List<String> lines, String prefix, ReprojectionMetrics metrics) {
+        lines.add(prefix + ".meanErrorPixels=" + metrics.meanErrorPixels());
+        lines.add(prefix + ".medianErrorPixels=" + metrics.medianErrorPixels());
+        lines.add(prefix + ".p95ErrorPixels=" + metrics.p95ErrorPixels());
+        lines.add(prefix + ".maxErrorPixels=" + metrics.maxErrorPixels());
+        lines.add(prefix + ".meanErrorModules=" + metrics.meanErrorModules());
+        lines.add(prefix + ".medianErrorModules=" + metrics.medianErrorModules());
+        lines.add(prefix + ".p95ErrorModules=" + metrics.p95ErrorModules());
+        lines.add(prefix + ".maxErrorModules=" + metrics.maxErrorModules());
+    }
+
+    private String reprojectionSummary(ReprojectionMetrics metrics) {
+        return "meanModules:" + metrics.meanErrorModules()
+                + ",p95Modules:" + metrics.p95ErrorModules()
+                + ",maxModules:" + metrics.maxErrorModules();
+    }
+
+    private String sourceSamplingInt(
+            Optional<ModuleSamplingEvidence> evidence,
+            ToIntFunction<ModuleSamplingEvidence> extractor
+    ) {
+        return evidence
+                .map(value -> Integer.toString(extractor.applyAsInt(value)))
+                .orElse(ModuleSamplingStatus.NOT_AVAILABLE.name());
+    }
+
+    private void addMetricSummary(
+            List<String> lines,
+            String prefix,
+            boolean available,
+            Map<String, Double> metrics
+    ) {
+        if (!available) {
+            lines.add(prefix + ".count=" + ModuleSamplingStatus.NOT_AVAILABLE);
+            lines.add(prefix + ".min=" + ModuleSamplingStatus.NOT_AVAILABLE);
+            lines.add(prefix + ".median=" + ModuleSamplingStatus.NOT_AVAILABLE);
+            lines.add(prefix + ".mean=" + ModuleSamplingStatus.NOT_AVAILABLE);
+            lines.add(prefix + ".max=" + ModuleSamplingStatus.NOT_AVAILABLE);
+            return;
+        }
+        lines.add(prefix + ".count=" + metric(metrics, "count"));
+        lines.add(prefix + ".min=" + metric(metrics, "min"));
+        lines.add(prefix + ".median=" + metric(metrics, "median"));
+        lines.add(prefix + ".mean=" + metric(metrics, "mean"));
+        lines.add(prefix + ".max=" + metric(metrics, "max"));
+    }
+
+    private void addLocalRefinementEvidence(List<String> lines, LocalRefinementEvidence evidence) {
+        lines.add("localRefinement.schemaVersion=" + evidence.schemaVersion());
+        lines.add("localRefinement.sourceImageId=" + evidence.candidateId().sourceImageId());
+        lines.add("localRefinement.proposalCandidateId="
+                + evidence.candidateId().proposalCandidateId().orElse(""));
+        lines.add("localRefinement.patternEvidenceId="
+                + evidence.candidateId().patternEvidenceId().orElse(""));
+        lines.add("localRefinement.geometryCandidateId="
+                + evidence.candidateId().geometryCandidateId().orElse(""));
+        lines.add("localRefinement.samplingCandidateId="
+                + evidence.candidateId().samplingCandidateId().orElse(""));
+        lines.add("localRefinement.refinementCandidateId="
+                + evidence.candidateId().refinementCandidateId().orElse(""));
+        lines.add("localRefinement.candidateId=" + evidence.candidateId().value());
+        lines.add("localRefinement.status=" + evidence.status());
+        lines.add("localRefinement.baseGeometryCandidateId=" + evidence.baseGeometryCandidateId());
+        lines.add("localRefinement.baseSamplingCandidateId=" + evidence.baseSamplingCandidateId());
+        lines.add("localRefinement.modelType=" + evidence.modelType());
+        lines.add("localRefinement.gridColumns=" + evidence.gridColumns());
+        lines.add("localRefinement.gridRows=" + evidence.gridRows());
+        lines.add("localRefinement.maxLocalDisplacementModules=" + evidence.maxLocalDisplacementModules());
+        lines.add("localRefinement.maxLocalDisplacementPixels=" + evidence.maxLocalDisplacementPixels());
+        lines.add("localRefinement.smoothnessConstraint=" + evidence.smoothnessConstraint());
+        lines.add("localRefinement.smoothnessScore=" + evidence.smoothnessScore());
+        lines.add("localRefinement.regularizationScore=" + evidence.regularizationScore());
+        lines.add("localRefinement.appliedToSampling=" + evidence.appliedToSampling());
+        lines.add("localRefinement.reasonCodes=" + reasonCodes(evidence.reasonCodes()));
+        addReprojectionMetrics(lines, "localRefinement.baseReprojection", evidence.baseReprojectionMetrics());
+        lines.add("localRefinement.baseSampling.totalModuleCount="
+                + metric(evidence.baseSamplingMetrics(), "totalModuleCount"));
+        lines.add("localRefinement.baseSampling.sampledModuleCount="
+                + metric(evidence.baseSamplingMetrics(), "sampledModuleCount"));
+        lines.add("localRefinement.baseSampling.readableModuleCount="
+                + metric(evidence.baseSamplingMetrics(), "readableModuleCount"));
+        lines.add("localRefinement.baseSampling.ambiguousUnreadableRatio="
+                + metric(evidence.baseSamplingMetrics(), "ambiguousUnreadableRatio"));
+        lines.add("localRefinement.control.expectedCount="
+                + metric(evidence.baseSamplingMetrics(), "control.expectedCount"));
+        lines.add("localRefinement.control.observedCount="
+                + metric(evidence.baseSamplingMetrics(), "control.observedCount"));
+        lines.add("localRefinement.control.matchedCount="
+                + metric(evidence.baseSamplingMetrics(), "control.matchedCount"));
+        lines.add("localRefinement.control.inlierCount="
+                + metric(evidence.baseSamplingMetrics(), "control.inlierCount"));
+        lines.add("localRefinement.control.distributedQuadrantCount="
+                + metric(evidence.baseSamplingMetrics(), "control.distributedQuadrantCount"));
+        lines.add("localRefinement.residual.meanModules="
+                + metric(evidence.baseSamplingMetrics(), "residual.meanModules"));
+        lines.add("localRefinement.residual.p95Modules="
+                + metric(evidence.baseSamplingMetrics(), "residual.p95Modules"));
+        lines.add("localRefinement.residual.maxModules="
+                + metric(evidence.baseSamplingMetrics(), "residual.maxModules"));
+    }
+
+    private double metric(Map<String, Double> metrics, String name) {
+        return metrics.getOrDefault(name, 0.0d);
+    }
+
+    private int finderFeatureCount(PatternEvidence evidence) {
+        int count = 0;
+        for (PatternFeatureEvidence feature : evidence.features()) {
+            if (feature.featureType() == PatternFeatureType.FINDER) {
+                count++;
+            }
+        }
+        return count;
+    }
+
+    private Optional<CoordinateObservationSource> observationSource(PatternEvidence evidence) {
+        return evidence.features().stream()
+                .map(PatternFeatureEvidence::observationSource)
+                .findFirst();
+    }
+
+    private FinderRoleSummary finderRoleSummary(PatternEvidence evidence, FinderRole role) {
+        int featureCount = 0;
+        int matchedModuleCount = 0;
+        int expectedModuleCount = 0;
+        double confidenceSum = 0.0d;
+        for (PatternFeatureEvidence feature : evidence.features()) {
+            if (feature.featureType() == PatternFeatureType.FINDER
+                    && feature.finderRole().filter(candidate -> candidate == role).isPresent()) {
+                featureCount++;
+                matchedModuleCount += feature.matchedModuleCount();
+                expectedModuleCount += feature.expectedModuleCount();
+                confidenceSum += feature.confidence();
+            }
+        }
+        double confidence = featureCount == 0 ? 0.0d : confidenceSum / featureCount;
+        return new FinderRoleSummary(featureCount, matchedModuleCount, expectedModuleCount, confidence);
+    }
+
+    private String reasonCodes(List<CaptureMediaEvidenceReasonCode> reasonCodes) {
+        return reasonCodes.stream()
+                .map(Enum::name)
+                .reduce((left, right) -> left + "," + right)
+                .orElse("");
+    }
+
+    private String textList(List<String> values) {
+        return values.stream()
+                .reduce((left, right) -> left + "," + right)
+                .orElse("");
+    }
+
+    private String scoreMap(Map<String, Double> scores) {
+        return scores.entrySet()
+                .stream()
+                .map(entry -> entry.getKey() + ":" + entry.getValue())
+                .reduce((left, right) -> left + "," + right)
+                .orElse("");
     }
 
     private void addOverlayCounts(List<String> lines, FrameInspection inspection) {
@@ -920,6 +1726,48 @@ public final class CaptureMediaCandidateDebugExporter {
             if (callerOrder < 0) {
                 throw new IllegalArgumentException("callerOrder must be non-negative");
             }
+        }
+    }
+
+    private record FinderRoleSummary(
+            int featureCount,
+            int matchedModuleCount,
+            int expectedModuleCount,
+            double confidence
+    ) {
+    }
+
+    private record DownstreamSummary(
+            String summary,
+            boolean restoreEligible,
+            String restoreEligibility,
+            boolean tileDecodeAttempted,
+            int tileDecodeAttemptCount,
+            int normalizedTileDecodeAttemptCount,
+            int sourceSamplingTileDecodeAttemptCount,
+            int validatedTileCount,
+            int normalizedValidatedTileCount,
+            int sourceSamplingValidatedTileCount,
+            String failureStage,
+            String sourceSamplingFailureStages
+    ) {
+        private DownstreamSummary {
+            if (summary == null || summary.isBlank()) {
+                throw new IllegalArgumentException("summary must not be blank");
+            }
+            if (restoreEligibility == null || restoreEligibility.isBlank()) {
+                throw new IllegalArgumentException("restoreEligibility must not be blank");
+            }
+            if (tileDecodeAttemptCount < 0
+                    || normalizedTileDecodeAttemptCount < 0
+                    || sourceSamplingTileDecodeAttemptCount < 0
+                    || validatedTileCount < 0
+                    || normalizedValidatedTileCount < 0
+                    || sourceSamplingValidatedTileCount < 0) {
+                throw new IllegalArgumentException("downstream counts must be non-negative");
+            }
+            Objects.requireNonNull(failureStage, "failureStage must not be null");
+            Objects.requireNonNull(sourceSamplingFailureStages, "sourceSamplingFailureStages must not be null");
         }
     }
 }

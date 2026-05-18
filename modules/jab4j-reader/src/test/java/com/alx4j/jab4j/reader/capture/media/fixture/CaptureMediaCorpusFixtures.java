@@ -2,7 +2,11 @@ package com.alx4j.jab4j.reader.capture.media.fixture;
 
 import java.awt.Color;
 import java.awt.Graphics2D;
+import java.awt.RenderingHints;
+import java.awt.geom.AffineTransform;
 import java.awt.image.BufferedImage;
+import java.awt.image.ConvolveOp;
+import java.awt.image.Kernel;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -34,6 +38,7 @@ import com.alx4j.jab4j.render.frame.FrameRasterRenderer;
 import com.alx4j.jab4j.render.frame.RenderedFrame;
 import com.alx4j.jab4j.render.layout.FixedLayoutPlan;
 import com.alx4j.jab4j.render.layout.FixedLayoutPlanner;
+import com.alx4j.jab4j.render.layout.TilePlacement;
 import com.alx4j.jab4j.render.tile.RenderedTile;
 import com.alx4j.jab4j.render.tile.TileRasterRenderer;
 import com.alx4j.jab4j.tile.LogicalTile;
@@ -44,7 +49,7 @@ import com.alx4j.jab4j.transfer.TransportSessionPlan;
 import com.alx4j.jab4j.transfer.TransportSessionPlanner;
 
 /**
- * Generates MVP-3 capture media corpus fixtures without committing binary media assets.
+ * Generates capture media corpus fixtures without committing binary media assets.
  */
 final class CaptureMediaCorpusFixtures {
 
@@ -52,13 +57,20 @@ final class CaptureMediaCorpusFixtures {
     static final String GENERATED_UNCROPPED_INSET = "CM-MVP3-GENERATED-UNCROPPED-INSET";
     static final String GENERATED_CAMERA_LIKE_MONITOR_PNG = "CM-MVP3-GENERATED-CAMERA-LIKE-MONITOR-PNG";
     static final String GENERATED_CAMERA_LIKE_MONITOR_JPEG = "CM-MVP3-GENERATED-CAMERA-LIKE-MONITOR-JPEG";
+    static final String GENERATED_CAMERA_LIKE_MONITOR_INVALID_PAYLOAD_PNG =
+            "CM-MVP7-GENERATED-CAMERA-LIKE-MONITOR-INVALID-PAYLOAD-PNG";
+    static final String GENERATED_SKEWED_BLURRED_MONITOR_PNG = "CM-MVP7-GENERATED-SKEWED-BLURRED-MONITOR-PNG";
     static final String DUPLICATE_FRAMES = "CM-MVP3-DUPLICATE-FRAMES";
     static final String MISSING_UNIQUE_FRAMES = "CM-MVP3-MISSING-UNIQUE-FRAMES";
     static final String NO_JAB_FRAME = "CM-MVP3-NO-JAB-FRAME";
     static final String BRIGHT_MONITOR_WITHOUT_JAB = "CM-MVP4-GENERATED-BRIGHT-MONITOR-WITHOUT-JAB";
     static final String UI_CHROME_WITHOUT_JAB = "CM-MVP4-GENERATED-UI-CHROME-WITHOUT-JAB";
     static final String REPEATED_STRIPES_WITHOUT_JAB = "CM-MVP4-GENERATED-REPEATED-STRIPES-WITHOUT-JAB";
+    static final String REPEATED_GRID_WITHOUT_JAB = "CM-MVP9-GENERATED-REPEATED-GRID-WITHOUT-JAB";
+    static final String SYNC_LIKE_STRIPES_WITHOUT_JAB = "CM-MVP9-GENERATED-SYNC-LIKE-STRIPES-WITHOUT-JAB";
     static final String PARTIAL_CROPPED_FRAME = "CM-MVP4-GENERATED-PARTIAL-CROPPED-FRAME";
+    static final String AMBIGUOUS_MULTI_SYMBOL_PNG = "CM-MVP9-GENERATED-AMBIGUOUS-MULTI-SYMBOL-PNG";
+    static final String GENERATED_LOCAL_DISTORTION_PNG = "CM-MVP9-GENERATED-LOCAL-DISTORTION-PNG";
     static final String UNSUPPORTED_HEIC_PLACEHOLDER = "CM-MVP3-UNSUPPORTED-HEIC-PLACEHOLDER";
     static final String CORRUPTED_UNREADABLE_IMAGE = "CM-MVP3-CORRUPTED-UNREADABLE-IMAGE";
     static final String EXTERNAL_IPHONE_STILLS = "CM-MVP3-EXTERNAL-IPHONE-STILLS";
@@ -192,6 +204,50 @@ final class CaptureMediaCorpusFixtures {
     }
 
     /**
+     * Generates a camera-like monitor PNG with frame geometry evidence but intentionally invalid tile payload interiors.
+     *
+     * @param workspace parent directory for temporary scenario files
+     * @return generated media fixture
+     * @throws IOException if fixture files cannot be written
+     */
+    static GeneratedCaptureMediaFixture generatedCameraLikeMonitorInvalidPayloadPng(Path workspace) throws IOException {
+        GeneratedFrameSet frameSet = generateFrameSet(workspace, GENERATED_CAMERA_LIKE_MONITOR_INVALID_PAYLOAD_PNG);
+        Path mediaDirectory = Files.createDirectories(frameSet.scenarioDirectory().resolve("media"));
+        BufferedImage frameImage = toImage(frameSet.renderedFrames().get(0));
+        clearTilePayloadInteriors(frameImage);
+        Path path = mediaDirectory.resolve("camera-like-monitor-invalid-payload.png");
+        writePng(path, cameraLikeMonitorImage(colorShiftedImage(frameImage, 18)));
+        return new GeneratedCaptureMediaFixture(
+                GENERATED_CAMERA_LIKE_MONITOR_INVALID_PAYLOAD_PNG,
+                frameSet.scenarioDirectory(),
+                mediaDirectory,
+                List.of(path),
+                0
+        );
+    }
+
+    /**
+     * Generates a mildly skewed and blurred monitor-like PNG still from the first rendered frame.
+     *
+     * @param workspace parent directory for temporary scenario files
+     * @return generated media fixture
+     * @throws IOException if fixture files cannot be written
+     */
+    static GeneratedCaptureMediaFixture generatedSkewedBlurredMonitorPng(Path workspace) throws IOException {
+        GeneratedFrameSet frameSet = generateFrameSet(workspace, GENERATED_SKEWED_BLURRED_MONITOR_PNG);
+        Path mediaDirectory = Files.createDirectories(frameSet.scenarioDirectory().resolve("media"));
+        Path path = mediaDirectory.resolve("skewed-blurred-monitor.png");
+        writePng(path, skewedBlurredMonitorImage(frameSet.renderedFrames().get(0)));
+        return new GeneratedCaptureMediaFixture(
+                GENERATED_SKEWED_BLURRED_MONITOR_PNG,
+                frameSet.scenarioDirectory(),
+                mediaDirectory,
+                List.of(path),
+                1
+        );
+    }
+
+    /**
      * Generates an extracted-frame folder with one byte-equivalent duplicate frame.
      *
      * @param workspace parent directory for temporary scenario files
@@ -305,6 +361,38 @@ final class CaptureMediaCorpusFixtures {
     }
 
     /**
+     * Generates a repeated colorful grid that should remain a false-positive negative for MVP-9 evidence gates.
+     *
+     * @param workspace parent directory for temporary scenario files
+     * @return generated media fixture
+     * @throws IOException if fixture files cannot be written
+     */
+    static GeneratedCaptureMediaFixture repeatedGridWithoutJab(Path workspace) throws IOException {
+        return generatedSinglePng(
+                workspace,
+                REPEATED_GRID_WITHOUT_JAB,
+                "repeated-grid-without-jab.png",
+                repeatedGridWithoutJabImage()
+        );
+    }
+
+    /**
+     * Generates sync-band-like stripes without the full rendered frame and tile-grid evidence.
+     *
+     * @param workspace parent directory for temporary scenario files
+     * @return generated media fixture
+     * @throws IOException if fixture files cannot be written
+     */
+    static GeneratedCaptureMediaFixture syncLikeStripesWithoutJab(Path workspace) throws IOException {
+        return generatedSinglePng(
+                workspace,
+                SYNC_LIKE_STRIPES_WITHOUT_JAB,
+                "sync-like-stripes-without-jab.png",
+                syncLikeStripesWithoutJabImage()
+        );
+    }
+
+    /**
      * Generates a media image with clipped JAB-like evidence that must not be accepted as a complete frame.
      *
      * @param workspace parent directory for temporary scenario files
@@ -322,6 +410,48 @@ final class CaptureMediaCorpusFixtures {
                 mediaDirectory,
                 List.of(image),
                 0
+        );
+    }
+
+    /**
+     * Generates a two-symbol image that current normalization treats as an ambiguous exact rendered-frame input.
+     *
+     * @param workspace parent directory for temporary scenario files
+     * @return generated media fixture
+     * @throws IOException if fixture files cannot be written
+     */
+    static GeneratedCaptureMediaFixture ambiguousMultiSymbolPng(Path workspace) throws IOException {
+        GeneratedFrameSet frameSet = generateFrameSet(workspace, AMBIGUOUS_MULTI_SYMBOL_PNG);
+        Path mediaDirectory = Files.createDirectories(frameSet.scenarioDirectory().resolve("media"));
+        Path image = mediaDirectory.resolve("ambiguous-multi-symbol.png");
+        writePng(image, ambiguousMultiSymbolImage(frameSet.renderedFrames().get(0)));
+        return new GeneratedCaptureMediaFixture(
+                AMBIGUOUS_MULTI_SYMBOL_PNG,
+                frameSet.scenarioDirectory(),
+                mediaDirectory,
+                List.of(image),
+                0
+        );
+    }
+
+    /**
+     * Generates a non-uniformly distorted frame for local residual diagnostics before applied refinement is enabled.
+     *
+     * @param workspace parent directory for temporary scenario files
+     * @return generated media fixture
+     * @throws IOException if fixture files cannot be written
+     */
+    static GeneratedCaptureMediaFixture generatedLocalDistortionPng(Path workspace) throws IOException {
+        GeneratedFrameSet frameSet = generateFrameSet(workspace, GENERATED_LOCAL_DISTORTION_PNG);
+        Path mediaDirectory = Files.createDirectories(frameSet.scenarioDirectory().resolve("media"));
+        Path image = mediaDirectory.resolve("local-distortion.png");
+        writePng(image, locallyDistortedFrameImage(frameSet.renderedFrames().get(0)));
+        return new GeneratedCaptureMediaFixture(
+                GENERATED_LOCAL_DISTORTION_PNG,
+                frameSet.scenarioDirectory(),
+                mediaDirectory,
+                List.of(image),
+                1
         );
     }
 
@@ -461,13 +591,19 @@ final class CaptureMediaCorpusFixtures {
                 GENERATED_UNCROPPED_INSET,
                 GENERATED_CAMERA_LIKE_MONITOR_PNG,
                 GENERATED_CAMERA_LIKE_MONITOR_JPEG,
+                GENERATED_CAMERA_LIKE_MONITOR_INVALID_PAYLOAD_PNG,
+                GENERATED_SKEWED_BLURRED_MONITOR_PNG,
                 DUPLICATE_FRAMES,
                 MISSING_UNIQUE_FRAMES,
                 NO_JAB_FRAME,
                 BRIGHT_MONITOR_WITHOUT_JAB,
                 UI_CHROME_WITHOUT_JAB,
                 REPEATED_STRIPES_WITHOUT_JAB,
+                REPEATED_GRID_WITHOUT_JAB,
+                SYNC_LIKE_STRIPES_WITHOUT_JAB,
                 PARTIAL_CROPPED_FRAME,
+                AMBIGUOUS_MULTI_SYMBOL_PNG,
+                GENERATED_LOCAL_DISTORTION_PNG,
                 UNSUPPORTED_HEIC_PLACEHOLDER,
                 CORRUPTED_UNREADABLE_IMAGE,
                 EXTERNAL_IPHONE_STILLS,
@@ -566,7 +702,10 @@ final class CaptureMediaCorpusFixtures {
     }
 
     private static BufferedImage cameraLikeMonitorImage(RenderedFrame frame) {
-        BufferedImage frameImage = colorShiftedImage(frame, 18);
+        return cameraLikeMonitorImage(colorShiftedImage(frame, 18));
+    }
+
+    private static BufferedImage cameraLikeMonitorImage(BufferedImage frameImage) {
         int insetX = 210;
         int insetY = 140;
         int canvasWidth = 1700;
@@ -583,6 +722,70 @@ final class CaptureMediaCorpusFixtures {
             graphics.setColor(new Color(0xFF3E4650, true));
             graphics.fillRect(78, 70, canvasWidth - 156, 48);
             graphics.drawImage(frameImage, insetX, insetY, null);
+        } finally {
+            graphics.dispose();
+        }
+        return canvas;
+    }
+
+    private static void clearTilePayloadInteriors(BufferedImage image) {
+        FixedLayoutPlan layoutPlan = LAYOUT_PLANNER.plan(CAPTURE_LAYOUT);
+        int border = layoutPlan.separatorThicknessPx();
+        int preservedCornerPx = Math.max(96, layoutPlan.tileSlotWidthPx() / 4);
+        for (TilePlacement placement : layoutPlan.tilePlacements()) {
+            int left = placement.xPx() + border;
+            int top = placement.yPx() + border;
+            int rightExclusive = placement.xPx() + placement.widthPx() - border;
+            int bottomExclusive = placement.yPx() + placement.heightPx() - border;
+            for (int y = top; y < bottomExclusive; y++) {
+                for (int x = left; x < rightExclusive; x++) {
+                    if (insidePreservedFinderCorner(
+                            x,
+                            y,
+                            left,
+                            top,
+                            rightExclusive,
+                            bottomExclusive,
+                            preservedCornerPx
+                    )) {
+                        continue;
+                    }
+                    image.setRGB(x, y, ((x + y) & 0x20) == 0 ? 0xFFFFFFFF : 0xFFE8E8E8);
+                }
+            }
+        }
+    }
+
+    private static boolean insidePreservedFinderCorner(
+            int x,
+            int y,
+            int left,
+            int top,
+            int rightExclusive,
+            int bottomExclusive,
+            int preservedCornerPx
+    ) {
+        boolean leftCorner = x - left < preservedCornerPx;
+        boolean rightCorner = rightExclusive - x <= preservedCornerPx;
+        boolean topCorner = y - top < preservedCornerPx;
+        boolean bottomCorner = bottomExclusive - y <= preservedCornerPx;
+        return (leftCorner || rightCorner) && (topCorner || bottomCorner);
+    }
+
+    private static BufferedImage skewedBlurredMonitorImage(RenderedFrame frame) {
+        BufferedImage frameImage = boxBlurredImage(colorShiftedImage(frame, 22));
+        BufferedImage canvas = monitorCanvas();
+        Graphics2D graphics = canvas.createGraphics();
+        try {
+            graphics.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BILINEAR);
+            graphics.drawImage(frameImage, new AffineTransform(
+                    1.0d,
+                    0.035d,
+                    -0.075d,
+                    1.0d,
+                    260.0d,
+                    150.0d
+            ), null);
         } finally {
             graphics.dispose();
         }
@@ -691,6 +894,62 @@ final class CaptureMediaCorpusFixtures {
         return image;
     }
 
+    private static BufferedImage repeatedGridWithoutJabImage() {
+        BufferedImage image = monitorCanvas();
+        Graphics2D graphics = image.createGraphics();
+        try {
+            int left = 260;
+            int top = 180;
+            int cellSize = 42;
+            int rows = 12;
+            int cols = 20;
+            int[] colors = {
+                    0xFFEF4444,
+                    0xFF22C55E,
+                    0xFF3B82F6,
+                    0xFFEAB308,
+                    0xFF14B8A6,
+                    0xFF94A3B8
+            };
+            graphics.setColor(new Color(0xFF101820, true));
+            graphics.fillRect(left - 18, top - 18, (cols * cellSize) + 36, (rows * cellSize) + 36);
+            for (int row = 0; row < rows; row++) {
+                for (int col = 0; col < cols; col++) {
+                    graphics.setColor(new Color(colors[(row + (col * 2)) % colors.length], true));
+                    graphics.fillRect(left + (col * cellSize), top + (row * cellSize), cellSize - 6, cellSize - 6);
+                }
+            }
+        } finally {
+            graphics.dispose();
+        }
+        return image;
+    }
+
+    private static BufferedImage syncLikeStripesWithoutJabImage() {
+        BufferedImage image = monitorCanvas();
+        Graphics2D graphics = image.createGraphics();
+        try {
+            int left = 230;
+            int top = 220;
+            int width = 1200;
+            int height = 420;
+            graphics.setColor(new Color(0xFF0F172A, true));
+            graphics.fillRect(left, top, width, height);
+            for (int row = 0; row < 7; row++) {
+                int stripeTop = top + 40 + (row * 46);
+                for (int col = 0; col < 60; col++) {
+                    graphics.setColor(new Color(col % 2 == 0 ? 0xFFE5E7EB : 0xFF111827, true));
+                    graphics.fillRect(left + 32 + (col * 18), stripeTop, 12, 18);
+                }
+            }
+            graphics.setColor(new Color(0xFF64748B, true));
+            graphics.fillRect(left + 32, top + height - 70, width - 64, 16);
+        } finally {
+            graphics.dispose();
+        }
+        return image;
+    }
+
     private static BufferedImage partialCroppedFrameImage(RenderedFrame frame) {
         BufferedImage frameImage = toImage(frame);
         int canvasWidth = 900;
@@ -705,6 +964,64 @@ final class CaptureMediaCorpusFixtures {
             graphics.dispose();
         }
         return image;
+    }
+
+    private static BufferedImage ambiguousMultiSymbolImage(RenderedFrame frame) {
+        BufferedImage frameImage = toImage(frame);
+        int gap = 80;
+        int insetX = 80;
+        int insetY = 60;
+        int canvasWidth = (2 * frame.widthPixels()) + (2 * insetX) + gap;
+        int canvasHeight = frame.heightPixels() + (2 * insetY);
+        BufferedImage canvas = new BufferedImage(canvasWidth, canvasHeight, BufferedImage.TYPE_INT_ARGB);
+        Graphics2D graphics = canvas.createGraphics();
+        try {
+            graphics.setColor(new Color(0xFF303840, true));
+            graphics.fillRect(0, 0, canvasWidth, canvasHeight);
+            graphics.drawImage(frameImage, insetX, insetY, null);
+            graphics.drawImage(frameImage, insetX + frame.widthPixels() + gap, insetY, null);
+        } finally {
+            graphics.dispose();
+        }
+        return canvas;
+    }
+
+    private static BufferedImage locallyDistortedFrameImage(RenderedFrame frame) {
+        BufferedImage source = toImage(frame);
+        BufferedImage distorted = new BufferedImage(frame.widthPixels(), frame.heightPixels(), BufferedImage.TYPE_INT_ARGB);
+        int stableTop = CAPTURE_LAYOUT.outerMarginPx()
+                + CAPTURE_LAYOUT.topSyncBandPx()
+                + CAPTURE_LAYOUT.metadataBandPx();
+        for (int y = 0; y < distorted.getHeight(); y++) {
+            for (int x = 0; x < distorted.getWidth(); x++) {
+                if (y < stableTop) {
+                    distorted.setRGB(x, y, source.getRGB(x, y));
+                    continue;
+                }
+                double edgeFalloff = edgeFalloff(x, y, distorted.getWidth(), distorted.getHeight());
+                double verticalBand = Math.sin(((double) x / distorted.getWidth()) * Math.PI * 3.0d);
+                double horizontalBand = Math.sin(((double) y / distorted.getHeight()) * Math.PI * 2.0d);
+                double tileAreaWeight = Math.min(1.0d, Math.max(0.0d, ((double) y - stableTop) / 160.0d));
+                int sourceX = clamp((int) Math.round(x - (edgeFalloff * tileAreaWeight * 7.0d * verticalBand)),
+                        0,
+                        source.getWidth() - 1);
+                int sourceY = clamp((int) Math.round(y - (edgeFalloff * tileAreaWeight * 4.0d * horizontalBand)),
+                        0,
+                        source.getHeight() - 1);
+                distorted.setRGB(x, y, source.getRGB(sourceX, sourceY));
+            }
+        }
+        return distorted;
+    }
+
+    private static double edgeFalloff(int x, int y, int width, int height) {
+        double horizontal = Math.min(x, width - 1 - x) / (double) Math.max(1, width - 1);
+        double vertical = Math.min(y, height - 1 - y) / (double) Math.max(1, height - 1);
+        return Math.min(1.0d, Math.min(horizontal, vertical) * 10.0d);
+    }
+
+    private static int clamp(int value, int minimum, int maximum) {
+        return Math.max(minimum, Math.min(maximum, value));
     }
 
     private static BufferedImage monitorCanvas() {
@@ -727,12 +1044,27 @@ final class CaptureMediaCorpusFixtures {
 
     private static BufferedImage colorShiftedImage(RenderedFrame frame, int colorShift) {
         BufferedImage image = toImage(frame);
+        return colorShiftedImage(image, colorShift);
+    }
+
+    private static BufferedImage colorShiftedImage(BufferedImage image, int colorShift) {
         for (int y = 0; y < image.getHeight(); y++) {
             for (int x = 0; x < image.getWidth(); x++) {
                 image.setRGB(x, y, shiftPaletteColor(image.getRGB(x, y), colorShift));
             }
         }
         return image;
+    }
+
+    private static BufferedImage boxBlurredImage(BufferedImage image) {
+        float weight = 1.0f / 9.0f;
+        float[] weights = {
+                weight, weight, weight,
+                weight, weight, weight,
+                weight, weight, weight
+        };
+        BufferedImage blurred = new BufferedImage(image.getWidth(), image.getHeight(), BufferedImage.TYPE_INT_ARGB);
+        return new ConvolveOp(new Kernel(3, 3, weights), ConvolveOp.EDGE_NO_OP, null).filter(image, blurred);
     }
 
     private static int shiftPaletteColor(int argb, int colorShift) {

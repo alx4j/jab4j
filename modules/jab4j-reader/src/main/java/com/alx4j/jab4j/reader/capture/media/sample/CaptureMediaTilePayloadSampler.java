@@ -11,7 +11,6 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.OptionalInt;
 import com.alx4j.jab4j.api.model.LayoutProfile;
-import com.alx4j.jab4j.api.model.PayloadKind;
 import com.alx4j.jab4j.api.model.TilePayload;
 import com.alx4j.jab4j.reader.capture.media.CaptureMediaDiagnostic;
 import com.alx4j.jab4j.reader.capture.media.CaptureMediaDiagnosticCode;
@@ -20,19 +19,22 @@ import com.alx4j.jab4j.reader.capture.media.cv.CvGridPhase;
 import com.alx4j.jab4j.reader.capture.media.cv.CvSamplingEvidence;
 import com.alx4j.jab4j.reader.capture.media.cv.CvSamplingEvidenceProvider;
 import com.alx4j.jab4j.reader.capture.media.cv.CvTileSamplingEvidence;
+import com.alx4j.jab4j.reader.capture.media.geometry.SupportedTileFinderEvaluator;
+import com.alx4j.jab4j.reader.capture.media.geometry.SupportedTileFinderEvaluator.Evaluation;
+import com.alx4j.jab4j.reader.capture.media.geometry.SupportedTileFinderEvaluator.FinderWindow;
 import com.alx4j.jab4j.reader.capture.media.normalize.NormalizedCaptureFrame;
+import com.alx4j.jab4j.reader.capture.media.sample.CaptureMediaLogicalTileValidator.FailureStage;
+import com.alx4j.jab4j.reader.capture.media.sample.CaptureMediaLogicalTileValidator.ValidationAttempt;
 import com.alx4j.jab4j.reader.capture.qualify.CaptureRenderedLayoutCatalog;
 import com.alx4j.jab4j.render.layout.FixedLayoutPlan;
 import com.alx4j.jab4j.render.layout.FixedLayoutPlanner;
 import com.alx4j.jab4j.render.layout.TilePlacement;
 import com.alx4j.jab4j.tile.LogicalTile;
-import com.alx4j.jab4j.tile.TileCodecException;
 import com.alx4j.jab4j.tile.TileCodecProfile;
 import com.alx4j.jab4j.tile.TileCodecProfiles;
 import com.alx4j.jab4j.tile.TileCodecs;
 import com.alx4j.jab4j.tile.TileDecoder;
 import com.alx4j.jab4j.transfer.TilePayloadEnvelopeCodec;
-import com.alx4j.jab4j.transfer.TransportException;
 
 /**
  * Samples normalized media frames with bounded palette tolerance and accepts content only after tile and envelope
@@ -47,7 +49,6 @@ public final class CaptureMediaTilePayloadSampler {
     private static final int BLACK_INDEX = 0;
     private static final int WHITE_INDEX = 7;
     private static final int MIN_MODULE_SIZE_PX = 4;
-    private static final int SUPPORTED_PROTOCOL_COMPATIBILITY_VERSION = 1;
     private static final double MAX_RGB_DISTANCE = Math.sqrt(3.0d * 255.0d * 255.0d);
     private static final double CAMERA_MAX_ACCEPTED_RGB_DISTANCE = 170.0d;
     private static final double CAMERA_MAX_SPARSE_REJECTED_RGB_DISTANCE = 224.0d;
@@ -74,20 +75,16 @@ public final class CaptureMediaTilePayloadSampler {
     private static final double MIN_SAMPLING_EVIDENCE_CONFIDENCE = 0.55d;
     private static final int MAX_EVIDENCE_MODULE_CENTER_OFFSET_PX = 8;
     private static final int MAX_AREA_SAMPLE_RADIUS_PX = 3;
-    private static final int FINDER_SIZE_MODULES = 3;
-    private static final int CAMERA_MIN_RECOVERABLE_FINDER_COUNT = 3;
-    private static final int CAMERA_MIN_MATCHES_PER_RECOVERABLE_FINDER = 6;
-    private static final double MIN_CAMERA_FALLBACK_RECOVERABLE_FINDER_AVERAGE_CONFIDENCE = 0.30d;
     private static final double MAX_PROPORTIONAL_LAYOUT_SCALE_ERROR = 0.01d;
     private static final int MAX_PHASE_VARIANT_COUNT = 64;
+    private static final SupportedTileFinderEvaluator TILE_FINDER_EVALUATOR = new SupportedTileFinderEvaluator();
 
     private final CaptureMediaPaletteSampler paletteSampler;
     private final List<Integer> paletteArgb;
     private final CaptureRenderedLayoutCatalog layoutCatalog;
     private final FixedLayoutPlanner layoutPlanner;
-    private final TileDecoder tileDecoder;
     private final TileCodecProfile tileCodecProfile;
-    private final TilePayloadEnvelopeCodec envelopeCodec;
+    private final CaptureMediaLogicalTileValidator logicalTileValidator;
     private final CvSamplingEvidenceProvider samplingEvidenceProvider;
     private final CaptureMediaModulePhaseSearch modulePhaseSearch;
 
@@ -201,9 +198,15 @@ public final class CaptureMediaTilePayloadSampler {
         this.paletteArgb = this.paletteSampler.paletteArgb();
         this.layoutCatalog = Objects.requireNonNull(layoutCatalog, "layoutCatalog must not be null");
         this.layoutPlanner = Objects.requireNonNull(layoutPlanner, "layoutPlanner must not be null");
-        this.tileDecoder = Objects.requireNonNull(tileDecoder, "tileDecoder must not be null");
+        TileDecoder retainedTileDecoder = Objects.requireNonNull(tileDecoder, "tileDecoder must not be null");
         this.tileCodecProfile = Objects.requireNonNull(tileCodecProfile, "tileCodecProfile must not be null");
-        this.envelopeCodec = Objects.requireNonNull(envelopeCodec, "envelopeCodec must not be null");
+        TilePayloadEnvelopeCodec retainedEnvelopeCodec =
+                Objects.requireNonNull(envelopeCodec, "envelopeCodec must not be null");
+        this.logicalTileValidator = new CaptureMediaLogicalTileValidator(
+                retainedTileDecoder,
+                this.tileCodecProfile,
+                retainedEnvelopeCodec
+        );
         this.samplingEvidenceProvider = Objects.requireNonNull(
                 samplingEvidenceProvider,
                 "samplingEvidenceProvider must not be null"
@@ -1493,7 +1496,7 @@ public final class CaptureMediaTilePayloadSampler {
         return new PhaseAttemptEvaluation(phaseAttempt, sample, decodeAttempt);
     }
 
-    private CaptureMediaModulePhaseOutcome phaseOutcome(PostPaletteFailureStage failureStage) {
+    private CaptureMediaModulePhaseOutcome phaseOutcome(FailureStage failureStage) {
         return switch (failureStage) {
             case TILE_DECODE -> CaptureMediaModulePhaseOutcome.TILE_DECODE_FAILURE;
             case ENVELOPE_VALIDATION -> CaptureMediaModulePhaseOutcome.ENVELOPE_VALIDATION_FAILURE;
@@ -1605,7 +1608,7 @@ public final class CaptureMediaTilePayloadSampler {
             return CandidateSample.rejected(summary, geometry);
         }
         boolean cameraDerivedCandidate = cameraDerived(frame);
-        FinderPatternSummary finderSummary = finderPatternSummary(moduleColors, dimension);
+        Evaluation finderSummary = TILE_FINDER_EVALUATOR.evaluate(moduleColors, dimension);
         if (!finderSummary.supported(cameraDerivedCandidate)) {
             return CandidateSample.noFinder(
                     Optional.of(summary),
@@ -1668,7 +1671,7 @@ public final class CaptureMediaTilePayloadSampler {
 
     private boolean credibleRecoverableFinderCandidate(
             boolean cameraDerivedCandidate,
-            FinderPatternSummary finderSummary,
+            Evaluation finderSummary,
             PaletteConfidenceSummary summary,
             CandidateSamplingGeometry geometry
     ) {
@@ -1677,7 +1680,7 @@ public final class CaptureMediaTilePayloadSampler {
                 || geometry.moduleSamplingOffsetSource() != ModuleSamplingInspectionSource.FALLBACK_SEARCH) {
             return true;
         }
-        return summary.averageConfidence() >= MIN_CAMERA_FALLBACK_RECOVERABLE_FINDER_AVERAGE_CONFIDENCE;
+        return finderSummary.recoverableWithAverageConfidence(summary.averageConfidence());
     }
 
     private byte[] moduleColorBytes(List<Integer> moduleColors) {
@@ -2128,52 +2131,29 @@ public final class CaptureMediaTilePayloadSampler {
             List<CaptureMediaPaletteCalibrationSample> references
     ) {
         int dimension = geometry.dimension();
-        addFinderCalibrationReferences(frame, placement, geometry, 0, 0, BLACK_INDEX, references);
-        addFinderCalibrationReferences(
-                frame,
-                placement,
-                geometry,
-                0,
-                dimension - FINDER_SIZE_MODULES,
-                BLACK_INDEX,
-                references
-        );
-        addFinderCalibrationReferences(
-                frame,
-                placement,
-                geometry,
-                dimension - FINDER_SIZE_MODULES,
-                0,
-                6,
-                references
-        );
-        addFinderCalibrationReferences(
-                frame,
-                placement,
-                geometry,
-                dimension - FINDER_SIZE_MODULES,
-                dimension - FINDER_SIZE_MODULES,
-                3,
-                references
-        );
+        for (FinderWindow finderWindow : TILE_FINDER_EVALUATOR.finderWindows(dimension)) {
+            addFinderCalibrationReferences(frame, placement, geometry, finderWindow, references);
+        }
     }
 
     private void addFinderCalibrationReferences(
             NormalizedCaptureFrame frame,
             TilePlacement placement,
             CandidateSamplingGeometry geometry,
-            int startRow,
-            int startCol,
-            int expectedIndex,
+            FinderWindow finderWindow,
             List<CaptureMediaPaletteCalibrationSample> references
     ) {
-        for (int row = startRow; row < startRow + FINDER_SIZE_MODULES; row++) {
-            for (int col = startCol; col < startCol + FINDER_SIZE_MODULES; col++) {
+        for (int row = finderWindow.startRow();
+                row < finderWindow.startRow() + finderWindow.sizeModules();
+                row++) {
+            for (int col = finderWindow.startCol();
+                    col < finderWindow.startCol() + finderWindow.sizeModules();
+                    col++) {
                 addExpectedCalibrationReference(
                         frame,
                         moduleCenterY(placement, geometry, row),
                         moduleCenterX(placement, geometry, col),
-                        expectedIndex,
+                        finderWindow.expectedColor(),
                         references
                 );
             }
@@ -2454,174 +2434,37 @@ public final class CaptureMediaTilePayloadSampler {
         return "%.6f".formatted(value);
     }
 
-    private FinderPatternSummary finderPatternSummary(List<Integer> moduleColors, int dimension) {
-        FinderMatch topLeft = finderMatch(moduleColors, dimension, 0, 0, 0);
-        FinderMatch topRight = finderMatch(moduleColors, dimension, 0, dimension - FINDER_SIZE_MODULES, 0);
-        FinderMatch bottomLeft = finderMatch(moduleColors, dimension, dimension - FINDER_SIZE_MODULES, 0, 6);
-        FinderMatch bottomRight = finderMatch(
-                moduleColors,
-                dimension,
-                dimension - FINDER_SIZE_MODULES,
-                dimension - FINDER_SIZE_MODULES,
-                3
-        );
-        return new FinderPatternSummary(topLeft, topRight, bottomLeft, bottomRight);
-    }
-
-    private FinderMatch finderMatch(
-            List<Integer> moduleColors,
-            int dimension,
-            int startRow,
-            int startCol,
-            int expectedColor
-    ) {
-        int matches = 0;
-        for (int row = startRow; row < startRow + 3; row++) {
-            for (int col = startCol; col < startCol + 3; col++) {
-                if (moduleColors.get((row * dimension) + col) == expectedColor) {
-                    matches++;
-                }
-            }
-        }
-        return new FinderMatch(matches);
-    }
-
     private DecodeAttempt decodeAttempt(FixedLayoutPlan layoutPlan, int tileIndex, LogicalTile candidate) {
-        try {
-            byte[] envelope = tileDecoder.decode(candidate, tileCodecProfile);
-            TilePayload payload = envelopeCodec.parse(envelope, SUPPORTED_PROTOCOL_COMPATIBILITY_VERSION);
-            SlotValidationResult slotValidation = slotValidationResult(layoutPlan, tileIndex, payload);
-            return slotValidation.rejectionReason()
-                    .map(reason -> DecodeAttempt.rejected(
-                            PostPaletteFailureStage.SLOT_VALIDATION,
-                            reason,
-                            slotValidation.diagnostics()
-                    ))
-                    .orElseGet(() -> DecodeAttempt.accepted(payload));
-        } catch (TileCodecException exception) {
-            String reason = "tileDecode: " + exception.getMessage();
-            return DecodeAttempt.rejected(
-                    PostPaletteFailureStage.TILE_DECODE,
-                    reason,
-                    CaptureMediaTileDecodeDiagnostics.inspect(candidate, tileCodecProfile, Optional.of(reason))
-            );
-        } catch (TransportException exception) {
-            return DecodeAttempt.rejected(
-                    PostPaletteFailureStage.ENVELOPE_VALIDATION,
-                    "envelopeValidation: " + exception.getMessage(),
-                    Map.of(
-                            "envelopeValidation.stage", "ENVELOPE_VALIDATION",
-                            "envelopeValidation.reason", exception.getMessage()
-                    )
-            );
-        } catch (RuntimeException exception) {
-            return DecodeAttempt.rejected(
-                    PostPaletteFailureStage.UNEXPECTED,
-                    "unexpected: " + exception.getClass().getSimpleName(),
-                    Map.of(
-                            "tileDecode.unexpectedStage", "UNEXPECTED",
-                            "tileDecode.unexpectedExceptionClass", exception.getClass().getSimpleName()
-                    )
-            );
-        }
-    }
-
-    private boolean validPayloadForSlot(FixedLayoutPlan layoutPlan, int tileIndex, TilePayload payload) {
-        return slotValidationResult(layoutPlan, tileIndex, payload).isAccepted();
-    }
-
-    private SlotValidationResult slotValidationResult(FixedLayoutPlan layoutPlan, int tileIndex, TilePayload payload) {
-        String expectedLayoutProfileId = layoutPlan.profile().profileId();
-        int expectedTotalTiles = layoutPlan.profile().rows() * layoutPlan.profile().cols();
-        Map<String, String> diagnostics = slotValidationDiagnostics(
-                expectedLayoutProfileId,
-                payload.layoutProfileId(),
-                tileIndex,
-                payload.tileIndex().value(),
-                expectedTotalTiles,
-                payload.totalTilesInFrame()
-        );
-        if (!expectedLayoutProfileId.equals(payload.layoutProfileId())) {
-            return SlotValidationResult.rejected(
-                    "slotValidation: layout profile mismatch expected "
-                            + expectedLayoutProfileId
-                            + " actual "
-                            + payload.layoutProfileId(),
-                    diagnostics
-            );
-        }
-        if (payload.tileIndex().value() != tileIndex) {
-            return SlotValidationResult.rejected(
-                    "slotValidation: tile index mismatch expected "
-                            + tileIndex
-                            + " actual "
-                            + payload.tileIndex().value(),
-                    diagnostics
-            );
-        }
-        if (payload.totalTilesInFrame() != expectedTotalTiles) {
-            return SlotValidationResult.rejected(
-                    "slotValidation: total tile count mismatch expected "
-                            + expectedTotalTiles
-                            + " actual "
-                            + payload.totalTilesInFrame(),
-                    diagnostics
-            );
-        }
-        if (payload.payloadKind() == PayloadKind.SESSION_END && payload.body().length == 0) {
-            return SlotValidationResult.rejected("slotValidation: empty session-end payload body", diagnostics);
-        }
-        return SlotValidationResult.accepted();
-    }
-
-    private Map<String, String> slotValidationDiagnostics(
-            String expectedLayoutProfileId,
-            String actualLayoutProfileId,
-            int expectedTileIndex,
-            int actualTileIndex,
-            int expectedTotalTiles,
-            int actualTotalTiles
-    ) {
-        Map<String, String> diagnostics = new LinkedHashMap<>();
-        diagnostics.put("slotValidation.stage", "SLOT_VALIDATION");
-        diagnostics.put("slotValidation.expectedLayoutProfileId", expectedLayoutProfileId);
-        diagnostics.put("slotValidation.actualLayoutProfileId", actualLayoutProfileId);
-        diagnostics.put("slotValidation.layoutProfileMismatch",
-                Boolean.toString(!expectedLayoutProfileId.equals(actualLayoutProfileId)));
-        diagnostics.put("slotValidation.expectedTileIndex", Integer.toString(expectedTileIndex));
-        diagnostics.put("slotValidation.actualTileIndex", Integer.toString(actualTileIndex));
-        diagnostics.put("slotValidation.tileIndexMismatch", Boolean.toString(expectedTileIndex != actualTileIndex));
-        diagnostics.put("slotValidation.expectedTotalTiles", Integer.toString(expectedTotalTiles));
-        diagnostics.put("slotValidation.actualTotalTiles", Integer.toString(actualTotalTiles));
-        diagnostics.put("slotValidation.totalTilesMismatch", Boolean.toString(expectedTotalTiles != actualTotalTiles));
-        return Map.copyOf(diagnostics);
+        ValidationAttempt attempt = logicalTileValidator.validate(layoutPlan, tileIndex, candidate);
+        return attempt.payload()
+                .map(DecodeAttempt::accepted)
+                .orElseGet(() -> DecodeAttempt.rejected(
+                        attempt.failureStage().orElseThrow(),
+                        attempt.rejectionReason().orElseThrow(),
+                        attempt.diagnostics()
+                ));
     }
 
     private List<Integer> canonicalizedFinderPatterns(List<Integer> moduleColors, int dimension) {
         List<Integer> canonicalized = new ArrayList<>(moduleColors);
-        canonicalizeFinderPattern(canonicalized, dimension, 0, 0, 0);
-        canonicalizeFinderPattern(canonicalized, dimension, 0, dimension - FINDER_SIZE_MODULES, 0);
-        canonicalizeFinderPattern(canonicalized, dimension, dimension - FINDER_SIZE_MODULES, 0, 6);
-        canonicalizeFinderPattern(
-                canonicalized,
-                dimension,
-                dimension - FINDER_SIZE_MODULES,
-                dimension - FINDER_SIZE_MODULES,
-                3
-        );
+        for (FinderWindow finderWindow : TILE_FINDER_EVALUATOR.finderWindows(dimension)) {
+            canonicalizeFinderPattern(canonicalized, dimension, finderWindow);
+        }
         return List.copyOf(canonicalized);
     }
 
     private void canonicalizeFinderPattern(
             List<Integer> moduleColors,
             int dimension,
-            int startRow,
-            int startCol,
-            int expectedColor
+            FinderWindow finderWindow
     ) {
-        for (int row = startRow; row < startRow + FINDER_SIZE_MODULES; row++) {
-            for (int col = startCol; col < startCol + FINDER_SIZE_MODULES; col++) {
-                moduleColors.set((row * dimension) + col, expectedColor);
+        for (int row = finderWindow.startRow();
+                row < finderWindow.startRow() + finderWindow.sizeModules();
+                row++) {
+            for (int col = finderWindow.startCol();
+                    col < finderWindow.startCol() + finderWindow.sizeModules();
+                    col++) {
+                moduleColors.set((row * dimension) + col, finderWindow.expectedColor());
             }
         }
     }
@@ -2645,7 +2488,7 @@ public final class CaptureMediaTilePayloadSampler {
             NormalizedCaptureFrame frame,
             CaptureMediaDiagnosticSeverity severity,
             PaletteConfidenceSummary confidence,
-            PostPaletteFailureStage failureStage,
+            FailureStage failureStage,
             int rejectedAttemptCount
     ) {
         Objects.requireNonNull(failureStage, "failureStage must not be null");
@@ -2701,7 +2544,7 @@ public final class CaptureMediaTilePayloadSampler {
         return Map.copyOf(values);
     }
 
-    private String postPaletteFailureDescription(PostPaletteFailureStage failureStage) {
+    private String postPaletteFailureDescription(FailureStage failureStage) {
         return switch (failureStage) {
             case TILE_DECODE -> "tile decode validation";
             case ENVELOPE_VALIDATION -> "envelope parse or CRC validation";
@@ -3574,18 +3417,11 @@ public final class CaptureMediaTilePayloadSampler {
         DECODED
     }
 
-    private enum PostPaletteFailureStage {
-        TILE_DECODE,
-        ENVELOPE_VALIDATION,
-        SLOT_VALIDATION,
-        UNEXPECTED
-    }
-
     private record SlotSample(
             SlotSampleStatus status,
             Optional<TilePayload> payload,
             Optional<PaletteConfidenceSummary> paletteConfidence,
-            Optional<PostPaletteFailureStage> postPaletteFailureStage,
+            Optional<FailureStage> postPaletteFailureStage,
             int postPaletteRejectedAttemptCount
     ) {
 
@@ -3639,7 +3475,7 @@ public final class CaptureMediaTilePayloadSampler {
 
         private static SlotSample undecodable(
                 Optional<PaletteConfidenceSummary> confidence,
-                Optional<PostPaletteFailureStage> postPaletteFailureStage,
+                Optional<FailureStage> postPaletteFailureStage,
                 int postPaletteRejectedAttemptCount
         ) {
             return new SlotSample(
@@ -3814,53 +3650,9 @@ public final class CaptureMediaTilePayloadSampler {
         }
     }
 
-    private record FinderMatch(int matchedModules) {
-
-        private boolean exact() {
-            return matchedModules == FINDER_SIZE_MODULES * FINDER_SIZE_MODULES;
-        }
-
-        private boolean recoverable() {
-            return matchedModules >= CAMERA_MIN_MATCHES_PER_RECOVERABLE_FINDER;
-        }
-    }
-
-    private record FinderPatternSummary(
-            FinderMatch topLeft,
-            FinderMatch topRight,
-            FinderMatch bottomLeft,
-            FinderMatch bottomRight
-    ) {
-
-        private FinderPatternSummary {
-            Objects.requireNonNull(topLeft, "topLeft must not be null");
-            Objects.requireNonNull(topRight, "topRight must not be null");
-            Objects.requireNonNull(bottomLeft, "bottomLeft must not be null");
-            Objects.requireNonNull(bottomRight, "bottomRight must not be null");
-        }
-
-        private boolean exact() {
-            return topLeft.exact() && topRight.exact() && bottomLeft.exact() && bottomRight.exact();
-        }
-
-        private boolean supported(boolean cameraDerived) {
-            return exact()
-                    || (cameraDerived && recoverableCount() >= CAMERA_MIN_RECOVERABLE_FINDER_COUNT);
-        }
-
-        private int recoverableCount() {
-            int count = 0;
-            count += topLeft.recoverable() ? 1 : 0;
-            count += topRight.recoverable() ? 1 : 0;
-            count += bottomLeft.recoverable() ? 1 : 0;
-            count += bottomRight.recoverable() ? 1 : 0;
-            return count;
-        }
-    }
-
     private record DecodeAttempt(
             Optional<TilePayload> payload,
-            Optional<PostPaletteFailureStage> failureStage,
+            Optional<FailureStage> failureStage,
             Optional<String> rejectionReason,
             Map<String, String> diagnostics
     ) {
@@ -3888,7 +3680,7 @@ public final class CaptureMediaTilePayloadSampler {
         }
 
         private static DecodeAttempt rejected(
-                PostPaletteFailureStage failureStage,
+                FailureStage failureStage,
                 String reason,
                 Map<String, String> diagnostics
         ) {
@@ -3903,26 +3695,6 @@ public final class CaptureMediaTilePayloadSampler {
                     Optional.of(reason),
                     enrichedDiagnostics
             );
-        }
-    }
-
-    private record SlotValidationResult(Optional<String> rejectionReason, Map<String, String> diagnostics) {
-
-        private SlotValidationResult {
-            Objects.requireNonNull(rejectionReason, "rejectionReason must not be null");
-            diagnostics = Map.copyOf(Objects.requireNonNull(diagnostics, "diagnostics must not be null"));
-        }
-
-        private static SlotValidationResult accepted() {
-            return new SlotValidationResult(Optional.empty(), Map.of());
-        }
-
-        private static SlotValidationResult rejected(String reason, Map<String, String> diagnostics) {
-            return new SlotValidationResult(Optional.of(reason), diagnostics);
-        }
-
-        private boolean isAccepted() {
-            return rejectionReason.isEmpty();
         }
     }
 

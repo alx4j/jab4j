@@ -87,6 +87,39 @@ class CaptureMediaCorpusFixturesTest {
     }
 
     @Test
+    @DisplayName("Generated MVP-9 positive scaffolding fixtures are readable and stay inside current receiver gates")
+    void generatedMvp9PositiveScaffoldingFixturesAreReadableAndStayInsideCurrentReceiverGates() throws Exception {
+        GeneratedCaptureMediaFixture invalidPayload =
+                CaptureMediaCorpusFixtures.generatedCameraLikeMonitorInvalidPayloadPng(tempDir);
+        GeneratedCaptureMediaFixture skewed = CaptureMediaCorpusFixtures.generatedSkewedBlurredMonitorPng(tempDir);
+        CaptureMediaFrameNormalizer normalizer = new CaptureMediaFrameNormalizer();
+
+        MediaNormalizationResult invalidPayloadNormalization =
+                normalizer.normalize(mediaInputFrame(invalidPayload.mediaFiles().get(0), "png"));
+        MediaNormalizationResult skewedNormalization =
+                normalizer.normalize(mediaInputFrame(skewed.mediaFiles().get(0), "png"));
+        CaptureMediaReceiverResult invalidPayloadResult = new CaptureMediaReceiverService().evaluate(
+                CaptureMediaReceiverRequest.evaluateStillImages(List.of(invalidPayload.mediaDirectory()))
+        );
+
+        assertAll(
+                () -> assertEquals(CaptureMediaCorpusFixtures.GENERATED_CAMERA_LIKE_MONITOR_INVALID_PAYLOAD_PNG,
+                        invalidPayload.scenarioId()),
+                () -> assertEquals(CaptureMediaCorpusFixtures.GENERATED_SKEWED_BLURRED_MONITOR_PNG,
+                        skewed.scenarioId()),
+                () -> assertNotNull(ImageIO.read(invalidPayload.mediaFiles().get(0).toFile())),
+                () -> assertNotNull(ImageIO.read(skewed.mediaFiles().get(0).toFile())),
+                () -> assertTrue(invalidPayloadNormalization.accepted(),
+                        () -> invalidPayloadNormalization.diagnostics().toString()),
+                () -> assertTrue(skewedNormalization.accepted() || !skewedNormalization.diagnostics().isEmpty()),
+                () -> assertFalse(invalidPayloadResult.restored()),
+                () -> assertFalse(invalidPayloadResult.eligibleForRestore()),
+                () -> assertEquals(0, invalidPayloadResult.summary().recoveredUniqueFrameCount()),
+                () -> assertEquals(0, invalidPayloadResult.summary().decodedTileCount())
+        );
+    }
+
+    @Test
     @DisplayName("Generated video-frame scenarios model duplicates and missing unique frames")
     void generatedVideoFrameScenariosModelDuplicatesAndMissingUniqueFrames() throws Exception {
         GeneratedCaptureMediaFixture duplicate = CaptureMediaCorpusFixtures.duplicateFrames(tempDir);
@@ -313,6 +346,7 @@ class CaptureMediaCorpusFixturesTest {
         GeneratedCaptureMediaFixture corrupted = CaptureMediaCorpusFixtures.corruptedUnreadableImage(tempDir);
         GeneratedCaptureMediaFixture video = CaptureMediaCorpusFixtures.futureDirectVideoPlaceholders(tempDir);
         PlannedCaptureMediaScenario external = CaptureMediaCorpusFixtures.externalIphoneStillsScenario();
+        GeneratedCaptureMediaFixture localDistortion = CaptureMediaCorpusFixtures.generatedLocalDistortionPng(tempDir);
 
         assertAll(
                 () -> assertEquals(CaptureMediaCorpusFixtures.NO_JAB_FRAME, noJabFrame.scenarioId()),
@@ -329,16 +363,22 @@ class CaptureMediaCorpusFixturesTest {
                 () -> assertTrue(video.mediaFiles().stream().anyMatch(path -> path.getFileName().toString().endsWith(".mov"))),
                 () -> assertTrue(video.mediaFiles().stream().anyMatch(path -> path.getFileName().toString().endsWith(".mp4"))),
                 () -> assertEquals(CaptureMediaCorpusFixtures.EXTERNAL_IPHONE_STILLS, external.scenarioId()),
-                () -> assertEquals("external_private", external.assetAvailability())
+                () -> assertEquals("external_private", external.assetAvailability()),
+                () -> assertEquals(CaptureMediaCorpusFixtures.GENERATED_LOCAL_DISTORTION_PNG,
+                        localDistortion.scenarioId()),
+                () -> assertNotNull(ImageIO.read(localDistortion.mediaFiles().get(0).toFile())),
+                () -> assertEquals(1, localDistortion.expectedUniqueFrameCount())
         );
     }
 
     @Test
-    @DisplayName("Generated false-positive fixtures remain rejected by media normalization")
-    void generatedFalsePositiveFixturesRemainRejectedByMediaNormalization() throws Exception {
+    @DisplayName("Generated false-positive and partial fixtures remain rejected by media normalization")
+    void generatedFalsePositiveAndPartialFixturesRemainRejectedByMediaNormalization() throws Exception {
         GeneratedCaptureMediaFixture brightMonitor = CaptureMediaCorpusFixtures.brightMonitorWithoutJab(tempDir);
         GeneratedCaptureMediaFixture uiChrome = CaptureMediaCorpusFixtures.uiChromeWithoutJab(tempDir);
         GeneratedCaptureMediaFixture stripes = CaptureMediaCorpusFixtures.repeatedStripesWithoutJab(tempDir);
+        GeneratedCaptureMediaFixture grid = CaptureMediaCorpusFixtures.repeatedGridWithoutJab(tempDir);
+        GeneratedCaptureMediaFixture syncLike = CaptureMediaCorpusFixtures.syncLikeStripesWithoutJab(tempDir);
         GeneratedCaptureMediaFixture partial = CaptureMediaCorpusFixtures.partialCroppedFrame(tempDir);
         CaptureMediaFrameNormalizer normalizer = new CaptureMediaFrameNormalizer();
 
@@ -348,6 +388,10 @@ class CaptureMediaCorpusFixturesTest {
                 normalizer.normalize(mediaInputFrame(uiChrome.mediaFiles().get(0), "png"));
         MediaNormalizationResult stripesResult =
                 normalizer.normalize(mediaInputFrame(stripes.mediaFiles().get(0), "png"));
+        MediaNormalizationResult gridResult =
+                normalizer.normalize(mediaInputFrame(grid.mediaFiles().get(0), "png"));
+        MediaNormalizationResult syncLikeResult =
+                normalizer.normalize(mediaInputFrame(syncLike.mediaFiles().get(0), "png"));
         MediaNormalizationResult partialResult =
                 normalizer.normalize(mediaInputFrame(partial.mediaFiles().get(0), "png"));
 
@@ -356,14 +400,20 @@ class CaptureMediaCorpusFixturesTest {
                         brightMonitor.scenarioId()),
                 () -> assertEquals(CaptureMediaCorpusFixtures.UI_CHROME_WITHOUT_JAB, uiChrome.scenarioId()),
                 () -> assertEquals(CaptureMediaCorpusFixtures.REPEATED_STRIPES_WITHOUT_JAB, stripes.scenarioId()),
+                () -> assertEquals(CaptureMediaCorpusFixtures.REPEATED_GRID_WITHOUT_JAB, grid.scenarioId()),
+                () -> assertEquals(CaptureMediaCorpusFixtures.SYNC_LIKE_STRIPES_WITHOUT_JAB, syncLike.scenarioId()),
                 () -> assertEquals(CaptureMediaCorpusFixtures.PARTIAL_CROPPED_FRAME, partial.scenarioId()),
                 () -> assertNotNull(ImageIO.read(brightMonitor.mediaFiles().get(0).toFile())),
                 () -> assertNotNull(ImageIO.read(uiChrome.mediaFiles().get(0).toFile())),
                 () -> assertNotNull(ImageIO.read(stripes.mediaFiles().get(0).toFile())),
+                () -> assertNotNull(ImageIO.read(grid.mediaFiles().get(0).toFile())),
+                () -> assertNotNull(ImageIO.read(syncLike.mediaFiles().get(0).toFile())),
                 () -> assertNotNull(ImageIO.read(partial.mediaFiles().get(0).toFile())),
                 () -> assertFalse(brightResult.accepted()),
                 () -> assertFalse(uiResult.accepted()),
                 () -> assertFalse(stripesResult.accepted()),
+                () -> assertFalse(gridResult.accepted()),
+                () -> assertFalse(syncLikeResult.accepted()),
                 () -> assertFalse(partialResult.accepted()),
                 () -> assertEquals(CaptureMediaDiagnosticCode.SCREEN_OR_FRAME_NOT_FOUND,
                         brightResult.diagnostics().get(0).code()),
@@ -372,7 +422,29 @@ class CaptureMediaCorpusFixturesTest {
                 () -> assertEquals(CaptureMediaDiagnosticCode.SCREEN_OR_FRAME_NOT_FOUND,
                         stripesResult.diagnostics().get(0).code()),
                 () -> assertEquals(CaptureMediaDiagnosticCode.SCREEN_OR_FRAME_NOT_FOUND,
+                        gridResult.diagnostics().get(0).code()),
+                () -> assertEquals(CaptureMediaDiagnosticCode.SCREEN_OR_FRAME_NOT_FOUND,
+                        syncLikeResult.diagnostics().get(0).code()),
+                () -> assertEquals(CaptureMediaDiagnosticCode.SCREEN_OR_FRAME_NOT_FOUND,
                         partialResult.diagnostics().get(0).code())
+        );
+    }
+
+    @Test
+    @DisplayName("Generated MVP-9 ambiguous fixture is readable and does not silently normalize one symbol")
+    void generatedMvp9AmbiguousFixtureIsReadableAndDoesNotSilentlyNormalizeOneSymbol() throws Exception {
+        GeneratedCaptureMediaFixture fixture = CaptureMediaCorpusFixtures.ambiguousMultiSymbolPng(tempDir);
+        CaptureMediaFrameNormalizer normalizer = new CaptureMediaFrameNormalizer();
+
+        MediaNormalizationResult result = normalizer.normalize(mediaInputFrame(fixture.mediaFiles().get(0), "png"));
+
+        assertAll(
+                () -> assertEquals(CaptureMediaCorpusFixtures.AMBIGUOUS_MULTI_SYMBOL_PNG, fixture.scenarioId()),
+                () -> assertNotNull(ImageIO.read(fixture.mediaFiles().get(0).toFile())),
+                () -> assertFalse(result.accepted()),
+                () -> assertEquals(CaptureMediaDiagnosticCode.AMBIGUOUS_SESSIONS,
+                        result.diagnostics().get(0).code()),
+                () -> assertTrue(result.diagnostics().get(0).blocking())
         );
     }
 
