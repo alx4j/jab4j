@@ -3,12 +3,19 @@ package com.alx4j.jab4j.reader.capture.media;
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.awt.image.BufferedImage;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import javax.imageio.ImageIO;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -20,15 +27,21 @@ import com.alx4j.jab4j.api.model.TilePayload;
 import com.alx4j.jab4j.reader.capture.decode.CaptureFrameSetAssembler;
 import com.alx4j.jab4j.reader.capture.media.cv.CvDetectionResult;
 import com.alx4j.jab4j.reader.capture.media.cv.CvNormalizedFrame;
+import com.alx4j.jab4j.reader.capture.media.debug.CaptureMediaCandidateDebugExporter;
 import com.alx4j.jab4j.reader.capture.media.decode.CaptureMediaFrameDecoder;
 import com.alx4j.jab4j.reader.capture.media.input.CaptureMediaInputIntake;
 import com.alx4j.jab4j.reader.capture.media.input.ImageIoCaptureMediaStillImageDecoder;
+import com.alx4j.jab4j.reader.capture.media.input.MediaInputFrame;
+import com.alx4j.jab4j.reader.capture.media.input.RetainedMediaInputFrameBatch;
 import com.alx4j.jab4j.reader.capture.media.normalize.CaptureMediaFrameNormalizer;
 import com.alx4j.jab4j.reader.capture.media.normalize.FrameCorners;
+import com.alx4j.jab4j.reader.capture.media.normalize.NormalizedCaptureFrame;
 import com.alx4j.jab4j.reader.capture.media.quality.CaptureMediaQualityMetrics;
 import com.alx4j.jab4j.reader.capture.media.video.CaptureMediaVideoFrameSourceAdapter;
 import com.alx4j.jab4j.reader.capture.media.video.CaptureMediaVideoLimits;
+import com.alx4j.jab4j.reader.capture.qualify.CaptureRenderedLayoutCatalog;
 import com.alx4j.jab4j.reader.restore.ReaderRestoreService;
+import com.alx4j.jab4j.render.layout.FixedLayoutPlanner;
 
 @DisplayName("Capture media receiver service")
 class CaptureMediaReceiverServiceTest {
@@ -47,6 +60,8 @@ class CaptureMediaReceiverServiceTest {
             "black",
             "preserveAspect"
     );
+    private static final int SOURCE_PROBE_PIXEL = 0xFF123456;
+    private static final int NORMALIZED_PROBE_PIXEL = 0xFF010203;
 
     private final CaptureMediaReceiverService service = new CaptureMediaReceiverService();
 
@@ -269,8 +284,167 @@ class CaptureMediaReceiverServiceTest {
         );
     }
 
+    @Test
+    @DisplayName("Source pixels stay available through post-normalization processing and release afterward")
+    void sourcePixelsStayAvailableThroughPostNormalizationProcessingAndReleaseAfterward() throws Exception {
+        Path image = tempDir.resolve("source-lifetime.png");
+        writePng(image, 2, 2, SOURCE_PROBE_PIXEL);
+        AtomicReference<MediaInputFrame> sourceAtBoundary = new AtomicReference<>();
+        AtomicReference<NormalizedCaptureFrame> normalizedAtBoundary = new AtomicReference<>();
+        AtomicBoolean sourcePixelsAccessible = new AtomicBoolean();
+        AtomicBoolean normalizedPixelsAccessible = new AtomicBoolean();
+
+        CaptureMediaReceiverService service = lifecycleProbeService(
+                acceptedCvNormalizer(),
+                new CaptureMediaReceiverService.SourcePixelLifecycleObserver() {
+                    @Override
+                    public void afterNormalization(RetainedMediaInputFrameBatch retainedSources) {
+                        MediaInputFrame sourceFrame = retainedSources.retainedSourceFrames().get(0).sourceFrame();
+                        NormalizedCaptureFrame normalizedFrame = retainedSources.normalizedFrames().get(0);
+                        sourceAtBoundary.set(sourceFrame);
+                        normalizedAtBoundary.set(normalizedFrame);
+                        sourcePixelsAccessible.set(sourceFrame.argbPixelAt(0, 0) == SOURCE_PROBE_PIXEL);
+                        normalizedPixelsAccessible.set(normalizedFrame.argbPixelAt(0, 0) == NORMALIZED_PROBE_PIXEL);
+                    }
+                }
+        );
+
+        CaptureMediaReceiverResult result =
+                service.evaluate(CaptureMediaReceiverRequest.evaluateStillImages(List.of(image)));
+
+        assertAll(
+                () -> assertTrue(result.failed()),
+                () -> assertNotNull(sourceAtBoundary.get()),
+                () -> assertNotNull(normalizedAtBoundary.get()),
+                () -> assertTrue(sourcePixelsAccessible.get()),
+                () -> assertTrue(normalizedPixelsAccessible.get()),
+                () -> assertThrows(IllegalStateException.class, () -> sourceAtBoundary.get().argbPixelAt(0, 0)),
+                () -> assertThrows(IllegalStateException.class,
+                        () -> normalizedAtBoundary.get().argbPixelAt(0, 0))
+        );
+    }
+
+    @Test
+    @DisplayName("Source pixels release after normalization rejection")
+    void sourcePixelsReleaseAfterNormalizationRejection() throws Exception {
+        Path image = tempDir.resolve("normalization-rejected.png");
+        writePng(image, 2, 2, SOURCE_PROBE_PIXEL);
+        AtomicReference<MediaInputFrame> sourceDuringNormalization = new AtomicReference<>();
+        CaptureMediaFrameNormalizer normalizer = new CaptureMediaFrameNormalizer(frame -> {
+            sourceDuringNormalization.set(frame);
+            assertEquals(SOURCE_PROBE_PIXEL, frame.argbPixelAt(0, 0));
+            return CvDetectionResult.rejected(
+                    CaptureMediaDiagnosticCode.SCREEN_OR_FRAME_NOT_FOUND,
+                    Map.of(),
+                    "Test CV backend rejected the frame"
+            );
+        });
+
+        CaptureMediaReceiverResult result = lifecycleProbeService(
+                normalizer,
+                CaptureMediaReceiverService.SourcePixelLifecycleObserver.noOp()
+        ).evaluate(CaptureMediaReceiverRequest.evaluateStillImages(List.of(image)));
+
+        assertAll(
+                () -> assertEquals(CaptureMediaReceiverStatus.REJECTED, result.status()),
+                () -> assertNotNull(sourceDuringNormalization.get()),
+                () -> assertThrows(IllegalStateException.class,
+                        () -> sourceDuringNormalization.get().argbPixelAt(0, 0))
+        );
+    }
+
+    @Test
+    @DisplayName("Source pixels release when normalization throws")
+    void sourcePixelsReleaseWhenNormalizationThrows() throws Exception {
+        Path image = tempDir.resolve("normalization-throws.png");
+        writePng(image, 2, 2, SOURCE_PROBE_PIXEL);
+        AtomicReference<MediaInputFrame> retainedSource = new AtomicReference<>();
+        CaptureMediaFrameNormalizer throwingNormalizer = new CaptureMediaFrameNormalizer(
+                new CaptureRenderedLayoutCatalog(List.of(new LayoutProfile(
+                        "invalid-lifecycle-layout",
+                        1,
+                        1,
+                        2,
+                        2,
+                        1,
+                        1,
+                        "unsupportedSeparator",
+                        1,
+                        1,
+                        "black",
+                        "preserveAspect"
+                ))),
+                new FixedLayoutPlanner()
+        );
+
+        CaptureMediaReceiverService service = lifecycleProbeService(
+                throwingNormalizer,
+                new CaptureMediaReceiverService.SourcePixelLifecycleObserver() {
+                    @Override
+                    public void sourceRetained(MediaInputFrame frame) {
+                        retainedSource.set(frame);
+                    }
+                }
+        );
+
+        assertThrows(IllegalArgumentException.class,
+                () -> service.evaluate(CaptureMediaReceiverRequest.evaluateStillImages(List.of(image))));
+        assertAll(
+                () -> assertNotNull(retainedSource.get()),
+                () -> assertThrows(IllegalStateException.class, () -> retainedSource.get().argbPixelAt(0, 0))
+        );
+    }
+
+    @Test
+    @DisplayName("Source and normalized pixels release after debug export failure")
+    void sourceAndNormalizedPixelsReleaseAfterDebugExportFailure() throws Exception {
+        Path image = tempDir.resolve("debug-export-source.png");
+        Path debugOutputFile = tempDir.resolve("debug-output-file");
+        writePng(image, 2, 2, SOURCE_PROBE_PIXEL);
+        Files.writeString(debugOutputFile, "not a directory");
+        AtomicReference<MediaInputFrame> sourceAtBoundary = new AtomicReference<>();
+        AtomicReference<NormalizedCaptureFrame> normalizedAtBoundary = new AtomicReference<>();
+
+        CaptureMediaReceiverService service = lifecycleProbeService(
+                acceptedCvNormalizer(),
+                new CaptureMediaReceiverService.SourcePixelLifecycleObserver() {
+                    @Override
+                    public void afterNormalization(RetainedMediaInputFrameBatch retainedSources) {
+                        sourceAtBoundary.set(retainedSources.retainedSourceFrames().get(0).sourceFrame());
+                        normalizedAtBoundary.set(retainedSources.normalizedFrames().get(0));
+                    }
+                }
+        );
+
+        CaptureMediaReceiverResult result = service.evaluate(
+                CaptureMediaReceiverRequest.evaluateStillImages(List.of(image))
+                        .withDebugOutputDirectory(debugOutputFile)
+        );
+
+        assertAll(
+                () -> assertEquals(CaptureMediaReceiverStatus.REJECTED, result.status()),
+                () -> assertTrue(result.diagnostics().stream()
+                        .anyMatch(diagnostic -> diagnostic.code() == CaptureMediaDiagnosticCode.DEBUG_EXPORT_FAILURE)),
+                () -> assertNotNull(sourceAtBoundary.get()),
+                () -> assertNotNull(normalizedAtBoundary.get()),
+                () -> assertThrows(IllegalStateException.class, () -> sourceAtBoundary.get().argbPixelAt(0, 0)),
+                () -> assertThrows(IllegalStateException.class,
+                        () -> normalizedAtBoundary.get().argbPixelAt(0, 0))
+        );
+    }
+
     private void writePng(Path output, int width, int height) throws Exception {
         BufferedImage image = new BufferedImage(width, height, BufferedImage.TYPE_INT_ARGB);
+        ImageIO.write(image, "png", output.toFile());
+    }
+
+    private void writePng(Path output, int width, int height, int argb) throws Exception {
+        BufferedImage image = new BufferedImage(width, height, BufferedImage.TYPE_INT_ARGB);
+        for (int row = 0; row < height; row++) {
+            for (int col = 0; col < width; col++) {
+                image.setRGB(col, row, argb);
+            }
+        }
         ImageIO.write(image, "png", output.toFile());
     }
 
@@ -328,5 +502,46 @@ class CaptureMediaReceiverServiceTest {
                 new CaptureFrameSetAssembler(),
                 new ReaderRestoreService()
         );
+    }
+
+    private CaptureMediaReceiverService lifecycleProbeService(
+            CaptureMediaFrameNormalizer normalizer,
+            CaptureMediaReceiverService.SourcePixelLifecycleObserver sourcePixelLifecycleObserver
+    ) {
+        return new CaptureMediaReceiverService(
+                new CaptureMediaInputIntake(
+                        new ImageIoCaptureMediaStillImageDecoder(),
+                        CaptureMediaVideoFrameSourceAdapter.unsupported(),
+                        CaptureMediaVideoLimits.conservativeDefaults()
+                ),
+                normalizer,
+                new CaptureMediaFrameDecoder(),
+                new CaptureFrameSetAssembler(),
+                new ReaderRestoreService(),
+                new CaptureMediaCandidateDebugExporter(),
+                sourcePixelLifecycleObserver
+        );
+    }
+
+    private CaptureMediaFrameNormalizer acceptedCvNormalizer() {
+        return new CaptureMediaFrameNormalizer(frame -> CvDetectionResult.acceptedNormalizedFrames(List.of(
+                new CvNormalizedFrame(
+                        DEBUG_LAYOUT,
+                        FrameCorners.exactFrame(DEBUG_LAYOUT.frameWidthPx(), DEBUG_LAYOUT.frameHeightPx()),
+                        CaptureMediaQualityMetrics.perspectiveCorrected(0.50d, 0.05d),
+                        filledNormalizedPixels(),
+                        Optional.empty(),
+                        Optional.of("test-lifecycle"),
+                        1,
+                        1,
+                        1
+                )
+        )));
+    }
+
+    private int[] filledNormalizedPixels() {
+        int[] pixels = new int[DEBUG_LAYOUT.frameWidthPx() * DEBUG_LAYOUT.frameHeightPx()];
+        Arrays.fill(pixels, NORMALIZED_PROBE_PIXEL);
+        return pixels;
     }
 }

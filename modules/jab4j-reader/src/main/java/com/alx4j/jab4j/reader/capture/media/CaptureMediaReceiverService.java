@@ -25,6 +25,8 @@ import com.alx4j.jab4j.reader.capture.media.decode.CaptureMediaFrameDecoder;
 import com.alx4j.jab4j.reader.capture.media.input.CaptureMediaInputIntake;
 import com.alx4j.jab4j.reader.capture.media.input.MediaInputFrame;
 import com.alx4j.jab4j.reader.capture.media.input.MediaIntakeResult;
+import com.alx4j.jab4j.reader.capture.media.input.RetainedMediaInputFrame;
+import com.alx4j.jab4j.reader.capture.media.input.RetainedMediaInputFrameBatch;
 import com.alx4j.jab4j.reader.capture.media.normalize.CaptureMediaFrameNormalizer;
 import com.alx4j.jab4j.reader.capture.media.normalize.MediaNormalizationResult;
 import com.alx4j.jab4j.reader.capture.media.normalize.NormalizedCaptureFrame;
@@ -52,6 +54,7 @@ public final class CaptureMediaReceiverService {
     private final CaptureFrameSetAssembler frameSetAssembler;
     private final ReaderRestoreService readerRestoreService;
     private final CaptureMediaCandidateDebugExporter debugExporter;
+    private final SourcePixelLifecycleObserver sourcePixelLifecycleObserver;
 
     /**
      * Creates a media receiver using default still-image intake, normalization, media decode, assembly, and restore
@@ -148,12 +151,47 @@ public final class CaptureMediaReceiverService {
             ReaderRestoreService readerRestoreService,
             CaptureMediaCandidateDebugExporter debugExporter
     ) {
+        this(
+                mediaInputIntake,
+                frameNormalizer,
+                mediaFrameDecoder,
+                frameSetAssembler,
+                readerRestoreService,
+                debugExporter,
+                SourcePixelLifecycleObserver.noOp()
+        );
+    }
+
+    /**
+     * Creates a media receiver with explicit collaborators and internal source-pixel lifecycle observation.
+     *
+     * @param mediaInputIntake media source intake
+     * @param frameNormalizer conservative frame normalizer
+     * @param mediaFrameDecoder normalized media frame decoder
+     * @param frameSetAssembler decoded frame-set assembler
+     * @param readerRestoreService source-neutral restore service
+     * @param debugExporter normalized candidate debug exporter
+     * @param sourcePixelLifecycleObserver observer for retained source-pixel lifecycle seams
+     */
+    CaptureMediaReceiverService(
+            CaptureMediaInputIntake mediaInputIntake,
+            CaptureMediaFrameNormalizer frameNormalizer,
+            CaptureMediaFrameDecoder mediaFrameDecoder,
+            CaptureFrameSetAssembler frameSetAssembler,
+            ReaderRestoreService readerRestoreService,
+            CaptureMediaCandidateDebugExporter debugExporter,
+            SourcePixelLifecycleObserver sourcePixelLifecycleObserver
+    ) {
         this.mediaInputIntake = Objects.requireNonNull(mediaInputIntake, "mediaInputIntake must not be null");
         this.frameNormalizer = Objects.requireNonNull(frameNormalizer, "frameNormalizer must not be null");
         this.mediaFrameDecoder = Objects.requireNonNull(mediaFrameDecoder, "mediaFrameDecoder must not be null");
         this.frameSetAssembler = Objects.requireNonNull(frameSetAssembler, "frameSetAssembler must not be null");
         this.readerRestoreService = Objects.requireNonNull(readerRestoreService, "readerRestoreService must not be null");
         this.debugExporter = Objects.requireNonNull(debugExporter, "debugExporter must not be null");
+        this.sourcePixelLifecycleObserver = Objects.requireNonNull(
+                sourcePixelLifecycleObserver,
+                "sourcePixelLifecycleObserver must not be null"
+        );
     }
 
     /**
@@ -218,8 +256,12 @@ public final class CaptureMediaReceiverService {
         Objects.requireNonNull(request, "request must not be null");
         MediaIntakeResult intakeResult = mediaInputIntake.read(request);
         List<CaptureMediaDiagnostic> diagnostics = new ArrayList<>(intakeResult.diagnostics());
-        List<NormalizedCaptureFrame> normalizedFrames = normalizeReadableFrames(intakeResult, diagnostics);
+        RetainedMediaInputFrameBatch retainedSources = RetainedMediaInputFrameBatch.empty();
+        List<NormalizedCaptureFrame> normalizedFrames = List.of();
         try {
+            retainedSources = normalizeReadableFrames(intakeResult, diagnostics);
+            normalizedFrames = retainedSources.normalizedFrames();
+            sourcePixelLifecycleObserver.afterNormalization(retainedSources);
             CaptureMediaSummary intakeSummary = mediaSummary(
                     intakeResult,
                     normalizedFrames,
@@ -249,7 +291,7 @@ public final class CaptureMediaReceiverService {
             Optional<CaptureMediaReceiverResult> debugFailure = exportDebugCandidates(
                     request,
                     intakeResult,
-                    normalizedFrames,
+                    retainedSources,
                     diagnostics,
                     backendId,
                     backendVersion
@@ -258,7 +300,8 @@ public final class CaptureMediaReceiverService {
                 return debugFailure.orElseThrow();
             }
 
-            CaptureMediaFrameDecodeResult decodeResult = mediaFrameDecoder.decode(normalizedFrames);
+            CaptureMediaFrameDecodeResult decodeResult = mediaFrameDecoder.decode(retainedSources);
+            retainedSources.releaseSourceArgbPixels();
             diagnostics.addAll(decodeResult.diagnostics());
             if (decodeResult.decodedFrames().isEmpty()
                     && diagnostics.stream().noneMatch(CaptureMediaDiagnostic::blocking)) {
@@ -346,6 +389,7 @@ public final class CaptureMediaReceiverService {
                     successfulDiagnostics
             );
         } finally {
+            retainedSources.releaseSourceArgbPixels();
             normalizedFrames.forEach(NormalizedCaptureFrame::releaseArgbPixels);
         }
     }
@@ -408,7 +452,7 @@ public final class CaptureMediaReceiverService {
     private Optional<CaptureMediaReceiverResult> exportDebugCandidates(
             CaptureMediaReceiverRequest request,
             MediaIntakeResult intakeResult,
-            List<NormalizedCaptureFrame> normalizedFrames,
+            RetainedMediaInputFrameBatch retainedSources,
             List<CaptureMediaDiagnostic> diagnostics,
             String backendId,
             String backendVersion
@@ -419,7 +463,7 @@ public final class CaptureMediaReceiverService {
         }
         try {
             debugExporter.export(
-                    normalizedFrames,
+                    retainedSources,
                     debugOutputDirectory.orElseThrow(),
                     backendId,
                     backendVersion
@@ -434,12 +478,12 @@ public final class CaptureMediaReceiverService {
             return Optional.of(CaptureMediaReceiverResult.rejected(
                     mediaSummary(
                             intakeResult,
-                            normalizedFrames,
+                            retainedSources.normalizedFrames(),
                             diagnostics,
                             0,
                             0,
                             0,
-                            normalizedFrames.size(),
+                            retainedSources.normalizedFrames().size(),
                             0
                     ),
                     diagnostics,
@@ -448,21 +492,29 @@ public final class CaptureMediaReceiverService {
         }
     }
 
-    private List<NormalizedCaptureFrame> normalizeReadableFrames(
+    private RetainedMediaInputFrameBatch normalizeReadableFrames(
             MediaIntakeResult intakeResult,
             List<CaptureMediaDiagnostic> diagnostics
     ) {
-        List<NormalizedCaptureFrame> normalizedFrames = new ArrayList<>();
-        for (MediaInputFrame frame : intakeResult.readableFrames()) {
-            try {
+        List<RetainedMediaInputFrame> retainedSourceFrames = new ArrayList<>();
+        List<MediaInputFrame> sourceFramesToReleaseOnFailure = new ArrayList<>();
+        List<NormalizedCaptureFrame> normalizedFramesToReleaseOnFailure = new ArrayList<>();
+        try {
+            for (MediaInputFrame frame : intakeResult.readableFrames()) {
+                sourceFramesToReleaseOnFailure.add(frame);
+                sourcePixelLifecycleObserver.sourceRetained(frame);
                 MediaNormalizationResult normalizationResult = frameNormalizer.normalize(frame);
-                normalizedFrames.addAll(normalizationResult.frames());
+                List<NormalizedCaptureFrame> sourceNormalizedFrames = normalizationResult.frames();
+                normalizedFramesToReleaseOnFailure.addAll(sourceNormalizedFrames);
+                retainedSourceFrames.add(new RetainedMediaInputFrame(frame, sourceNormalizedFrames));
                 diagnostics.addAll(normalizationResult.diagnostics());
-            } finally {
-                frame.releaseArgbPixels();
             }
+            return new RetainedMediaInputFrameBatch(retainedSourceFrames);
+        } catch (RuntimeException | Error exception) {
+            sourceFramesToReleaseOnFailure.forEach(MediaInputFrame::releaseArgbPixels);
+            normalizedFramesToReleaseOnFailure.forEach(NormalizedCaptureFrame::releaseArgbPixels);
+            throw exception;
         }
-        return List.copyOf(normalizedFrames);
     }
 
     private CaptureMediaReceiverResult restoreDecodedContent(
@@ -766,5 +818,37 @@ public final class CaptureMediaReceiverService {
     }
 
     private record MediaSourceContext(String sourceId, int callerOrder) {
+    }
+
+    /**
+     * Internal lifecycle observer used by source-space sampling tests and future package-local sampling orchestration.
+     */
+    interface SourcePixelLifecycleObserver {
+
+        /**
+         * Returns an observer that leaves the receiver lifecycle unchanged.
+         *
+         * @return no-op observer
+         */
+        static SourcePixelLifecycleObserver noOp() {
+            return new SourcePixelLifecycleObserver() {
+            };
+        }
+
+        /**
+         * Observes a readable source frame after intake retains it and before normalization starts.
+         *
+         * @param frame retained source frame
+         */
+        default void sourceRetained(MediaInputFrame frame) {
+        }
+
+        /**
+         * Observes the retained source batch after normalization and before debug/decode processing.
+         *
+         * @param retainedSources retained source batch
+         */
+        default void afterNormalization(RetainedMediaInputFrameBatch retainedSources) {
+        }
     }
 }

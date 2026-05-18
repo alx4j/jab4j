@@ -33,6 +33,10 @@ class CaptureMediaCorpusManifestTest {
             "expected_diagnostics",
             "restore_expectation",
             "asset_policy",
+            "mvp9_pattern_expectation",
+            "mvp9_geometry_expectation",
+            "mvp9_sampling_expectation",
+            "mvp9_local_refinement_expectation",
             "notes"
     );
 
@@ -61,10 +65,15 @@ class CaptureMediaCorpusManifestTest {
                 () -> assertColumn(rows, CaptureMediaCorpusFixtures.GENERATED_EXACT_PNG, "asset_availability", "generated"),
                 () -> assertColumn(rows, CaptureMediaCorpusFixtures.GENERATED_EXACT_PNG, "restore_expectation", "yes"),
                 () -> assertColumn(rows, CaptureMediaCorpusFixtures.GENERATED_UNCROPPED_INSET, "source_kind", "generated_still_photo_sequence"),
-                () -> assertColumn(rows, CaptureMediaCorpusFixtures.GENERATED_CAMERA_LIKE_MONITOR_PNG, "story_ref", "MVP3-STORY-007"),
+                () -> assertColumn(rows, CaptureMediaCorpusFixtures.GENERATED_CAMERA_LIKE_MONITOR_PNG, "story_ref",
+                        "MVP3-STORY-007;MVP9-STORY-001;MVP9-STORY-002;MVP9-STORY-003"),
                 () -> assertColumn(rows, CaptureMediaCorpusFixtures.GENERATED_CAMERA_LIKE_MONITOR_PNG, "expected_status", "accepted_candidate_only"),
                 () -> assertColumn(rows, CaptureMediaCorpusFixtures.GENERATED_CAMERA_LIKE_MONITOR_JPEG, "format", "JPEG"),
                 () -> assertColumn(rows, CaptureMediaCorpusFixtures.GENERATED_CAMERA_LIKE_MONITOR_JPEG, "expected_status", "accepted_candidate_only"),
+                () -> assertColumn(rows, CaptureMediaCorpusFixtures.GENERATED_CAMERA_LIKE_MONITOR_INVALID_PAYLOAD_PNG,
+                        "expected_diagnostics", "tile_decode_or_envelope_failure"),
+                () -> assertColumn(rows, CaptureMediaCorpusFixtures.GENERATED_SKEWED_BLURRED_MONITOR_PNG,
+                        "capture_condition", "mildly skewed blurred monitor-like PNG still"),
                 () -> assertColumn(rows, CaptureMediaCorpusFixtures.DUPLICATE_FRAMES, "expected_diagnostics", "duplicate_media_frame"),
                 () -> assertColumn(rows, CaptureMediaCorpusFixtures.MISSING_UNIQUE_FRAMES, "expected_status", "incomplete"),
                 () -> assertColumn(rows, CaptureMediaCorpusFixtures.MISSING_UNIQUE_FRAMES, "expected_diagnostics", "missing_unique_frames"),
@@ -74,8 +83,16 @@ class CaptureMediaCorpusManifestTest {
                 () -> assertColumn(rows, CaptureMediaCorpusFixtures.UI_CHROME_WITHOUT_JAB, "expected_status", "rejected"),
                 () -> assertColumn(rows, CaptureMediaCorpusFixtures.UI_CHROME_WITHOUT_JAB, "expected_diagnostics", "screen_or_frame_not_found"),
                 () -> assertColumn(rows, CaptureMediaCorpusFixtures.REPEATED_STRIPES_WITHOUT_JAB, "expected_diagnostics", "screen_or_frame_not_found"),
+                () -> assertColumn(rows, CaptureMediaCorpusFixtures.REPEATED_GRID_WITHOUT_JAB,
+                        "expected_diagnostics", "screen_or_frame_not_found"),
+                () -> assertColumn(rows, CaptureMediaCorpusFixtures.SYNC_LIKE_STRIPES_WITHOUT_JAB,
+                        "expected_diagnostics", "screen_or_frame_not_found"),
                 () -> assertColumn(rows, CaptureMediaCorpusFixtures.PARTIAL_CROPPED_FRAME,
                         "expected_diagnostics", "screen_or_frame_not_found"),
+                () -> assertColumn(rows, CaptureMediaCorpusFixtures.AMBIGUOUS_MULTI_SYMBOL_PNG,
+                        "expected_diagnostics", "ambiguous_sessions"),
+                () -> assertColumn(rows, CaptureMediaCorpusFixtures.GENERATED_LOCAL_DISTORTION_PNG,
+                        "asset_availability", "generated"),
                 () -> assertColumn(rows, CaptureMediaCorpusFixtures.UNSUPPORTED_HEIC_PLACEHOLDER, "format", "HEIC"),
                 () -> assertColumn(rows, CaptureMediaCorpusFixtures.UNSUPPORTED_HEIC_PLACEHOLDER, "expected_diagnostics", "unsupported_image_format"),
                 () -> assertColumn(rows, CaptureMediaCorpusFixtures.CORRUPTED_UNREADABLE_IMAGE, "expected_diagnostics", "unreadable_media"),
@@ -86,6 +103,35 @@ class CaptureMediaCorpusManifestTest {
                         "duplicate_media_frame;color_or_compression_shift;glare_or_overexposure;blur"),
                 () -> assertColumn(rows, CaptureMediaCorpusFixtures.FUTURE_DIRECT_VIDEO, "format", "MOV_OR_MP4"),
                 () -> assertColumn(rows, CaptureMediaCorpusFixtures.FUTURE_DIRECT_VIDEO, "expected_diagnostics", "unsupported_container_or_codec")
+        );
+    }
+
+    @Test
+    @DisplayName("Manifest records MVP-9 evidence-stage expectations as text")
+    void manifestRecordsMvp9EvidenceStageExpectationsAsText() throws Exception {
+        Map<String, ManifestRow> rows = readManifest().rowsByScenarioId();
+
+        assertAll(
+                () -> assertColumn(rows, CaptureMediaCorpusFixtures.GENERATED_EXACT_PNG,
+                        "mvp9_pattern_expectation", "DETECTED"),
+                () -> assertColumn(rows, CaptureMediaCorpusFixtures.GENERATED_CAMERA_LIKE_MONITOR_INVALID_PAYLOAD_PNG,
+                        "mvp9_sampling_expectation", "WITHHELD_no_accepted_geometry"),
+                () -> assertColumn(rows, CaptureMediaCorpusFixtures.GENERATED_SKEWED_BLURRED_MONITOR_PNG,
+                        "mvp9_geometry_expectation", "ACCEPTED_or_WITHHELD"),
+                () -> assertColumn(rows, CaptureMediaCorpusFixtures.BRIGHT_MONITOR_WITHOUT_JAB,
+                        "mvp9_geometry_expectation", "NOT_AVAILABLE_or_WITHHELD"),
+                () -> assertColumn(rows, CaptureMediaCorpusFixtures.REPEATED_GRID_WITHOUT_JAB,
+                        "mvp9_pattern_expectation", "REJECTED"),
+                () -> assertColumn(rows, CaptureMediaCorpusFixtures.SYNC_LIKE_STRIPES_WITHOUT_JAB,
+                        "mvp9_sampling_expectation", "NOT_AVAILABLE"),
+                () -> assertColumn(rows, CaptureMediaCorpusFixtures.PARTIAL_CROPPED_FRAME,
+                        "mvp9_sampling_expectation", "PARTIAL_or_WITHHELD"),
+                () -> assertColumn(rows, CaptureMediaCorpusFixtures.AMBIGUOUS_MULTI_SYMBOL_PNG,
+                        "mvp9_pattern_expectation", "AMBIGUOUS"),
+                () -> assertColumn(rows, CaptureMediaCorpusFixtures.GENERATED_LOCAL_DISTORTION_PNG,
+                        "mvp9_local_refinement_expectation", "NOT_AVAILABLE_until_accepted_geometry"),
+                () -> assertColumn(rows, CaptureMediaCorpusFixtures.EXTERNAL_IPHONE_STILLS,
+                        "mvp9_geometry_expectation", "external_non_gating")
         );
     }
 
