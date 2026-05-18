@@ -36,8 +36,18 @@ class CaptureMediaCvBackendContractTest {
 
     private static final String CV_PACKAGE = "com.alx4j.jab4j.reader.capture.media.cv";
     private static final Pattern EXPORTED_PACKAGE = Pattern.compile("(?m)^\\s*exports\\s+([a-zA-Z0-9_.]+)\\s*;");
+    private static final Pattern IMPORT_DECLARATION = Pattern.compile("^\\s*import\\s+(?:static\\s+)?([^;]+);\\s*$");
+    private static final Pattern MODULE_REQUIREMENT = Pattern.compile(
+            "(?m)^\\s*requires(?:\\s+(?:static|transitive))*\\s+([^;]+)\\s*;"
+    );
     private static final Pattern UNQUALIFIED_INTERNAL_CV_EXPORT = Pattern.compile(
             "(?m)^\\s*exports\\s+" + Pattern.quote(CV_PACKAGE) + "(?:\\.[a-zA-Z0-9_]+)*\\s*;"
+    );
+    private static final List<String> FORBIDDEN_BOOFCV_IMPORTS = List.of(
+            "boofcv.",
+            "org.boofcv.",
+            "com.alx4j.jab4j.reader.capture.media.cv.boofcv.",
+            "com.alx4j.jab4j.reader.cv.boofcv."
     );
     private static final LayoutProfile TEST_PROFILE = new LayoutProfile(
             "fake-cv-layout",
@@ -406,22 +416,47 @@ class CaptureMediaCvBackendContractTest {
     }
 
     @Test
-    @DisplayName("Production reader code does not import BoofCV")
-    void productionReaderCodeDoesNotImportBoofCv() throws IOException {
+    @DisplayName("Production reader code does not import BoofCV or require BoofCV modules")
+    void productionReaderCodeDoesNotImportBoofCvOrRequireBoofCvModules() throws IOException {
         String moduleInfo = Files.readString(mainSourceRoot().resolve("module-info.java"));
         List<String> violations = new ArrayList<>();
         try (Stream<Path> sourceFiles = Files.walk(mainSourceRoot())) {
             sourceFiles
                     .filter(path -> path.toString().endsWith(".java"))
-                    .forEach(path -> recordBoofCvImportViolation(path, violations));
+                    .forEach(path -> recordForbiddenImportViolation(path, FORBIDDEN_BOOFCV_IMPORTS, violations));
         }
 
         assertAll(
-                () -> assertFalse(moduleInfo.contains("requires boofcv"), moduleInfo),
-                () -> assertFalse(moduleInfo.contains("requires org.boofcv"), moduleInfo),
-                () -> assertFalse(moduleInfo.contains("requires com.alx4j.jab4j.reader.cv.boofcv"), moduleInfo),
+                () -> assertTrue(boofCvModuleRequirements(moduleInfo).isEmpty(),
+                        () -> "Production BoofCV module requirements found: " + boofCvModuleRequirements(moduleInfo)),
                 () -> assertTrue(violations.isEmpty(), () -> "Production BoofCV imports found: " + violations)
         );
+    }
+
+    @Test
+    @DisplayName("Public reader packages and diagnostics do not expose BoofCV types")
+    void publicReaderPackagesAndDiagnosticsDoNotExposeBoofCvTypes() throws IOException {
+        Path mainSourceRoot = mainSourceRoot();
+        String moduleInfo = Files.readString(mainSourceRoot.resolve("module-info.java"));
+        List<String> violations = new ArrayList<>();
+        Matcher matcher = EXPORTED_PACKAGE.matcher(moduleInfo);
+        while (matcher.find()) {
+            Path packagePath = mainSourceRoot.resolve(matcher.group(1).replace('.', '/'));
+            if (!Files.isDirectory(packagePath)) {
+                continue;
+            }
+            try (Stream<Path> packageFiles = Files.list(packagePath)) {
+                packageFiles
+                        .filter(path -> path.toString().endsWith(".java"))
+                        .forEach(path -> recordForbiddenTypeReferenceViolation(
+                                path,
+                                FORBIDDEN_BOOFCV_IMPORTS,
+                                violations
+                        ));
+            }
+        }
+
+        assertTrue(violations.isEmpty(), () -> "Public reader package exposes BoofCV types: " + violations);
     }
 
     @Test
@@ -488,14 +523,54 @@ class CaptureMediaCvBackendContractTest {
         return Path.of("modules", "jab4j-reader", "src", "main", "java");
     }
 
-    private static void recordBoofCvImportViolation(Path path, List<String> violations) {
+    private static List<String> boofCvModuleRequirements(String moduleInfo) {
+        List<String> requirements = new ArrayList<>();
+        Matcher matcher = MODULE_REQUIREMENT.matcher(moduleInfo);
+        while (matcher.find()) {
+            String moduleName = matcher.group(1);
+            if (moduleName.contains("boofcv")) {
+                requirements.add(moduleName);
+            }
+        }
+        return requirements;
+    }
+
+    private static void recordForbiddenImportViolation(
+            Path path,
+            List<String> forbiddenImports,
+            List<String> violations
+    ) {
+        try {
+            List<String> lines = Files.readAllLines(path);
+            for (int index = 0; index < lines.size(); index++) {
+                Matcher matcher = IMPORT_DECLARATION.matcher(lines.get(index));
+                if (!matcher.matches()) {
+                    continue;
+                }
+                String importedType = matcher.group(1);
+                if (matchesForbiddenImport(importedType, forbiddenImports)) {
+                    violations.add(path + ":" + (index + 1) + " imports " + importedType);
+                }
+            }
+        } catch (IOException exception) {
+            throw new IllegalStateException("Unable to inspect " + path, exception);
+        }
+    }
+
+    private static boolean matchesForbiddenImport(String importedType, List<String> forbiddenImports) {
+        return forbiddenImports.stream().anyMatch(forbiddenImport -> importedType.startsWith(forbiddenImport));
+    }
+
+    private static void recordForbiddenTypeReferenceViolation(
+            Path path,
+            List<String> forbiddenTypePrefixes,
+            List<String> violations
+    ) {
         try {
             String source = Files.readString(path);
-            if (source.contains("import boofcv.")
-                    || source.contains("import org.boofcv.")
-                    || source.contains("requires boofcv")) {
-                violations.add(path.toString());
-            }
+            forbiddenTypePrefixes.stream()
+                    .filter(source::contains)
+                    .forEach(prefix -> violations.add(path + " references " + prefix));
         } catch (IOException exception) {
             throw new IllegalStateException("Unable to inspect " + path, exception);
         }

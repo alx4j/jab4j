@@ -2,6 +2,7 @@ package com.alx4j.jab4j.reader.capture.media.debug;
 
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -27,6 +28,7 @@ import com.alx4j.jab4j.api.model.PayloadKind;
 import com.alx4j.jab4j.api.model.SessionId;
 import com.alx4j.jab4j.api.model.TileIndex;
 import com.alx4j.jab4j.api.model.TilePayload;
+import com.alx4j.jab4j.reader.capture.media.CaptureMediaDiagnosticCode;
 import com.alx4j.jab4j.reader.capture.media.CaptureMediaSourceKind;
 import com.alx4j.jab4j.reader.capture.media.cv.CvGridPhase;
 import com.alx4j.jab4j.reader.capture.media.cv.CvSamplingEvidence;
@@ -125,7 +127,20 @@ class CaptureMediaCandidateDebugExporterTest {
                 () -> assertTrue(metadata.contains(
                         "sampler.slot.0.samplingEvidenceAlignmentStatus=NOT_CAMERA_DERIVED")),
                 () -> assertTrue(metadata.contains("sampler.slot.0.reason.noFinderAttemptCount=0")),
-                () -> assertTrue(metadata.contains("diagnostic.selectedPublicCode=SCREEN_OR_FRAME_NOT_FOUND"))
+                () -> assertTrue(metadata.contains("sampler.reason.postPaletteRejectedAttemptCount=0")),
+                () -> assertEquals("false", metadataValue(metadata, "palette.calibration.enabled")),
+                () -> assertEquals("1.0", metadataValue(metadata, "palette.calibration.confidence")),
+                () -> assertEquals("0", metadataValue(metadata, "palette.calibration.observedColorCount")),
+                () -> assertEquals("", metadataValue(metadata, "palette.calibration.fallbackReason")),
+                () -> assertEquals("0.0", metadataValue(
+                        metadata,
+                        "palette.calibration.maximumObservedRgbDistance"
+                )),
+                () -> assertEquals("0", metadataValue(metadata, "palette.calibration.observedColor.entryCount")),
+                () -> assertEquals(CaptureMediaDiagnosticCode.SCREEN_OR_FRAME_NOT_FOUND.name(),
+                        metadataValue(metadata, "diagnostic.selectedPublicCode")),
+                () -> assertEquals("SCREEN_OR_FRAME_NOT_FOUND",
+                        metadataValue(metadata, "diagnostic.selectedFailureStage"))
         );
     }
 
@@ -230,6 +245,7 @@ class CaptureMediaCandidateDebugExporterTest {
                 () -> assertTrue(metadata.contains(".tileDecode.attempted=true")),
                 () -> assertTrue(metadata.contains(".tileDecode.failureReason=tileDecode: ")),
                 () -> assertTrue(metadata.contains(".tileDecode.failureStage=")),
+                () -> assertTrue(metadata.contains(".postPalette.failureStage=TILE_DECODE")),
                 () -> assertTrue(metadata.contains(".tileDecode.encodedBytes=")),
                 () -> assertTrue(metadata.contains(".tileDecode.logicalCapacityBytes=")),
                 () -> assertTrue(metadata.contains(".tileDecode.headerBytes=")),
@@ -244,7 +260,164 @@ class CaptureMediaCandidateDebugExporterTest {
                 () -> assertTrue(metadata.contains(".finder.canonicalized=false")),
                 () -> assertTrue(metadata.contains(".diagnostic.sampledMatrixSha256=")),
                 () -> assertTrue(metadata.contains(".diagnostic.sampledMatrixPrefix=")),
-                () -> assertTrue(metadata.contains(".diagnostic.sampledMatrixHistogram="))
+                () -> assertTrue(metadata.contains(".diagnostic.sampledMatrixHistogram=")),
+                () -> assertTrue(Integer.parseInt(metadataValue(
+                        metadata,
+                        "sampler.reason.postPaletteRejectedAttemptCount"
+                )) > 0),
+                () -> assertEquals(CaptureMediaDiagnosticCode.TILE_DECODE_OR_ENVELOPE_FAILURE.name(),
+                        metadataValue(metadata, "diagnostic.selectedPublicCode")),
+                () -> assertEquals("TILE_DECODE", metadataValue(metadata, "diagnostic.selectedFailureStage"))
+        );
+    }
+
+    @Test
+    @DisplayName("Palette-only rejection sidecar keeps the color-or-compression public code")
+    void paletteOnlyRejectionSidecarKeepsColorOrCompressionPublicCode() throws Exception {
+        CaptureMediaCandidateDebugExporter exporter = new CaptureMediaCandidateDebugExporter();
+        NormalizedCaptureFrame frame = paletteRejectedFrame();
+
+        CaptureMediaCandidateDebugExporter.CandidateDebugExport exported = exporter.export(frame, tempDir);
+
+        String metadata = Files.readString(exported.metadataPath());
+        assertAll(
+                () -> assertEquals(CaptureMediaDiagnosticCode.COLOR_OR_COMPRESSION_SHIFT.name(),
+                        metadataValue(metadata, "diagnostic.selectedPublicCode")),
+                () -> assertEquals("PALETTE", metadataValue(metadata, "diagnostic.selectedFailureStage")),
+                () -> assertEquals("0", metadataValue(metadata, "sampler.reason.postPaletteRejectedAttemptCount"))
+        );
+    }
+
+    @Test
+    @DisplayName("Accepted payload sidecar leaves selected public diagnostic fields empty")
+    void acceptedPayloadSidecarLeavesSelectedPublicDiagnosticFieldsEmpty() throws Exception {
+        CaptureMediaCandidateDebugExporter exporter = new CaptureMediaCandidateDebugExporter();
+        NormalizedCaptureFrame frame = acceptedPayloadFrame();
+
+        CaptureMediaCandidateDebugExporter.CandidateDebugExport exported = exporter.export(frame, tempDir);
+
+        String metadata = Files.readString(exported.metadataPath());
+        assertAll(
+                () -> assertEquals("", metadataValue(metadata, "diagnostic.selectedPublicCode")),
+                () -> assertEquals("", metadataValue(metadata, "diagnostic.selectedFailureStage")),
+                () -> assertEquals("1", metadataValue(metadata, "sampler.reason.acceptedPayloadCount")),
+                () -> assertTrue(metadata.contains("sampler.phase.attemptedVariantCount=")),
+                () -> assertEquals("1", metadataValue(
+                        metadata,
+                        "sampler.slot.0.sideVersion.1.phase.selected.rank"
+                )),
+                () -> assertEquals("NOMINAL", metadataValue(
+                        metadata,
+                        "sampler.slot.0.sideVersion.1.phase.selected.source"
+                )),
+                () -> assertEquals("ACCEPTED_PAYLOAD", metadataValue(
+                        metadata,
+                        "sampler.slot.0.sideVersion.1.phase.selected.outcome"
+                )),
+                () -> assertEquals("false", metadataValue(
+                        metadata,
+                        "sampler.slot.0.sideVersion.1.phase.runnerUp.available"
+                ))
+        );
+    }
+
+    @Test
+    @DisplayName("Sidecar includes calibrated palette evidence for shifted camera-derived candidates")
+    void sidecarIncludesCalibratedPaletteEvidenceForShiftedCameraDerivedCandidates() throws Exception {
+        CaptureMediaCandidateDebugExporter exporter = new CaptureMediaCandidateDebugExporter();
+        NormalizedCaptureFrame frame = cameraPayloadFrameWithNeutralShift(50);
+
+        CaptureMediaCandidateDebugExporter.CandidateDebugExport exported = exporter.export(frame, tempDir);
+
+        String metadata = Files.readString(exported.metadataPath());
+        assertAll(
+                () -> assertEquals("true", metadataValue(metadata, "palette.calibration.enabled")),
+                () -> assertTrue(Double.parseDouble(metadataValue(
+                        metadata,
+                        "palette.calibration.confidence"
+                )) > 0.75d),
+                () -> assertTrue(Integer.parseInt(metadataValue(
+                        metadata,
+                        "palette.calibration.observedColorCount"
+                )) >= 2),
+                () -> assertEquals("", metadataValue(metadata, "palette.calibration.fallbackReason")),
+                () -> assertTrue(Double.parseDouble(metadataValue(
+                        metadata,
+                        "palette.calibration.maximumObservedRgbDistance"
+                )) > 0.0d),
+                () -> assertTrue(Integer.parseInt(metadataValue(
+                        metadata,
+                        "palette.calibration.observedColor.entryCount"
+                )) >= 2),
+                () -> assertTrue(metadata.contains(
+                        "palette.calibration.observedColor.0.maximumObservedRgbDistance="
+                )),
+                () -> assertTrue(metadata.contains(
+                        "palette.calibration.observedColor.7.maximumObservedRgbDistance="
+                ))
+        );
+    }
+
+    @Test
+    @DisplayName("Sidecar includes calibration fallback evidence for weak camera-derived references")
+    void sidecarIncludesCalibrationFallbackEvidenceForWeakCameraDerivedReferences() throws Exception {
+        CaptureMediaCandidateDebugExporter exporter = new CaptureMediaCandidateDebugExporter();
+        NormalizedCaptureFrame frame = cameraPayloadFrameWithNeutralShift(90);
+
+        CaptureMediaCandidateDebugExporter.CandidateDebugExport exported = exporter.export(frame, tempDir);
+
+        String metadata = Files.readString(exported.metadataPath());
+        assertAll(
+                () -> assertEquals("false", metadataValue(metadata, "palette.calibration.enabled")),
+                () -> assertEquals("0.0", metadataValue(metadata, "palette.calibration.confidence")),
+                () -> assertTrue(Integer.parseInt(metadataValue(
+                        metadata,
+                        "palette.calibration.observedColorCount"
+                )) >= 0),
+                () -> assertTrue(Double.parseDouble(metadataValue(
+                        metadata,
+                        "palette.calibration.maximumObservedRgbDistance"
+                )) >= 0.0d),
+                () -> assertFalse(metadataValue(metadata, "palette.calibration.fallbackReason").isBlank()),
+                () -> assertEquals("0", metadataValue(metadata, "palette.calibration.observedColor.entryCount"))
+        );
+    }
+
+    @Test
+    @DisplayName("Sidecar includes runner-up phase fields for camera-derived candidates")
+    void sidecarIncludesRunnerUpPhaseFieldsForCameraDerivedCandidates() throws Exception {
+        CaptureMediaCandidateDebugExporter exporter = new CaptureMediaCandidateDebugExporter();
+        NormalizedCaptureFrame frame = partialAcceptedCameraFrame();
+
+        CaptureMediaCandidateDebugExporter.CandidateDebugExport exported = exporter.export(frame, tempDir);
+
+        String metadata = Files.readString(exported.metadataPath());
+        assertAll(
+                () -> assertTrue(Integer.parseInt(metadataValue(
+                        metadata,
+                        "sampler.slot.0.sideVersion.1.phase.attemptedVariantCount"
+                )) > 1),
+                () -> assertEquals("true", metadataValue(
+                        metadata,
+                        "sampler.slot.0.sideVersion.1.phase.runnerUp.available"
+                )),
+                () -> assertEquals("1", metadataValue(
+                        metadata,
+                        "sampler.slot.0.sideVersion.1.phase.selected.rank"
+                )),
+                () -> assertEquals("2", metadataValue(
+                        metadata,
+                        "sampler.slot.0.sideVersion.1.phase.runnerUp.rank"
+                )),
+                () -> assertTrue(metadata.contains(
+                        "sampler.slot.0.sideVersion.1.phase.selected.moduleCenterOffsetXPx="
+                )),
+                () -> assertTrue(metadata.contains(
+                        "sampler.slot.0.sideVersion.1.phase.runnerUp.moduleSizeScale="
+                )),
+                () -> assertTrue(metadata.contains(
+                        "sampler.slot.0.sideVersion.1.phase.runnerUp.outcome="
+                ))
         );
     }
 
@@ -282,6 +455,14 @@ class CaptureMediaCandidateDebugExporterTest {
             }
         }
         return false;
+    }
+
+    private String metadataValue(String metadata, String key) {
+        return metadata.lines()
+                .filter(line -> line.startsWith(key + "="))
+                .map(line -> line.substring(key.length() + 1))
+                .findFirst()
+                .orElseThrow();
     }
 
     private NormalizedCaptureFrame normalizedFrame() {
@@ -387,6 +568,69 @@ class CaptureMediaCandidateDebugExporterTest {
         );
     }
 
+    private NormalizedCaptureFrame paletteRejectedFrame() {
+        int[] pixels = new int[FRAME_WIDTH * FRAME_HEIGHT];
+        Arrays.fill(pixels, 0xFF000000);
+        pasteRenderedTile(pixels, 0, renderedTile(payload(), false), 96);
+        return new NormalizedCaptureFrame(
+                "palette-rejected.png",
+                CaptureMediaSourceKind.STILL_IMAGE_FILE,
+                0,
+                FRAME_WIDTH,
+                FRAME_HEIGHT,
+                FRAME_WIDTH,
+                FRAME_HEIGHT,
+                "png",
+                "feedfade",
+                CAPTURE_LAYOUT.profileId(),
+                FrameCorners.exactFrame(FRAME_WIDTH, FRAME_HEIGHT),
+                CaptureMediaQualityMetrics.exactRenderedFrame(),
+                pixels
+        );
+    }
+
+    private NormalizedCaptureFrame acceptedPayloadFrame() {
+        int[] pixels = new int[FRAME_WIDTH * FRAME_HEIGHT];
+        Arrays.fill(pixels, 0xFF000000);
+        pasteRenderedTile(pixels, 0, renderedTile(payload(), false));
+        return new NormalizedCaptureFrame(
+                "accepted-payload.png",
+                CaptureMediaSourceKind.STILL_IMAGE_FILE,
+                0,
+                FRAME_WIDTH,
+                FRAME_HEIGHT,
+                FRAME_WIDTH,
+                FRAME_HEIGHT,
+                "png",
+                "beadfeed",
+                CAPTURE_LAYOUT.profileId(),
+                FrameCorners.exactFrame(FRAME_WIDTH, FRAME_HEIGHT),
+                CaptureMediaQualityMetrics.exactRenderedFrame(),
+                pixels
+        );
+    }
+
+    private NormalizedCaptureFrame cameraPayloadFrameWithNeutralShift(int neutralShift) {
+        int[] pixels = new int[FRAME_WIDTH * FRAME_HEIGHT];
+        Arrays.fill(pixels, 0xFF000000);
+        pasteRenderedTile(pixels, 0, renderedTile(payload(), false), neutralShift);
+        return new NormalizedCaptureFrame(
+                "shifted-camera-payload.jpeg",
+                CaptureMediaSourceKind.STILL_IMAGE_FILE,
+                0,
+                FRAME_WIDTH,
+                FRAME_HEIGHT,
+                FRAME_WIDTH,
+                FRAME_HEIGHT,
+                "jpeg",
+                "cafefeed",
+                CAPTURE_LAYOUT.profileId(),
+                FrameCorners.exactFrame(FRAME_WIDTH, FRAME_HEIGHT),
+                CaptureMediaQualityMetrics.perspectiveCorrected(0.50d, 0.05d),
+                pixels
+        );
+    }
+
     private NormalizedCaptureFrame partialAcceptedCameraFrame() {
         int[] pixels = new int[FRAME_WIDTH * FRAME_HEIGHT];
         Arrays.fill(pixels, 0xFF000000);
@@ -419,13 +663,30 @@ class CaptureMediaCandidateDebugExporterTest {
     }
 
     private void pasteRenderedTile(int[] pixels, int tileIndex, RenderedTile renderedTile) {
+        pasteRenderedTile(pixels, tileIndex, renderedTile, 0);
+    }
+
+    private void pasteRenderedTile(int[] pixels, int tileIndex, RenderedTile renderedTile, int neutralShift) {
         TilePlacement placement = LAYOUT_PLAN.tilePlacements().get(tileIndex);
         for (int row = 0; row < renderedTile.heightPixels(); row++) {
             for (int col = 0; col < renderedTile.widthPixels(); col++) {
-                pixels[((placement.yPx() + row) * FRAME_WIDTH) + placement.xPx() + col] =
-                        renderedTile.argbPixels().get((row * renderedTile.widthPixels()) + col);
+                int argb = renderedTile.argbPixels().get((row * renderedTile.widthPixels()) + col);
+                pixels[((placement.yPx() + row) * FRAME_WIDTH) + placement.xPx() + col] = neutralShift == 0
+                        ? argb
+                        : neutralShiftColor(argb, neutralShift);
             }
         }
+    }
+
+    private int neutralShiftColor(int argb, int amount) {
+        int red = neutralShiftChannel((argb >>> 16) & 0xFF, amount);
+        int green = neutralShiftChannel((argb >>> 8) & 0xFF, amount);
+        int blue = neutralShiftChannel(argb & 0xFF, amount);
+        return 0xFF000000 | (red << 16) | (green << 8) | blue;
+    }
+
+    private int neutralShiftChannel(int value, int amount) {
+        return value < 128 ? Math.min(255, value + amount) : Math.max(0, value - amount);
     }
 
     private LogicalTile corruptedDataModule(LogicalTile tile) {
