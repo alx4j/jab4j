@@ -44,6 +44,7 @@ import com.alx4j.jab4j.reader.capture.media.sample.CaptureMediaTilePayloadSample
 import com.alx4j.jab4j.reader.capture.media.sample.CaptureMediaTilePayloadSampler.DecodeInspectionStatus;
 import com.alx4j.jab4j.reader.capture.media.sample.CaptureMediaTilePayloadSampler.FrameInspection;
 import com.alx4j.jab4j.reader.capture.media.sample.CaptureMediaTilePayloadSampler.ModuleSamplingInspectionSource;
+import com.alx4j.jab4j.reader.capture.media.sample.CaptureMediaTilePayloadSampler.PhaseInspection;
 import com.alx4j.jab4j.reader.capture.media.sample.CaptureMediaTilePayloadSampler.ProfileSelectionSource;
 import com.alx4j.jab4j.reader.capture.media.sample.CaptureMediaTilePayloadSampler.SlotInspection;
 import com.alx4j.jab4j.reader.capture.media.sample.CaptureMediaTilePayloadSampler.TileAlignmentInspectionSource;
@@ -118,6 +119,7 @@ class CaptureMediaTilePayloadSamplerTest {
                 .filter(candidate -> candidate.decodeStatus() == DecodeInspectionStatus.ACCEPTED_PAYLOAD)
                 .findFirst()
                 .orElseThrow();
+        PhaseInspection selectedPhase = acceptedCandidate.selectedPhase();
 
         assertAll(
                 () -> assertEquals(FrameSampleStatus.ACCEPTED, sample.status()),
@@ -135,7 +137,18 @@ class CaptureMediaTilePayloadSamplerTest {
                 () -> assertEquals(0, acceptedCandidate.moduleCenterOffsetYPx()),
                 () -> assertEquals(ModuleSamplingInspectionSource.NONE,
                         acceptedCandidate.moduleSamplingOffsetSource()),
-                () -> assertEquals(0, acceptedCandidate.areaSampleRadiusPx())
+                () -> assertEquals(0, acceptedCandidate.areaSampleRadiusPx()),
+                () -> assertEquals(1, selectedPhase.rank()),
+                () -> assertEquals(CaptureMediaModulePhaseCandidateSource.NOMINAL, selectedPhase.source()),
+                () -> assertEquals(CaptureMediaModulePhaseOutcome.ACCEPTED_PAYLOAD, selectedPhase.outcome()),
+                () -> assertEquals(1, selectedPhase.attemptedVariantCount()),
+                () -> assertTrue(acceptedCandidate.runnerUpPhase().isEmpty()),
+                () -> assertFalse(inspection.paletteCalibration().enabled()),
+                () -> assertEquals(1.0d, inspection.paletteCalibration().confidence()),
+                () -> assertEquals(0, inspection.paletteCalibration().observedColorCount()),
+                () -> assertEquals(0.0d, inspection.paletteCalibration().maximumObservedRgbDistance()),
+                () -> assertTrue(inspection.paletteCalibration().fallbackReason().isEmpty()),
+                () -> assertTrue(inspection.paletteCalibration().observedColors().isEmpty())
         );
     }
 
@@ -191,7 +204,7 @@ class CaptureMediaTilePayloadSamplerTest {
         assertAll(
                 () -> assertEquals(FrameSampleStatus.REJECTED, sample.status()),
                 () -> assertTrue(sample.payloads().isEmpty()),
-                () -> assertEquals(CaptureMediaDiagnosticCode.COLOR_OR_COMPRESSION_SHIFT, diagnostic.code()),
+                () -> assertEquals(CaptureMediaDiagnosticCode.TILE_DECODE_OR_ENVELOPE_FAILURE, diagnostic.code()),
                 () -> assertEquals(CaptureMediaDiagnosticSeverity.ERROR, diagnostic.severity()),
                 () -> assertTrue(diagnostic.blocking())
         );
@@ -258,8 +271,8 @@ class CaptureMediaTilePayloadSamplerTest {
     }
 
     @Test
-    @DisplayName("Camera-derived candidates can decode with low-confidence palette expansion")
-    void cameraDerivedCandidatesCanDecodeWithLowConfidencePaletteExpansion() {
+    @DisplayName("Camera-derived candidates decode with calibrated shifted palette")
+    void cameraDerivedCandidatesDecodeWithCalibratedShiftedPalette() {
         RenderedTileFixture fixture = renderedTileFixture(50);
         NormalizedCaptureFrame cameraFrame = cameraDerivedFrame(fixture.frame().copyArgbPixels());
 
@@ -269,11 +282,41 @@ class CaptureMediaTilePayloadSamplerTest {
         assertAll(
                 () -> assertEquals(FrameSampleStatus.ACCEPTED, sample.status()),
                 () -> assertEquals(List.of(fixture.payload()), sample.payloads()),
-                () -> assertEquals(CaptureMediaDiagnosticCode.COLOR_OR_COMPRESSION_SHIFT,
-                        sample.diagnostics().get(0).code()),
-                () -> assertEquals(CaptureMediaDiagnosticSeverity.WARNING, sample.diagnostics().get(0).severity()),
-                () -> assertTrue(sample.paletteConfidence().orElseThrow().lowConfidenceSampleCount() > 0),
-                () -> assertEquals(1, inspection.decodedPayloadCount())
+                () -> assertTrue(sample.diagnostics().stream().noneMatch(CaptureMediaDiagnostic::blocking)),
+                () -> assertEquals(0, sample.paletteConfidence().orElseThrow().lowConfidenceSampleCount()),
+                () -> assertEquals(0, sample.paletteConfidence().orElseThrow().rejectedSampleCount()),
+                () -> assertEquals(1, inspection.decodedPayloadCount()),
+                () -> assertTrue(inspection.paletteCalibration().enabled()),
+                () -> assertTrue(inspection.paletteCalibration().confidence() > 0.75d),
+                () -> assertTrue(inspection.paletteCalibration().observedColorCount() >= 2),
+                () -> assertTrue(inspection.paletteCalibration().maximumObservedRgbDistance() > 0.0d),
+                () -> assertTrue(inspection.paletteCalibration().fallbackReason().isEmpty()),
+                () -> assertFalse(inspection.paletteCalibration().observedColors().isEmpty())
+        );
+    }
+
+    @Test
+    @DisplayName("Low-confidence camera calibration does not globally broaden thresholds")
+    void lowConfidenceCameraCalibrationDoesNotGloballyBroadenThresholds() {
+        RenderedTileFixture fixture = renderedTileFixture(90);
+        NormalizedCaptureFrame cameraFrame = cameraDerivedFrame(fixture.frame().copyArgbPixels());
+
+        FrameSample sample = sampler.sample(cameraFrame);
+        FrameInspection inspection = sampler.inspect(cameraFrame);
+        CaptureMediaDiagnostic diagnostic = sample.diagnostics().get(0);
+
+        assertAll(
+                () -> assertEquals(FrameSampleStatus.REJECTED, sample.status()),
+                () -> assertTrue(sample.payloads().isEmpty()),
+                () -> assertEquals(CaptureMediaDiagnosticCode.COLOR_OR_COMPRESSION_SHIFT, diagnostic.code()),
+                () -> assertEquals(CaptureMediaDiagnosticSeverity.ERROR, diagnostic.severity()),
+                () -> assertTrue(diagnostic.blocking()),
+                () -> assertEquals(BorderInspectionStatus.PALETTE_REJECTED, inspection.slots().get(0).borderStatus()),
+                () -> assertEquals(0, inspection.decodedPayloadCount()),
+                () -> assertFalse(inspection.paletteCalibration().enabled()),
+                () -> assertEquals(0.0d, inspection.paletteCalibration().confidence()),
+                () -> assertTrue(inspection.paletteCalibration().fallbackReason().isPresent()),
+                () -> assertTrue(inspection.paletteCalibration().observedColors().isEmpty())
         );
     }
 
@@ -340,7 +383,7 @@ class CaptureMediaTilePayloadSamplerTest {
         assertAll(
                 () -> assertEquals(FrameSampleStatus.REJECTED, sample.status()),
                 () -> assertTrue(sample.payloads().isEmpty()),
-                () -> assertTrue(sample.paletteConfidence().orElseThrow().rejectedSampleCount() > 0),
+                () -> assertFalse(sample.diagnostics().isEmpty()),
                 () -> assertEquals(0, inspection.decodedPayloadCount())
         );
     }
@@ -365,8 +408,8 @@ class CaptureMediaTilePayloadSamplerTest {
     }
 
     @Test
-    @DisplayName("Local white-balance drift decodes only with low-confidence warnings")
-    void localWhiteBalanceDriftDecodesOnlyWithLowConfidenceWarnings() {
+    @DisplayName("Local white-balance drift decodes with calibrated palette")
+    void localWhiteBalanceDriftDecodesWithCalibratedPalette() {
         RenderedTileFixture fixture = renderedTileFixture(0);
         NormalizedCaptureFrame cameraFrame = cameraDerivedFrame(whiteBalancedPixels(fixture.frame().copyArgbPixels()));
 
@@ -376,10 +419,8 @@ class CaptureMediaTilePayloadSamplerTest {
         assertAll(
                 () -> assertEquals(FrameSampleStatus.ACCEPTED, sample.status()),
                 () -> assertEquals(List.of(fixture.payload()), sample.payloads()),
-                () -> assertEquals(CaptureMediaDiagnosticCode.COLOR_OR_COMPRESSION_SHIFT,
-                        sample.diagnostics().get(0).code()),
-                () -> assertEquals(CaptureMediaDiagnosticSeverity.WARNING, sample.diagnostics().get(0).severity()),
-                () -> assertTrue(sample.paletteConfidence().orElseThrow().lowConfidenceSampleCount() > 0),
+                () -> assertTrue(sample.diagnostics().stream().noneMatch(CaptureMediaDiagnostic::blocking)),
+                () -> assertEquals(0, sample.paletteConfidence().orElseThrow().rejectedSampleCount()),
                 () -> assertEquals(BorderInspectionStatus.SIGNATURE, inspection.slots().get(0).borderStatus()),
                 () -> assertEquals(1, inspection.decodedPayloadCount())
         );
@@ -455,8 +496,8 @@ class CaptureMediaTilePayloadSamplerTest {
     }
 
     @Test
-    @DisplayName("Camera-derived finder phase fallback reaches tile decode for shifted inner content")
-    void cameraDerivedFinderPhaseFallbackReachesTileDecodeForShiftedInnerContent() {
+    @DisplayName("Camera-derived phase search recovers shifted inner content")
+    void cameraDerivedPhaseSearchRecoversShiftedInnerContent() {
         RenderedTileFixture fixture = finderPhaseShiftedTileFixture();
         NormalizedCaptureFrame exactFrame = frame(fixture.frame().copyArgbPixels());
         NormalizedCaptureFrame cameraFrame = cameraDerivedFrame(fixture.frame().copyArgbPixels());
@@ -465,21 +506,26 @@ class CaptureMediaTilePayloadSamplerTest {
         FrameSample cameraSample = sampler.sample(cameraFrame);
         FrameInspection exactInspection = sampler.inspect(exactFrame);
         FrameInspection cameraInspection = sampler.inspect(cameraFrame);
-        CandidateInspection tileDecodeAttempt = cameraInspection.slots().get(0).candidates().stream()
-                .filter(candidate -> candidate.decodeStatus() == DecodeInspectionStatus.REJECTED_BY_TILE_OR_ENVELOPE)
+        CandidateInspection acceptedCandidate = cameraInspection.slots().get(0).candidates().stream()
+                .filter(candidate -> candidate.decodeStatus() == DecodeInspectionStatus.ACCEPTED_PAYLOAD)
                 .findFirst()
                 .orElseThrow();
+        PhaseInspection selectedPhase = acceptedCandidate.selectedPhase();
 
         assertAll(
                 () -> assertTrue(exactSample.payloads().isEmpty()),
                 () -> assertTrue(exactInspection.slots().get(0).candidates().stream()
                         .noneMatch(candidate ->
                                 candidate.decodeStatus() == DecodeInspectionStatus.REJECTED_BY_TILE_OR_ENVELOPE)),
-                () -> assertEquals(FrameSampleStatus.REJECTED, cameraSample.status()),
-                () -> assertTrue(cameraSample.payloads().isEmpty()),
+                () -> assertEquals(FrameSampleStatus.ACCEPTED, cameraSample.status()),
+                () -> assertEquals(List.of(fixture.payload()), cameraSample.payloads()),
                 () -> assertEquals(ModuleSamplingInspectionSource.FALLBACK_SEARCH,
-                        tileDecodeAttempt.moduleSamplingOffsetSource()),
-                () -> assertEquals(0, cameraInspection.decodedPayloadCount())
+                        acceptedCandidate.moduleSamplingOffsetSource()),
+                () -> assertEquals(CaptureMediaModulePhaseCandidateSource.BOUNDED_SEARCH, selectedPhase.source()),
+                () -> assertEquals(CaptureMediaModulePhaseOutcome.ACCEPTED_PAYLOAD, selectedPhase.outcome()),
+                () -> assertTrue(selectedPhase.attemptedVariantCount() > 1),
+                () -> assertTrue(acceptedCandidate.runnerUpPhase().isPresent()),
+                () -> assertEquals(1, cameraInspection.decodedPayloadCount())
         );
     }
 
@@ -593,6 +639,7 @@ class CaptureMediaTilePayloadSamplerTest {
 
         FrameSample sample = sampler.sample(frame);
         FrameInspection inspection = sampler.inspect(frame);
+        CaptureMediaDiagnostic diagnostic = sample.diagnostics().get(0);
         CandidateInspection rejectedCandidate = inspection.slots().get(0).candidates().stream()
                 .filter(candidate -> candidate.decodeStatus() == DecodeInspectionStatus.REJECTED_BY_TILE_OR_ENVELOPE)
                 .findFirst()
@@ -600,10 +647,13 @@ class CaptureMediaTilePayloadSamplerTest {
 
         assertAll(
                 () -> assertEquals(FrameSampleStatus.REJECTED, sample.status()),
+                () -> assertEquals(CaptureMediaDiagnosticCode.TILE_DECODE_OR_ENVELOPE_FAILURE, diagnostic.code()),
                 () -> assertEquals(ProfileSelectionSource.NONE, inspection.profileSelectionSource()),
                 () -> assertTrue(inspection.selectedLayoutProfileId().isEmpty()),
                 () -> assertEquals(1, inspection.profileAttempts().size()),
                 () -> assertTrue(inspection.profileAttempts().get(0).slotValidationLayoutProfileMismatchCount() > 0),
+                () -> assertEquals("SLOT_VALIDATION", rejectedCandidate.decodeDiagnostics()
+                        .get("postPalette.failureStage")),
                 () -> assertEquals("desktop-1080p-safe",
                         rejectedCandidate.decodeDiagnostics().get("slotValidation.expectedLayoutProfileId")),
                 () -> assertEquals("debug-low-density",
@@ -736,6 +786,38 @@ class CaptureMediaTilePayloadSamplerTest {
     }
 
     @Test
+    @DisplayName("Sample and inspect paths select equivalent phase evidence")
+    void sampleAndInspectPathsSelectEquivalentPhaseEvidence() {
+        RenderedTileFixture fixture = renderedTileFixture(0);
+        int[] noisyPixels = fixture.frame().copyArgbPixels();
+        mutateLogicalModuleCenters(noisyPixels, fixture.logicalTile(), 0xFF808080);
+        NormalizedCaptureFrame cameraFrame = cameraDerivedFrame(noisyPixels);
+
+        FrameSample sample = sampler.sample(cameraFrame);
+        FrameInspection inspection = sampler.inspect(cameraFrame);
+        CandidateInspection acceptedCandidate = inspection.slots().get(0).candidates().stream()
+                .filter(candidate -> candidate.decodeStatus() == DecodeInspectionStatus.ACCEPTED_PAYLOAD)
+                .findFirst()
+                .orElseThrow();
+        PhaseInspection selectedPhase = acceptedCandidate.selectedPhase();
+
+        assertAll(
+                () -> assertEquals(FrameSampleStatus.ACCEPTED, sample.status()),
+                () -> assertEquals(List.of(fixture.payload()), sample.payloads()),
+                () -> assertEquals(1, inspection.decodedPayloadCount()),
+                () -> assertEquals(CaptureMediaModulePhaseOutcome.ACCEPTED_PAYLOAD, selectedPhase.outcome()),
+                () -> assertEquals(CaptureMediaModulePhaseCandidateSource.BOUNDED_SEARCH, selectedPhase.source()),
+                () -> assertEquals(acceptedCandidate.moduleCenterOffsetXPx(),
+                        (int) selectedPhase.moduleCenterOffsetXPx()),
+                () -> assertEquals(acceptedCandidate.moduleCenterOffsetYPx(),
+                        (int) selectedPhase.moduleCenterOffsetYPx()),
+                () -> assertEquals(acceptedCandidate.moduleSizePx(), (int) selectedPhase.moduleSizePx()),
+                () -> assertTrue(selectedPhase.attemptedVariantCount() > 1),
+                () -> assertTrue(acceptedCandidate.runnerUpPhase().isPresent())
+        );
+    }
+
+    @Test
     @DisplayName("Palette-sampled content is not accepted when tile or envelope validation fails")
     void paletteSampledContentIsNotAcceptedWhenTileOrEnvelopeValidationFails() {
         RenderedTileFixture fixture = renderedTileFixture(0);
@@ -754,16 +836,78 @@ class CaptureMediaTilePayloadSamplerTest {
         assertAll(
                 () -> assertEquals(FrameSampleStatus.REJECTED, sample.status()),
                 () -> assertTrue(sample.payloads().isEmpty()),
-                () -> assertEquals(CaptureMediaDiagnosticCode.COLOR_OR_COMPRESSION_SHIFT, diagnostic.code()),
+                () -> assertEquals(CaptureMediaDiagnosticCode.TILE_DECODE_OR_ENVELOPE_FAILURE, diagnostic.code()),
                 () -> assertEquals(CaptureMediaDiagnosticSeverity.ERROR, diagnostic.severity()),
                 () -> assertTrue(diagnostic.blocking()),
                 () -> assertTrue(rejectedCandidate.decodeFailureReason().orElseThrow().startsWith("tileDecode: ")),
+                () -> assertEquals("TILE_DECODE", rejectedCandidate.decodeDiagnostics()
+                        .get("postPalette.failureStage")),
                 () -> assertTrue(rejectedCandidate.decodeDiagnostics().containsKey("failureStage")),
                 () -> assertTrue(rejectedCandidate.decodeDiagnostics().containsKey("encodedBytes")),
                 () -> assertTrue(rejectedCandidate.decodeDiagnostics().containsKey("parsedHeaderHex")),
                 () -> assertTrue(rejectedCandidate.samplingDiagnostics().containsKey("sampledMatrixSha256")),
                 () -> assertTrue(rejectedCandidate.samplingDiagnostics().containsKey("sampledMatrixPrefix")),
                 () -> assertTrue(rejectedCandidate.samplingDiagnostics().containsKey("sampledMatrixHistogram"))
+        );
+    }
+
+    @Test
+    @DisplayName("Envelope CRC failures after tile decode report post-palette diagnostics")
+    void envelopeCrcFailuresAfterTileDecodeReportPostPaletteDiagnostics() {
+        RenderedTileFixture fixture = renderedTileFixtureWithCorruptedEnvelope();
+
+        FrameSample sample = sampler.sample(fixture.frame());
+        FrameInspection inspection = sampler.inspect(fixture.frame());
+        CaptureMediaDiagnostic diagnostic = sample.diagnostics().get(0);
+        CandidateInspection rejectedCandidate = inspection.slots().get(0).candidates().stream()
+                .filter(candidate -> candidate.decodeStatus() == DecodeInspectionStatus.REJECTED_BY_TILE_OR_ENVELOPE)
+                .findFirst()
+                .orElseThrow();
+        PhaseInspection selectedPhase = rejectedCandidate.selectedPhase();
+
+        assertAll(
+                () -> assertEquals(FrameSampleStatus.REJECTED, sample.status()),
+                () -> assertTrue(sample.payloads().isEmpty()),
+                () -> assertEquals(CaptureMediaDiagnosticCode.TILE_DECODE_OR_ENVELOPE_FAILURE, diagnostic.code()),
+                () -> assertEquals(CaptureMediaDiagnosticSeverity.ERROR, diagnostic.severity()),
+                () -> assertTrue(diagnostic.blocking()),
+                () -> assertTrue(rejectedCandidate.decodeFailureReason().orElseThrow()
+                        .startsWith("envelopeValidation: ")),
+                () -> assertEquals("ENVELOPE_VALIDATION", rejectedCandidate.decodeDiagnostics()
+                        .get("postPalette.failureStage"))
+        );
+    }
+
+    @Test
+    @DisplayName("Calibrated camera-derived envelope CRC failures remain rejected")
+    void calibratedCameraDerivedEnvelopeCrcFailuresRemainRejected() {
+        RenderedTileFixture fixture = renderedTileFixtureWithCorruptedEnvelope(50);
+        NormalizedCaptureFrame cameraFrame = cameraDerivedFrame(fixture.frame().copyArgbPixels());
+
+        FrameSample sample = sampler.sample(cameraFrame);
+        FrameInspection inspection = sampler.inspect(cameraFrame);
+        CaptureMediaDiagnostic diagnostic = sample.diagnostics().get(0);
+        CandidateInspection rejectedCandidate = inspection.slots().get(0).candidates().stream()
+                .filter(candidate -> candidate.decodeStatus() == DecodeInspectionStatus.REJECTED_BY_TILE_OR_ENVELOPE)
+                .findFirst()
+                .orElseThrow();
+        PhaseInspection selectedPhase = rejectedCandidate.selectedPhase();
+
+        assertAll(
+                () -> assertEquals(FrameSampleStatus.REJECTED, sample.status()),
+                () -> assertTrue(sample.payloads().isEmpty()),
+                () -> assertEquals(CaptureMediaDiagnosticCode.TILE_DECODE_OR_ENVELOPE_FAILURE, diagnostic.code()),
+                () -> assertTrue(diagnostic.blocking()),
+                () -> assertTrue(rejectedCandidate.decodeFailureReason().orElseThrow()
+                        .startsWith("envelopeValidation: ")),
+                () -> assertEquals("ENVELOPE_VALIDATION", rejectedCandidate.decodeDiagnostics()
+                        .get("postPalette.failureStage")),
+                () -> assertEquals(0, rejectedCandidate.paletteConfidence().orElseThrow().rejectedSampleCount()),
+                () -> assertEquals(CaptureMediaModulePhaseOutcome.ENVELOPE_VALIDATION_FAILURE,
+                        selectedPhase.outcome()),
+                () -> assertEquals("ENVELOPE_VALIDATION", selectedPhase.failureStage().orElseThrow()),
+                () -> assertTrue(selectedPhase.attemptedVariantCount() > 1),
+                () -> assertTrue(rejectedCandidate.runnerUpPhase().isPresent())
         );
     }
 
@@ -779,6 +923,22 @@ class CaptureMediaTilePayloadSamplerTest {
         int[] framePixels = new int[CAPTURE_LAYOUT.frameWidthPx() * CAPTURE_LAYOUT.frameHeightPx()];
         Arrays.fill(framePixels, 0xFF000000);
         pasteTile(framePixels, renderedTile, colorShift, offsetX, offsetY);
+        return new RenderedTileFixture(frame(framePixels), payload, logicalTile);
+    }
+
+    private RenderedTileFixture renderedTileFixtureWithCorruptedEnvelope() {
+        return renderedTileFixtureWithCorruptedEnvelope(0);
+    }
+
+    private RenderedTileFixture renderedTileFixtureWithCorruptedEnvelope(int colorShift) {
+        TilePayload payload = payload();
+        byte[] envelope = envelopeCodec.serialize(payload);
+        envelope[envelope.length - 1] = (byte) (envelope[envelope.length - 1] ^ 0x01);
+        LogicalTile logicalTile = TileCodecs.defaultEncoder().encode(envelope, TILE_PROFILE);
+        RenderedTile renderedTile = new TileRasterRenderer().render(logicalTile, LAYOUT_PLAN);
+        int[] framePixels = new int[CAPTURE_LAYOUT.frameWidthPx() * CAPTURE_LAYOUT.frameHeightPx()];
+        Arrays.fill(framePixels, 0xFF000000);
+        pasteTile(framePixels, renderedTile, colorShift, 0, 0);
         return new RenderedTileFixture(frame(framePixels), payload, logicalTile);
     }
 

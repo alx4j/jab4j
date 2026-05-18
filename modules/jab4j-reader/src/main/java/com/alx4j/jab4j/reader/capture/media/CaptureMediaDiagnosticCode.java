@@ -82,7 +82,13 @@ public enum CaptureMediaDiagnosticCode {
     /**
      * Requested normalized-candidate debug output could not be written.
      */
-    DEBUG_EXPORT_FAILURE;
+    DEBUG_EXPORT_FAILURE,
+
+    /**
+     * Palette and finder sampling reached tile decoding, but tile decode, envelope validation, or slot validation
+     * failed.
+     */
+    TILE_DECODE_OR_ENVELOPE_FAILURE;
 
     /**
      * Indicates whether this code describes duplicate media content.
@@ -105,7 +111,8 @@ public enum CaptureMediaDiagnosticCode {
     /**
      * Indicates whether this code describes media quality rather than session completeness or restore behavior.
      *
-     * @return true for screen, size, perspective, partial-frame, blur, glare, or color diagnostics
+     * @return true for screen, size, perspective, partial-frame, blur, glare, color, or post-palette validation
+     *         diagnostics
      */
     public boolean qualityIssue() {
         return this == SCREEN_OR_FRAME_NOT_FOUND
@@ -114,6 +121,7 @@ public enum CaptureMediaDiagnosticCode {
                 || this == FRAME_PARTIALLY_OUTSIDE_IMAGE
                 || this == BLUR
                 || this == GLARE_OR_OVEREXPOSURE
-                || this == COLOR_OR_COMPRESSION_SHIFT;
+                || this == COLOR_OR_COMPRESSION_SHIFT
+                || this == TILE_DECODE_OR_ENVELOPE_FAILURE;
     }
 }

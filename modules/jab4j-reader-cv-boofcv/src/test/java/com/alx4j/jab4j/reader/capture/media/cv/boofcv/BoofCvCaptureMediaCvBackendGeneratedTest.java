@@ -17,6 +17,7 @@ import com.alx4j.jab4j.reader.capture.media.CaptureMediaDiagnosticCode;
 import com.alx4j.jab4j.reader.capture.media.cv.CvDetectionResult;
 import com.alx4j.jab4j.reader.capture.media.cv.CvDetectionStatus;
 import com.alx4j.jab4j.reader.capture.media.cv.CvNormalizedFrame;
+import com.alx4j.jab4j.reader.capture.media.cv.CvSamplingEvidence;
 import com.alx4j.jab4j.reader.capture.media.input.MediaInputFrame;
 
 /**
@@ -118,6 +119,16 @@ class BoofCvCaptureMediaCvBackendGeneratedTest {
                         result.metrics().get("boofCvSelectedAdmissionBandCode"),
                         scenarioId + " must report rejected selected admission band"
                 ),
+                () -> assertEquals(
+                        1.0d,
+                        result.metrics().get("boofCvSelectedBackendCode"),
+                        scenarioId + " must report the selected BoofCV backend code"
+                ),
+                () -> assertEquals(
+                        0.0d,
+                        result.metrics().get("boofCvPreprocessingModeCode"),
+                        scenarioId + " must report that no preprocessing output crossed the boundary"
+                ),
                 () -> assertTrue(
                         result.metrics().get("boofCvSelectedRejectionReasonCode") > 0.0d,
                         scenarioId + " must report a deterministic rejection reason code"
@@ -153,6 +164,7 @@ class BoofCvCaptureMediaCvBackendGeneratedTest {
         CvDetectionResult second = backend.detect(fixture.get());
         CvNormalizedFrame firstNormalizedFrame = first.normalizedFrames().get(0);
         CvNormalizedFrame secondNormalizedFrame = second.normalizedFrames().get(0);
+        CvSamplingEvidence evidence = firstNormalizedFrame.samplingEvidence().orElseThrow();
 
         assertAll(
                 () -> assertEquals(
@@ -206,6 +218,16 @@ class BoofCvCaptureMediaCvBackendGeneratedTest {
                         first.metrics().get("boofCvSelectedRejectionReasonCode"),
                         scenarioId + " must not report rejection for accepted strict evidence"
                 ),
+                () -> assertEquals(
+                        1.0d,
+                        first.metrics().get("boofCvSelectedBackendCode"),
+                        scenarioId + " must report the selected BoofCV backend code"
+                ),
+                () -> assertEquals(
+                        1.0d,
+                        first.metrics().get("boofCvPreprocessingModeCode"),
+                        scenarioId + " must report perspective-correction preprocessing"
+                ),
                 () -> assertFiniteMetrics(scenarioId, first.metrics()),
                 () -> assertEquals(
                         "debug-low-density",
@@ -223,12 +245,26 @@ class BoofCvCaptureMediaCvBackendGeneratedTest {
                 ),
                 () -> assertEquals(
                         "boofcv",
-                        firstNormalizedFrame.samplingEvidence().orElseThrow().backendId(),
+                        evidence.backendId(),
                         scenarioId + " must carry BoofCV sampling evidence into the sampler path"
                 ),
                 () -> assertTrue(
-                        firstNormalizedFrame.samplingEvidence().orElseThrow().gridPhase().isPresent(),
+                        evidence.gridPhase().isPresent(),
                         scenarioId + " must carry frame-level grid-phase evidence"
+                ),
+                () -> assertEquals(
+                        1.0d,
+                        evidence.metrics().get("boofCvSelectedBackendCode"),
+                        scenarioId + " must carry selected-backend evidence as finite metrics"
+                ),
+                () -> assertEquals(
+                        1.0d,
+                        evidence.metrics().get("boofCvPreprocessingModeCode"),
+                        scenarioId + " must carry preprocessing-mode evidence as finite metrics"
+                ),
+                () -> assertTrue(
+                        evidence.metrics().get("boofCvSamplingEvidenceConfidence") > 0.0d,
+                        scenarioId + " must carry evidence confidence as finite metrics"
                 ),
                 () -> assertSelectedBoundsInsideSourceFrame(scenarioId, firstFrame, first),
                 () -> assertFiniteScoreMetric(scenarioId, first, "boofCvSelectedCandidateScore"),

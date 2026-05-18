@@ -24,7 +24,10 @@ import com.alx4j.jab4j.reader.capture.media.sample.CaptureMediaTilePayloadSample
 import com.alx4j.jab4j.reader.capture.media.sample.CaptureMediaTilePayloadSampler.CandidateInspectionStatus;
 import com.alx4j.jab4j.reader.capture.media.sample.CaptureMediaTilePayloadSampler.DecodeInspectionStatus;
 import com.alx4j.jab4j.reader.capture.media.sample.CaptureMediaTilePayloadSampler.FrameInspection;
+import com.alx4j.jab4j.reader.capture.media.sample.CaptureMediaTilePayloadSampler.PaletteCalibrationInspection;
+import com.alx4j.jab4j.reader.capture.media.sample.CaptureMediaTilePayloadSampler.PaletteColorCalibrationInspection;
 import com.alx4j.jab4j.reader.capture.media.sample.CaptureMediaTilePayloadSampler.PaletteConfidenceSummary;
+import com.alx4j.jab4j.reader.capture.media.sample.CaptureMediaTilePayloadSampler.PhaseInspection;
 import com.alx4j.jab4j.reader.capture.media.sample.CaptureMediaTilePayloadSampler.ProfileAttemptInspection;
 import com.alx4j.jab4j.reader.capture.media.sample.CaptureMediaTilePayloadSampler.SlotInspection;
 
@@ -268,6 +271,7 @@ public final class CaptureMediaCandidateDebugExporter {
         lines.add("sampler.paletteRejectedAttemptCount=" + inspection.paletteRejectedAttemptCount());
         lines.add("sampler.decodedPayloadCount=" + inspection.decodedPayloadCount());
         lines.add("sampler.slotCount=" + inspection.slots().size());
+        addPaletteCalibration(lines, inspection.paletteCalibration());
         int partialRejectedSlotCount = partialRejectedSlotCount(inspection);
         int partialUndecodableSlotCount = partialUndecodableSlotCount(inspection);
         boolean partialAccepted = cameraDerived(frame)
@@ -280,6 +284,9 @@ public final class CaptureMediaCandidateDebugExporter {
                 + (partialAccepted ? inspection.decodedPayloadCount() : 0));
         lines.add("sampler.partialWarningCount=" + (partialAccepted ? 1 : 0));
         lines.add("sampler.tileDecode.attemptCount=" + tileDecodeAttemptCount(inspection));
+        lines.add("sampler.phase.attemptedVariantCount=" + phaseAttemptedVariantCount(inspection));
+        lines.add("sampler.phase.variantCap=" + phaseVariantCap(inspection));
+        lines.add("sampler.phase.capReached=" + phaseCapReached(inspection));
         lines.add("sampler.envelope.acceptedPayloadCount=" + inspection.decodedPayloadCount());
         lines.add("sampler.envelope.rejectedAttemptCount=" + envelopeRejectedAttemptCount(inspection));
         lines.add("sampler.reason.borderSignatureSlotCount=" + borderStatusCount(inspection, BorderInspectionStatus.SIGNATURE));
@@ -291,6 +298,7 @@ public final class CaptureMediaCandidateDebugExporter {
         lines.add("sampler.reason.finderCandidateAttemptCount="
                 + candidateStatusCount(inspection, CandidateInspectionStatus.FINDER_CANDIDATE));
         lines.add("sampler.reason.tileOrEnvelopeRejectedAttemptCount=" + envelopeRejectedAttemptCount(inspection));
+        lines.add("sampler.reason.postPaletteRejectedAttemptCount=" + postPaletteRejectedAttemptCount(inspection));
         lines.add("sampler.reason.acceptedPayloadCount=" + inspection.decodedPayloadCount());
         addProfileAttempts(lines, inspection);
         addSamplingEvidence(lines, inspection);
@@ -298,6 +306,7 @@ public final class CaptureMediaCandidateDebugExporter {
         lines.add("diagnostic.selectedPublicCode=" + selectedPublicDiagnosticCode(inspection)
                 .map(CaptureMediaDiagnosticCode::name)
                 .orElse(""));
+        lines.add("diagnostic.selectedFailureStage=" + selectedFailureStage(inspection).orElse(""));
         lines.add("");
         return String.join(System.lineSeparator(), lines);
     }
@@ -401,6 +410,8 @@ public final class CaptureMediaCandidateDebugExporter {
                     + candidateStatusCount(slot, CandidateInspectionStatus.FINDER_CANDIDATE));
             lines.add(slotPrefix + ".reason.tileOrEnvelopeRejectedAttemptCount="
                     + decodeStatusCount(slot, DecodeInspectionStatus.REJECTED_BY_TILE_OR_ENVELOPE));
+            lines.add(slotPrefix + ".reason.postPaletteRejectedAttemptCount="
+                    + decodeStatusCount(slot, DecodeInspectionStatus.REJECTED_BY_TILE_OR_ENVELOPE));
             lines.add(slotPrefix + ".reason.acceptedPayloadCount="
                     + decodeStatusCount(slot, DecodeInspectionStatus.ACCEPTED_PAYLOAD));
             for (CandidateInspection candidate : slot.candidates()) {
@@ -412,6 +423,7 @@ public final class CaptureMediaCandidateDebugExporter {
                 lines.add(candidatePrefix + ".moduleSampling.offsetSource="
                         + candidate.moduleSamplingOffsetSource());
                 lines.add(candidatePrefix + ".moduleSampling.areaSampleRadiusPx=" + candidate.areaSampleRadiusPx());
+                addPhaseInspection(lines, candidatePrefix, candidate);
                 lines.add(candidatePrefix + ".status=" + candidate.status());
                 lines.add(candidatePrefix + ".decodeStatus=" + candidate.decodeStatus());
                 lines.add(candidatePrefix + ".tileDecode.status=" + candidate.decodeStatus());
@@ -428,6 +440,61 @@ public final class CaptureMediaCandidateDebugExporter {
                 candidate.paletteConfidence()
                         .ifPresent(confidence -> addPaletteConfidence(lines, candidatePrefix, confidence));
             }
+        }
+    }
+
+    private void addPhaseInspection(
+            List<String> lines,
+            String candidatePrefix,
+            CandidateInspection candidate
+    ) {
+        PhaseInspection selected = candidate.selectedPhase();
+        lines.add(candidatePrefix + ".phase.attemptedVariantCount=" + selected.attemptedVariantCount());
+        lines.add(candidatePrefix + ".phase.variantCap=" + selected.variantCap());
+        lines.add(candidatePrefix + ".phase.capReached=" + selected.capReached());
+        addPhaseInspection(lines, candidatePrefix + ".phase.selected", selected);
+        if (candidate.runnerUpPhase().isPresent()) {
+            lines.add(candidatePrefix + ".phase.runnerUp.available=true");
+            addPhaseInspection(lines, candidatePrefix + ".phase.runnerUp", candidate.runnerUpPhase().orElseThrow());
+        } else {
+            lines.add(candidatePrefix + ".phase.runnerUp.available=false");
+        }
+    }
+
+    private void addPhaseInspection(List<String> lines, String prefix, PhaseInspection phase) {
+        lines.add(prefix + ".rank=" + phase.rank());
+        lines.add(prefix + ".generationOrdinal=" + phase.generationOrdinal());
+        lines.add(prefix + ".source=" + phase.source());
+        lines.add(prefix + ".evidenceSource=" + phase.evidenceSource().orElse(""));
+        lines.add(prefix + ".outcome=" + phase.outcome());
+        lines.add(prefix + ".failureStage=" + phase.failureStage().orElse(""));
+        lines.add(prefix + ".failureDetail=" + phase.failureDetail().orElse(""));
+        lines.add(prefix + ".moduleCenterOffsetXPx=" + phase.moduleCenterOffsetXPx());
+        lines.add(prefix + ".moduleCenterOffsetYPx=" + phase.moduleCenterOffsetYPx());
+        lines.add(prefix + ".moduleSizePx=" + phase.moduleSizePx());
+        lines.add(prefix + ".moduleSizeScale=" + phase.moduleSizeScale());
+        lines.add(prefix + ".finderCandidateCount=" + phase.finderCandidateCount());
+        lines.add(prefix + ".finderExact=" + phase.finderExact());
+        lines.add(prefix + ".borderStrength=" + phase.borderStrength());
+        lines.add(prefix + ".paletteCalibrationConfidence=" + phase.paletteCalibrationConfidence());
+        lines.add(prefix + ".rejectedSampleCount=" + phase.rejectedSampleCount());
+    }
+
+    private void addPaletteCalibration(List<String> lines, PaletteCalibrationInspection calibration) {
+        lines.add("palette.calibration.enabled=" + calibration.enabled());
+        lines.add("palette.calibration.confidence=" + calibration.confidence());
+        lines.add("palette.calibration.observedColorCount=" + calibration.observedColorCount());
+        lines.add("palette.calibration.fallbackReason=" + calibration.fallbackReason().orElse(""));
+        lines.add("palette.calibration.maximumObservedRgbDistance="
+                + calibration.maximumObservedRgbDistance());
+        lines.add("palette.calibration.observedColor.entryCount=" + calibration.observedColors().size());
+        for (PaletteColorCalibrationInspection color : calibration.observedColors()) {
+            String prefix = "palette.calibration.observedColor." + color.paletteIndex();
+            lines.add(prefix + ".expectedArgb=" + argb(color.expectedArgb()));
+            lines.add(prefix + ".modelArgb=" + argb(color.modelArgb()));
+            lines.add(prefix + ".sampleCount=" + color.sampleCount());
+            lines.add(prefix + ".maximumObservedRgbDistance=" + color.maximumObservedRgbDistance());
+            lines.add(prefix + ".confidence=" + color.confidence());
         }
     }
 
@@ -448,6 +515,7 @@ public final class CaptureMediaCandidateDebugExporter {
         addSamplingAlias(lines, candidatePrefix, candidate, "sampledMatrixHistogram", "tileDecode.logicalTile.histogram");
 
         addDecodeAlias(lines, candidatePrefix, candidate, "failureStage", "tileDecode.failureStage");
+        addDecodeAlias(lines, candidatePrefix, candidate, "postPalette.failureStage", "postPalette.failureStage");
         addDecodeAlias(lines, candidatePrefix, candidate, "maskPattern", "tileDecode.maskPattern");
         addDecodeAlias(lines, candidatePrefix, candidate, "encodedBytes", "tileDecode.encodedBytes");
         addDecodeAlias(lines, candidatePrefix, candidate, "logicalCapacityBytes", "tileDecode.logicalCapacityBytes");
@@ -644,6 +712,37 @@ public final class CaptureMediaCandidateDebugExporter {
         return attemptCount;
     }
 
+    private int phaseAttemptedVariantCount(FrameInspection inspection) {
+        int attemptCount = 0;
+        for (SlotInspection slot : inspection.slots()) {
+            for (CandidateInspection candidate : slot.candidates()) {
+                attemptCount += candidate.selectedPhase().attemptedVariantCount();
+            }
+        }
+        return attemptCount;
+    }
+
+    private int phaseVariantCap(FrameInspection inspection) {
+        int variantCap = 0;
+        for (SlotInspection slot : inspection.slots()) {
+            for (CandidateInspection candidate : slot.candidates()) {
+                variantCap = Math.max(variantCap, candidate.selectedPhase().variantCap());
+            }
+        }
+        return variantCap;
+    }
+
+    private boolean phaseCapReached(FrameInspection inspection) {
+        for (SlotInspection slot : inspection.slots()) {
+            for (CandidateInspection candidate : slot.candidates()) {
+                if (candidate.selectedPhase().capReached()) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
     private int envelopeRejectedAttemptCount(FrameInspection inspection) {
         int rejectedCount = 0;
         for (SlotInspection slot : inspection.slots()) {
@@ -654,6 +753,10 @@ public final class CaptureMediaCandidateDebugExporter {
             }
         }
         return rejectedCount;
+    }
+
+    private int postPaletteRejectedAttemptCount(FrameInspection inspection) {
+        return envelopeRejectedAttemptCount(inspection);
     }
 
     private int partialRejectedSlotCount(FrameInspection inspection) {
@@ -707,6 +810,9 @@ public final class CaptureMediaCandidateDebugExporter {
         if (inspection.decodedPayloadCount() > 0) {
             return Optional.empty();
         }
+        if (postPaletteRejectedAttemptCount(inspection) > 0) {
+            return Optional.of(CaptureMediaDiagnosticCode.TILE_DECODE_OR_ENVELOPE_FAILURE);
+        }
         if (inspection.candidateAttemptCount() > 0
                 || inspection.paletteRejectedAttemptCount() > 0
                 || inspection.noFinderAttemptCount() > 0
@@ -715,6 +821,58 @@ public final class CaptureMediaCandidateDebugExporter {
             return Optional.of(CaptureMediaDiagnosticCode.COLOR_OR_COMPRESSION_SHIFT);
         }
         return Optional.of(CaptureMediaDiagnosticCode.SCREEN_OR_FRAME_NOT_FOUND);
+    }
+
+    private Optional<String> selectedFailureStage(FrameInspection inspection) {
+        if (inspection.decodedPayloadCount() > 0) {
+            return Optional.empty();
+        }
+        Optional<String> postPaletteStage = selectedPostPaletteFailureStage(inspection);
+        if (postPaletteStage.isPresent()) {
+            return postPaletteStage;
+        }
+        if (inspection.paletteRejectedAttemptCount() > 0
+                || inspection.slots().stream()
+                .anyMatch(slot -> slot.borderStatus() == BorderInspectionStatus.PALETTE_REJECTED)) {
+            return Optional.of("PALETTE");
+        }
+        if (inspection.candidateAttemptCount() > 0 || inspection.noFinderAttemptCount() > 0) {
+            return Optional.of("FINDER");
+        }
+        return Optional.of("SCREEN_OR_FRAME_NOT_FOUND");
+    }
+
+    private Optional<String> selectedPostPaletteFailureStage(FrameInspection inspection) {
+        for (SlotInspection slot : inspection.slots()) {
+            for (CandidateInspection candidate : slot.candidates()) {
+                if (candidate.decodeStatus() == DecodeInspectionStatus.REJECTED_BY_TILE_OR_ENVELOPE) {
+                    Optional<String> stage = postPaletteFailureStage(candidate);
+                    if (stage.isPresent()) {
+                        return stage;
+                    }
+                }
+            }
+        }
+        return Optional.empty();
+    }
+
+    private Optional<String> postPaletteFailureStage(CandidateInspection candidate) {
+        String explicitStage = candidate.decodeDiagnostics().get("postPalette.failureStage");
+        if (explicitStage != null && !explicitStage.isBlank()) {
+            return Optional.of(explicitStage);
+        }
+        String slotStage = candidate.decodeDiagnostics().get("slotValidation.stage");
+        if (slotStage != null && !slotStage.isBlank()) {
+            return Optional.of(slotStage);
+        }
+        String envelopeStage = candidate.decodeDiagnostics().get("envelopeValidation.stage");
+        if (envelopeStage != null && !envelopeStage.isBlank()) {
+            return Optional.of(envelopeStage);
+        }
+        if (candidate.decodeDiagnostics().containsKey("failureStage")) {
+            return Optional.of("TILE_DECODE");
+        }
+        return Optional.empty();
     }
 
     private void requireBackendId(String cvBackendId) {

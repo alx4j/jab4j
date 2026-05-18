@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
 import java.util.List;
 import java.util.UUID;
 import org.junit.jupiter.api.DisplayName;
@@ -17,7 +18,9 @@ import com.alx4j.jab4j.api.model.TilePayload;
 import com.alx4j.jab4j.reader.capture.decode.DecodedCaptureFrame;
 import com.alx4j.jab4j.reader.capture.media.decode.CaptureMediaFrameDecodeResult;
 import com.alx4j.jab4j.reader.capture.media.decode.CaptureMediaFrameDecoder;
+import com.alx4j.jab4j.reader.capture.media.normalize.FrameCorners;
 import com.alx4j.jab4j.reader.capture.media.normalize.NormalizedCaptureFrame;
+import com.alx4j.jab4j.reader.capture.media.quality.CaptureMediaQualityMetrics;
 
 @DisplayName("Capture media frame decoder")
 class CaptureMediaFrameDecoderTest {
@@ -160,7 +163,11 @@ class CaptureMediaFrameDecoderTest {
 
         CaptureMediaFrameDecodeResult result = decoder.decode(List.of(frame));
 
-        assertRejectedAsColorOrCompressionShift(result, "bad-envelope.png");
+        assertRejectedAsDiagnostic(
+                result,
+                "bad-envelope.png",
+                CaptureMediaDiagnosticCode.TILE_DECODE_OR_ENVELOPE_FAILURE
+        );
     }
 
     @Test
@@ -182,7 +189,11 @@ class CaptureMediaFrameDecoderTest {
 
         CaptureMediaFrameDecodeResult result = decoder.decode(List.of(frame));
 
-        assertRejectedAsColorOrCompressionShift(result, "wrong-slot.png");
+        assertRejectedAsDiagnostic(
+                result,
+                "wrong-slot.png",
+                CaptureMediaDiagnosticCode.TILE_DECODE_OR_ENVELOPE_FAILURE
+        );
     }
 
     @Test
@@ -204,7 +215,23 @@ class CaptureMediaFrameDecoderTest {
 
         CaptureMediaFrameDecodeResult result = decoder.decode(List.of(frame));
 
-        assertRejectedAsColorOrCompressionShift(result, "empty-session-end.png");
+        assertRejectedAsDiagnostic(
+                result,
+                "empty-session-end.png",
+                CaptureMediaDiagnosticCode.TILE_DECODE_OR_ENVELOPE_FAILURE
+        );
+    }
+
+    @Test
+    @DisplayName("No-content normalized frames remain screen-or-frame-not-found diagnostics")
+    void noContentNormalizedFramesRemainScreenOrFrameNotFoundDiagnostics() {
+        CaptureMediaFrameDecodeResult result = decoder.decode(List.of(noContentNormalizedFrame()));
+
+        assertRejectedAsDiagnostic(
+                result,
+                "blank-frame.png",
+                CaptureMediaDiagnosticCode.SCREEN_OR_FRAME_NOT_FOUND
+        );
     }
 
     @Test
@@ -265,14 +292,40 @@ class CaptureMediaFrameDecoderTest {
         );
     }
 
-    private void assertRejectedAsColorOrCompressionShift(CaptureMediaFrameDecodeResult result, String sourceId) {
+    private NormalizedCaptureFrame noContentNormalizedFrame() {
+        int width = 1280;
+        int height = 720;
+        int[] pixels = new int[width * height];
+        Arrays.fill(pixels, 0xFF000000);
+        return new NormalizedCaptureFrame(
+                "blank-frame.png",
+                CaptureMediaSourceKind.STILL_IMAGE_FILE,
+                0,
+                width,
+                height,
+                width,
+                height,
+                "png",
+                "abc123",
+                CaptureMediaTestFrames.layoutProfileId(),
+                FrameCorners.exactFrame(width, height),
+                CaptureMediaQualityMetrics.exactRenderedFrame(),
+                pixels
+        );
+    }
+
+    private void assertRejectedAsDiagnostic(
+            CaptureMediaFrameDecodeResult result,
+            String sourceId,
+            CaptureMediaDiagnosticCode expectedCode
+    ) {
         assertAll(
                 () -> assertTrue(result.decodedFrames().isEmpty()),
                 () -> assertEquals(1, result.rejectedCandidateCount()),
                 () -> assertFalse(result.diagnostics().isEmpty()),
                 () -> assertTrue(result.diagnostics().stream().allMatch(CaptureMediaDiagnostic::blocking)),
                 () -> assertTrue(result.diagnostics().stream()
-                        .anyMatch(diagnostic -> diagnostic.code() == CaptureMediaDiagnosticCode.COLOR_OR_COMPRESSION_SHIFT
+                        .anyMatch(diagnostic -> diagnostic.code() == expectedCode
                                 && sourceId.equals(diagnostic.sourceId().orElseThrow())))
         );
     }

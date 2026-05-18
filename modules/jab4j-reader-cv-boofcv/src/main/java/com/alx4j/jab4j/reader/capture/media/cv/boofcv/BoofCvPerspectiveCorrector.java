@@ -33,6 +33,8 @@ import org.ejml.data.DMatrixRMaj;
 final class BoofCvPerspectiveCorrector {
 
     private static final String EVIDENCE_BACKEND_ID = new String(new char[] { 'b', 'o', 'o', 'f', 'c', 'v' });
+    private static final double SELECTED_BACKEND_CODE = 1.0d;
+    private static final double PREPROCESSING_MODE_PERSPECTIVE_CORRECTION_CODE = 1.0d;
     private static final int MAX_PHASE_OFFSET_PX = 8;
     private static final int MAX_FEASIBLE_PHASE_OFFSET_PX = 4;
     private static final int MAX_PHASE_SAMPLES = 96;
@@ -175,6 +177,8 @@ final class BoofCvPerspectiveCorrector {
 
         double confidence = clampScore((0.70d * phase.score()) + (0.30d * references.localContrastScore()));
         Map<String, Double> metrics = new LinkedHashMap<>();
+        metrics.put("boofCvSelectedBackendCode", SELECTED_BACKEND_CODE);
+        metrics.put("boofCvPreprocessingModeCode", PREPROCESSING_MODE_PERSPECTIVE_CORRECTION_CODE);
         metrics.put("boofCvGridPhaseOffsetXPx", phase.offsetPx());
         metrics.put("boofCvGridPhaseOffsetYPx", 0.0d);
         metrics.put("boofCvModuleCenterOffsetXPx", phase.offsetPx());

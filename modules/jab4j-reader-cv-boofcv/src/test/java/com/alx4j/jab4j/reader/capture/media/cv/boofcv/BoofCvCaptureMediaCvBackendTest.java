@@ -5,8 +5,16 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Optional;
 import java.util.ServiceLoader;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+import java.util.stream.Stream;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import com.alx4j.jab4j.reader.capture.media.CaptureMediaDiagnosticCode;
@@ -15,12 +23,26 @@ import com.alx4j.jab4j.reader.capture.media.cv.CaptureMediaCvBackend;
 import com.alx4j.jab4j.reader.capture.media.cv.CaptureMediaCvBackends;
 import com.alx4j.jab4j.reader.capture.media.cv.CvDetectionResult;
 import com.alx4j.jab4j.reader.capture.media.cv.CvDetectionStatus;
+import com.alx4j.jab4j.reader.capture.media.cv.CvGridPhase;
 import com.alx4j.jab4j.reader.capture.media.cv.CvNormalizedFrame;
+import com.alx4j.jab4j.reader.capture.media.cv.CvSamplingEvidence;
 import com.alx4j.jab4j.reader.capture.media.input.MediaInputFrame;
 import com.alx4j.jab4j.reader.capture.media.normalize.CaptureMediaFrameNormalizer;
 
 @DisplayName("Optional BoofCV capture-media backend")
 class BoofCvCaptureMediaCvBackendTest {
+
+    private static final Pattern IMPORT_DECLARATION = Pattern.compile("^\\s*import\\s+(?:static\\s+)?([^;]+);\\s*$");
+    private static final List<String> FORBIDDEN_PROTOCOL_IMPORTS = List.of(
+            "com.alx4j.jab4j.api.model.TilePayload",
+            "com.alx4j.jab4j.tile.TileDecoder",
+            "com.alx4j.jab4j.transfer.TilePayloadEnvelopeCodec",
+            "com.alx4j.jab4j.reader.capture.decode.",
+            "com.alx4j.jab4j.reader.capture.media.decode.",
+            "com.alx4j.jab4j.reader.capture.media.sample.CaptureMediaTilePayloadSampler",
+            "com.alx4j.jab4j.reader.capture.restore.",
+            "com.alx4j.jab4j.reader.restore."
+    );
 
     @Test
     @DisplayName("Service loader exposes the optional BoofCV backend")
@@ -81,6 +103,8 @@ class BoofCvCaptureMediaCvBackendTest {
                 () -> assertEquals(1.0d, result.metrics().get("boofCvConversionCopyCount")),
                 () -> assertEquals(1.0d, result.metrics().get("boofCvGrayscaleConversionCount")),
                 () -> assertTrue(result.metrics().containsKey("boofCvExternalContourCount")),
+                () -> assertEquals(1.0d, result.metrics().get("boofCvSelectedBackendCode")),
+                () -> assertEquals(0.0d, result.metrics().get("boofCvPreprocessingModeCode")),
                 () -> assertEquals(0.0d, result.metrics().get("boofCvStrictEvidenceCandidateCount")),
                 () -> assertEquals(0.0d, result.metrics().get("boofCvPlausibleValidationCandidateCount")),
                 () -> assertEquals(0.0d, result.metrics().get("boofCvRejectedScoredCandidateCount")),
@@ -95,6 +119,7 @@ class BoofCvCaptureMediaCvBackendTest {
         CvDetectionResult result = new BoofCvCaptureMediaCvBackend()
                 .detect(BoofCvGeneratedFixtureFactory.cameraLikeMonitorPng());
         CvNormalizedFrame normalizedFrame = result.normalizedFrames().get(0);
+        CvSamplingEvidence evidence = normalizedFrame.samplingEvidence().orElseThrow();
 
         assertAll(
                 () -> assertEquals(CvDetectionStatus.ACCEPTED, result.status()),
@@ -104,6 +129,8 @@ class BoofCvCaptureMediaCvBackendTest {
                 () -> assertEquals(3.0d, result.metrics().get("boofCvAcceptedCandidateCount")),
                 () -> assertEquals(3.0d, result.metrics().get("boofCvNormalizedFrameCount")),
                 () -> assertEquals(3.0d, result.metrics().get("boofCvAcceptedSourceCandidateCount")),
+                () -> assertEquals(1.0d, result.metrics().get("boofCvSelectedBackendCode")),
+                () -> assertEquals(1.0d, result.metrics().get("boofCvPreprocessingModeCode")),
                 () -> assertEquals(
                         result.metrics().get("boofCvAcceptedSourceCandidateCount"),
                         result.metrics().get("boofCvStrictEvidenceCandidateCount")
@@ -121,12 +148,15 @@ class BoofCvCaptureMediaCvBackendTest {
                 () -> assertEquals(3, normalizedFrame.profileAlternativeCount()),
                 () -> assertEquals(
                         "boofcv",
-                        normalizedFrame.samplingEvidence().orElseThrow().backendId()
+                        evidence.backendId()
                 ),
-                () -> assertTrue(normalizedFrame.samplingEvidence().orElseThrow().gridPhase().isPresent()),
-                () -> assertTrue(normalizedFrame.samplingEvidence().orElseThrow()
-                        .metrics()
-                        .containsKey("boofCvGeometrySourceCode"))
+                () -> assertEquals(CvNormalizedFrame.class, normalizedFrame.getClass()),
+                () -> assertEquals(CvSamplingEvidence.class, evidence.getClass()),
+                () -> assertEquals(CvGridPhase.class, evidence.gridPhase().orElseThrow().getClass()),
+                () -> assertEquals(1.0d, evidence.metrics().get("boofCvSelectedBackendCode")),
+                () -> assertEquals(1.0d, evidence.metrics().get("boofCvPreprocessingModeCode")),
+                () -> assertTrue(evidence.metrics().containsKey("boofCvGeometrySourceCode")),
+                () -> assertTrue(evidence.metrics().get("boofCvSamplingEvidenceConfidence") > 0.0d)
         );
     }
 
@@ -169,6 +199,8 @@ class BoofCvCaptureMediaCvBackendTest {
                 ),
                 () -> assertEquals(2.0d, first.metrics().get("boofCvAcceptedSourceCandidateCount")),
                 () -> assertEquals(2.0d, first.metrics().get("boofCvNormalizedFrameCount")),
+                () -> assertEquals(1.0d, first.metrics().get("boofCvSelectedBackendCode")),
+                () -> assertEquals(1.0d, first.metrics().get("boofCvPreprocessingModeCode")),
                 () -> assertEquals(2.0d, first.metrics().get("boofCvSelectedAdmissionBandCode")),
                 () -> assertEquals(0.0d, first.metrics().get("boofCvSelectedRejectionReasonCode")),
                 () -> assertTrue(first.metrics().get("boofCvSelectedSyncBandScore") < 0.395d),
@@ -221,6 +253,20 @@ class BoofCvCaptureMediaCvBackendTest {
         );
     }
 
+    @Test
+    @DisplayName("Production BoofCV code does not import reader protocol, assembly, or restore decisions")
+    void productionBoofCvCodeDoesNotImportReaderProtocolAssemblyOrRestoreDecisions() throws IOException {
+        List<String> violations = new ArrayList<>();
+        try (Stream<Path> sourceFiles = Files.walk(mainSourceRoot())) {
+            sourceFiles
+                    .filter(path -> path.toString().endsWith(".java"))
+                    .forEach(path -> recordForbiddenImportViolation(path, violations));
+        }
+
+        assertTrue(violations.isEmpty(),
+                () -> "Production BoofCV boundary imports forbidden reader decisions: " + violations);
+    }
+
     private MediaInputFrame syncWeakenedGeneratedMonitorPng() {
         MediaInputFrame source = BoofCvGeneratedFixtureFactory.cameraLikeMonitorPng();
         int[] pixels = source.copyArgbPixels();
@@ -266,6 +312,51 @@ class BoofCvCaptureMediaCvBackendTest {
                 "probe-hash",
                 pixels
         );
+    }
+
+    private Path mainSourceRoot() {
+        Path moduleSourceRoot = Path.of("src", "main", "java");
+        if (Files.isDirectory(moduleSourceRoot)) {
+            return moduleSourceRoot;
+        }
+        return Path.of("modules", "jab4j-reader-cv-boofcv", "src", "main", "java");
+    }
+
+    private void recordForbiddenImportViolation(Path path, List<String> violations) {
+        try {
+            List<String> lines = Files.readAllLines(path);
+            for (int index = 0; index < lines.size(); index++) {
+                Matcher matcher = IMPORT_DECLARATION.matcher(lines.get(index));
+                if (!matcher.matches()) {
+                    continue;
+                }
+                String importedType = matcher.group(1);
+                if (matchesForbiddenImport(importedType)) {
+                    violations.add(path + ":" + (index + 1) + " imports " + importedType);
+                }
+            }
+        } catch (IOException exception) {
+            throw new IllegalStateException("Unable to inspect " + path, exception);
+        }
+    }
+
+    private boolean matchesForbiddenImport(String importedType) {
+        return FORBIDDEN_PROTOCOL_IMPORTS.stream()
+                .anyMatch(forbiddenImport -> matchesForbiddenImport(importedType, forbiddenImport));
+    }
+
+    private boolean matchesForbiddenImport(String importedType, String forbiddenImport) {
+        if (forbiddenImport.endsWith(".")) {
+            return importedType.startsWith(forbiddenImport);
+        }
+        if (importedType.equals(forbiddenImport)) {
+            return true;
+        }
+        if (importedType.endsWith(".*")) {
+            String importedPackage = importedType.substring(0, importedType.length() - 1);
+            return forbiddenImport.startsWith(importedPackage);
+        }
+        return false;
     }
 
     private void restoreBackendProperty(String previousBackend) {

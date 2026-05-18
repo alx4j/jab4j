@@ -29,6 +29,7 @@ public final class CaptureMediaPaletteSampler {
             0xFFFFFF00,
             0xFFFFFFFF
     );
+    private static final CaptureMediaPaletteModel EXACT_PALETTE_MODEL = CaptureMediaPaletteModel.exact(PALETTE);
 
     /**
      * Returns a copy of the exact eight-color rendered palette.
@@ -40,6 +41,27 @@ public final class CaptureMediaPaletteSampler {
     }
 
     /**
+     * Returns the immutable exact rendered palette model.
+     *
+     * @return exact palette model
+     */
+    public CaptureMediaPaletteModel exactPaletteModel() {
+        return EXACT_PALETTE_MODEL;
+    }
+
+    /**
+     * Builds a conservative calibrated palette from known expected-index observations.
+     *
+     * @param referenceSamples known observed ARGB samples labeled with expected palette indexes
+     * @return calibrated palette result or exact-palette fallback
+     */
+    public CaptureMediaCalibratedPalette calibratePalette(
+            List<CaptureMediaPaletteCalibrationSample> referenceSamples
+    ) {
+        return new CaptureMediaPaletteCalibrator(EXACT_PALETTE_MODEL).calibrate(referenceSamples);
+    }
+
+    /**
      * Maps one ARGB color to the exact rendered palette.
      *
      * @param argb ARGB color
@@ -48,6 +70,23 @@ public final class CaptureMediaPaletteSampler {
     public OptionalInt exactPaletteIndex(int argb) {
         int index = PALETTE.indexOf(argb);
         return index < 0 ? OptionalInt.empty() : OptionalInt.of(index);
+    }
+
+    /**
+     * Maps one ARGB color to an exact color center in the supplied palette model.
+     *
+     * @param argb ARGB color
+     * @param paletteModel exact or calibrated palette model
+     * @return palette index, or empty when the color is not an exact model color center
+     */
+    public OptionalInt paletteIndex(int argb, CaptureMediaPaletteModel paletteModel) {
+        Objects.requireNonNull(paletteModel, "paletteModel must not be null");
+        for (CaptureMediaPaletteModelColor color : paletteModel.colors()) {
+            if (color.modelArgb() == argb) {
+                return OptionalInt.of(color.paletteIndex());
+            }
+        }
+        return OptionalInt.empty();
     }
 
     /**
@@ -70,13 +109,26 @@ public final class CaptureMediaPaletteSampler {
      * @return structured palette sample with confidence and diagnostic status
      */
     public CaptureMediaPaletteSample tolerantPaletteSample(int argb) {
-        OptionalInt exactIndex = exactPaletteIndex(argb);
+        return tolerantPaletteSample(argb, EXACT_PALETTE_MODEL);
+    }
+
+    /**
+     * Maps one ARGB color to the nearest color in an explicit palette model when it is inside configured tolerance.
+     *
+     * @param argb ARGB color
+     * @param paletteModel exact or calibrated palette model
+     * @return structured palette sample with confidence and diagnostic status
+     */
+    public CaptureMediaPaletteSample tolerantPaletteSample(int argb, CaptureMediaPaletteModel paletteModel) {
+        Objects.requireNonNull(paletteModel, "paletteModel must not be null");
+        OptionalInt exactIndex = paletteIndex(argb, paletteModel);
         if (exactIndex.isPresent()) {
             int paletteIndex = exactIndex.getAsInt();
+            CaptureMediaPaletteModelColor color = paletteModel.color(paletteIndex);
             return new CaptureMediaPaletteSample(
                     argb,
                     paletteIndex,
-                    PALETTE.get(paletteIndex),
+                    color.expectedArgb(),
                     0.0d,
                     0.0d,
                     1.0d,
@@ -84,7 +136,7 @@ public final class CaptureMediaPaletteSampler {
             );
         }
 
-        NearestPaletteColor nearest = nearestPaletteColor(argb);
+        NearestPaletteColor nearest = nearestPaletteColor(argb, paletteModel);
         CaptureMediaPaletteSampleStatus status = statusForDistance(nearest.rgbDistance());
         return new CaptureMediaPaletteSample(
                 argb,
@@ -111,6 +163,25 @@ public final class CaptureMediaPaletteSampler {
     }
 
     /**
+     * Samples one normalized frame pixel using bounded nearest-palette matching against an explicit model.
+     *
+     * @param frame normalized frame
+     * @param row zero-based row
+     * @param col zero-based column
+     * @param paletteModel exact or calibrated palette model
+     * @return structured palette sample with confidence and diagnostic status
+     */
+    public CaptureMediaPaletteSample sampleTolerantPalette(
+            NormalizedCaptureFrame frame,
+            int row,
+            int col,
+            CaptureMediaPaletteModel paletteModel
+    ) {
+        Objects.requireNonNull(frame, "frame must not be null");
+        return tolerantPaletteSample(frame.argbPixelAt(row, col), paletteModel);
+    }
+
+    /**
      * Samples a bounded square area, reduces it to a median RGB color, then maps that color to the rendered palette.
      *
      * <p>This keeps palette ownership in the palette sampler while allowing capture-media callers to use local
@@ -128,12 +199,33 @@ public final class CaptureMediaPaletteSampler {
             int centerCol,
             int radiusPx
     ) {
+        return sampleTolerantPaletteArea(frame, centerRow, centerCol, radiusPx, EXACT_PALETTE_MODEL);
+    }
+
+    /**
+     * Samples a bounded square area, reduces it to a median RGB color, then maps that color with an explicit model.
+     *
+     * @param frame normalized frame
+     * @param centerRow center row in normalized-frame coordinates
+     * @param centerCol center column in normalized-frame coordinates
+     * @param radiusPx non-negative sampling radius in pixels
+     * @param paletteModel exact or calibrated palette model
+     * @return structured palette sample for the median area color
+     */
+    public CaptureMediaPaletteSample sampleTolerantPaletteArea(
+            NormalizedCaptureFrame frame,
+            int centerRow,
+            int centerCol,
+            int radiusPx,
+            CaptureMediaPaletteModel paletteModel
+    ) {
         Objects.requireNonNull(frame, "frame must not be null");
+        Objects.requireNonNull(paletteModel, "paletteModel must not be null");
         if (radiusPx < 0) {
             throw new IllegalArgumentException("radiusPx must be non-negative");
         }
         if (radiusPx == 0) {
-            return sampleTolerantPalette(frame, centerRow, centerCol);
+            return sampleTolerantPalette(frame, centerRow, centerCol, paletteModel);
         }
 
         int top = Math.max(0, centerRow - radiusPx);
@@ -159,7 +251,7 @@ public final class CaptureMediaPaletteSampler {
                 | (median(redValues) << 16)
                 | (median(greenValues) << 8)
                 | median(blueValues);
-        return tolerantPaletteSample(medianArgb);
+        return tolerantPaletteSample(medianArgb, paletteModel);
     }
 
     /**
@@ -201,17 +293,19 @@ public final class CaptureMediaPaletteSampler {
         ));
     }
 
-    private NearestPaletteColor nearestPaletteColor(int argb) {
+    private NearestPaletteColor nearestPaletteColor(int argb, CaptureMediaPaletteModel paletteModel) {
         int nearestIndex = 0;
+        int nearestArgb = 0;
         double nearestDistance = Double.POSITIVE_INFINITY;
-        for (int index = 0; index < PALETTE.size(); index++) {
-            double distance = rgbDistance(argb, PALETTE.get(index));
+        for (CaptureMediaPaletteModelColor color : paletteModel.colors()) {
+            double distance = rgbDistance(argb, color.modelArgb());
             if (distance < nearestDistance) {
-                nearestIndex = index;
+                nearestIndex = color.paletteIndex();
+                nearestArgb = color.expectedArgb();
                 nearestDistance = distance;
             }
         }
-        return new NearestPaletteColor(nearestIndex, PALETTE.get(nearestIndex), nearestDistance);
+        return new NearestPaletteColor(nearestIndex, nearestArgb, nearestDistance);
     }
 
     private double rgbDistance(int firstArgb, int secondArgb) {

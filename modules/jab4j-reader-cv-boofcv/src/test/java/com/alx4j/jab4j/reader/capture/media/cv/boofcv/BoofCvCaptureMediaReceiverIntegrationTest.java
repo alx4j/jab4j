@@ -166,12 +166,55 @@ class BoofCvCaptureMediaReceiverIntegrationTest {
                     () -> assertTrue(metadata.contains("sampler.profileAttemptCount=")),
                     () -> assertTrue(metadata.contains("sampler.evidence.backendId=boofcv")),
                     () -> assertTrue(metadata.contains("sampler.gridPhase.available=true")),
+                    () -> assertTrue(metadata.contains("sampler.evidence.metric.boofCvSelectedBackendCode=1.0")),
+                    () -> assertTrue(metadata.contains("sampler.evidence.metric.boofCvPreprocessingModeCode=1.0")),
                     () -> assertTrue(metadata.contains("sampler.evidence.metric.boofCvGeometrySourceCode=")),
+                    () -> assertTrue(metadata.contains("sampler.evidence.metric.boofCvSamplingEvidenceConfidence=")),
                     () -> assertTrue(metadata.contains("sampler.selectedLayoutProfileId=debug-low-density")),
                     () -> assertTrue(metadata.contains("sampler.profileSelectionSource=decodedPayload")),
                     () -> assertTrue(metadata.contains("sampler.envelope.acceptedPayloadCount=")),
                     () -> assertTrue(metadata.contains("sampler.envelope.rejectedAttemptCount=")),
                     () -> assertTrue(metadata.contains("diagnostic.selectedPublicCode="))
+            );
+        } finally {
+            restoreBackendProperty(previousBackend);
+        }
+    }
+
+    @Test
+    @DisplayName("Generated preprocessed frame without validated payloads is not restore eligible")
+    void generatedPreprocessedFrameWithoutValidatedPayloadsIsNotRestoreEligible() throws Exception {
+        String previousBackend = System.getProperty(CaptureMediaCvBackends.BACKEND_PROPERTY);
+        try {
+            System.setProperty(CaptureMediaCvBackends.BACKEND_PROPERTY, "boofcv");
+            MediaInputFrame invalidPayloadFrame = BoofCvGeneratedFixtureFactory.cameraLikeMonitorInvalidPayloadPng();
+            MediaNormalizationResult normalizationResult =
+                    new CaptureMediaFrameNormalizer().normalize(invalidPayloadFrame);
+            NormalizedCaptureFrame normalizedFrame = normalizationResult.frame().orElseThrow();
+            Path image = writePng("generated-monitor-invalid-payload.png", invalidPayloadFrame);
+
+            CaptureMediaReceiverResult result = new CaptureMediaReceiverService().evaluate(
+                    CaptureMediaReceiverRequest.evaluateStillImages(List.of(image))
+            );
+
+            assertAll(
+                    () -> assertTrue(normalizationResult.accepted()),
+                    () -> assertEquals("boofcv",
+                            normalizedFrame.samplingEvidence().orElseThrow().backendId()),
+                    () -> assertEquals(
+                            1.0d,
+                            normalizedFrame.samplingEvidence().orElseThrow()
+                                    .metrics()
+                                    .get("boofCvPreprocessingModeCode")
+                    ),
+                    () -> assertTrue(result.failed()),
+                    () -> assertFalse(result.eligibleForRestore()),
+                    () -> assertFalse(result.restoreAttempted()),
+                    () -> assertEquals(1, result.summary().submittedMediaCount()),
+                    () -> assertEquals(1, result.summary().readableMediaCount()),
+                    () -> assertEquals(0, result.summary().acceptedCandidateCount()),
+                    () -> assertEquals(0, result.summary().decodedTileCount()),
+                    () -> assertEquals(0L, result.summary().restoredFileCount())
             );
         } finally {
             restoreBackendProperty(previousBackend);

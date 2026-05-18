@@ -9,6 +9,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.OptionalInt;
 import com.alx4j.jab4j.api.model.LayoutProfile;
 import com.alx4j.jab4j.api.model.PayloadKind;
 import com.alx4j.jab4j.api.model.TilePayload;
@@ -52,6 +53,10 @@ public final class CaptureMediaTilePayloadSampler {
     private static final double CAMERA_MAX_SPARSE_REJECTED_RGB_DISTANCE = 224.0d;
     private static final double CAMERA_MAX_SPARSE_REJECTED_RATIO = 0.06d;
     private static final int CAMERA_MAX_SPARSE_REJECTED_SAMPLE_COUNT = 128;
+    private static final double CAMERA_MAX_CALIBRATED_REJECTED_RGB_DISTANCE = 180.0d;
+    private static final double CAMERA_MAX_CALIBRATED_REJECTED_RATIO = 0.35d;
+    private static final int CAMERA_MAX_CALIBRATED_REJECTED_SAMPLE_COUNT = 384;
+    private static final double MIN_CAMERA_CALIBRATED_REJECTED_AVERAGE_CONFIDENCE = 0.35d;
     private static final double MIN_BORDER_SIGNATURE_WHITE_RATIO = 0.60d;
     private static final double MAX_BORDER_SIGNATURE_NON_WHITE_RATIO = 0.10d;
     private static final double MAX_BORDER_SIGNATURE_REJECTED_RATIO = 0.40d;
@@ -62,6 +67,10 @@ public final class CaptureMediaTilePayloadSampler {
     private static final double MAX_CAMERA_BORDER_REJECTED_RATIO = 0.08d;
     private static final double MIN_CAMERA_BORDER_STRONG_SIDE_RATIO = 0.68d;
     private static final double MIN_CAMERA_BORDER_MODERATE_SIDE_RATIO = 0.42d;
+    private static final double MAX_CALIBRATION_REFERENCE_RGB_DISTANCE = 144.0d;
+    private static final double MIN_CALIBRATION_REFERENCE_DISTANCE_MARGIN = 48.0d;
+    private static final int CALIBRATION_BORDER_SAMPLE_STRIDE_PX = 8;
+    private static final int CALIBRATION_SYNC_SAMPLE_STRIDE_PX = 8;
     private static final double MIN_SAMPLING_EVIDENCE_CONFIDENCE = 0.55d;
     private static final int MAX_EVIDENCE_MODULE_CENTER_OFFSET_PX = 8;
     private static final int MAX_AREA_SAMPLE_RADIUS_PX = 3;
@@ -70,6 +79,7 @@ public final class CaptureMediaTilePayloadSampler {
     private static final int CAMERA_MIN_MATCHES_PER_RECOVERABLE_FINDER = 6;
     private static final double MIN_CAMERA_FALLBACK_RECOVERABLE_FINDER_AVERAGE_CONFIDENCE = 0.30d;
     private static final double MAX_PROPORTIONAL_LAYOUT_SCALE_ERROR = 0.01d;
+    private static final int MAX_PHASE_VARIANT_COUNT = 64;
 
     private final CaptureMediaPaletteSampler paletteSampler;
     private final List<Integer> paletteArgb;
@@ -79,6 +89,7 @@ public final class CaptureMediaTilePayloadSampler {
     private final TileCodecProfile tileCodecProfile;
     private final TilePayloadEnvelopeCodec envelopeCodec;
     private final CvSamplingEvidenceProvider samplingEvidenceProvider;
+    private final CaptureMediaModulePhaseSearch modulePhaseSearch;
 
     /**
      * Creates a sampler using current rendered-layout, balanced-v1 tile, and envelope validation defaults.
@@ -91,7 +102,8 @@ public final class CaptureMediaTilePayloadSampler {
                 TileCodecs.defaultDecoder(),
                 TileCodecProfiles.balancedV1(),
                 new TilePayloadEnvelopeCodec(),
-                new CaptureMediaSamplingEvidenceProvider()
+                new CaptureMediaSamplingEvidenceProvider(),
+                new CaptureMediaModulePhaseSearch()
         );
     }
 
@@ -108,7 +120,8 @@ public final class CaptureMediaTilePayloadSampler {
                 TileCodecs.defaultDecoder(),
                 TileCodecProfiles.balancedV1(),
                 new TilePayloadEnvelopeCodec(),
-                samplingEvidenceProvider
+                samplingEvidenceProvider,
+                new CaptureMediaModulePhaseSearch()
         );
     }
 
@@ -137,7 +150,8 @@ public final class CaptureMediaTilePayloadSampler {
                 tileDecoder,
                 tileCodecProfile,
                 envelopeCodec,
-                CvSamplingEvidenceProvider.none()
+                CvSamplingEvidenceProvider.none(),
+                new CaptureMediaModulePhaseSearch()
         );
     }
 
@@ -161,6 +175,28 @@ public final class CaptureMediaTilePayloadSampler {
             TilePayloadEnvelopeCodec envelopeCodec,
             CvSamplingEvidenceProvider samplingEvidenceProvider
     ) {
+        this(
+                paletteSampler,
+                layoutCatalog,
+                layoutPlanner,
+                tileDecoder,
+                tileCodecProfile,
+                envelopeCodec,
+                samplingEvidenceProvider,
+                new CaptureMediaModulePhaseSearch()
+        );
+    }
+
+    private CaptureMediaTilePayloadSampler(
+            CaptureMediaPaletteSampler paletteSampler,
+            CaptureRenderedLayoutCatalog layoutCatalog,
+            FixedLayoutPlanner layoutPlanner,
+            TileDecoder tileDecoder,
+            TileCodecProfile tileCodecProfile,
+            TilePayloadEnvelopeCodec envelopeCodec,
+            CvSamplingEvidenceProvider samplingEvidenceProvider,
+            CaptureMediaModulePhaseSearch modulePhaseSearch
+    ) {
         this.paletteSampler = Objects.requireNonNull(paletteSampler, "paletteSampler must not be null");
         this.paletteArgb = this.paletteSampler.paletteArgb();
         this.layoutCatalog = Objects.requireNonNull(layoutCatalog, "layoutCatalog must not be null");
@@ -172,6 +208,7 @@ public final class CaptureMediaTilePayloadSampler {
                 samplingEvidenceProvider,
                 "samplingEvidenceProvider must not be null"
         );
+        this.modulePhaseSearch = Objects.requireNonNull(modulePhaseSearch, "modulePhaseSearch must not be null");
     }
 
     /**
@@ -198,6 +235,7 @@ public final class CaptureMediaTilePayloadSampler {
         }
 
         FrameSample firstRejected = null;
+        FrameSample firstPostPaletteRejected = null;
         for (LayoutProfile layout : layouts) {
             FrameSample sample = sample(frame, layoutPlanner.plan(layout));
             if (sample.status() == FrameSampleStatus.ACCEPTED) {
@@ -206,12 +244,21 @@ public final class CaptureMediaTilePayloadSampler {
             if (sample.status() == FrameSampleStatus.REJECTED && firstRejected == null) {
                 firstRejected = sample;
             }
+            if (sample.status() == FrameSampleStatus.REJECTED
+                    && firstPostPaletteRejected == null
+                    && hasPostPaletteDiagnostic(sample.diagnostics())) {
+                firstPostPaletteRejected = sample;
+            }
+        }
+        if (firstPostPaletteRejected != null) {
+            return firstPostPaletteRejected;
         }
         return firstRejected == null ? FrameSample.empty() : firstRejected;
     }
 
     private FrameSample sample(NormalizedCaptureFrame frame, FixedLayoutPlan layoutPlan) {
         Optional<CvSamplingEvidence> samplingEvidence = samplingEvidence(frame, layoutPlan);
+        PaletteSamplingContext paletteContext = paletteSamplingContext(frame, layoutPlan, samplingEvidence);
         boolean partialAcceptanceAllowed = cameraDerived(frame);
         List<TilePayload> payloads = new ArrayList<>();
         List<CaptureMediaDiagnostic> diagnostics = new ArrayList<>();
@@ -223,7 +270,14 @@ public final class CaptureMediaTilePayloadSampler {
         int partialUndecodableSlotCount = 0;
         List<TilePlacement> placements = layoutPlan.tilePlacements();
         for (int tileIndex = 0; tileIndex < placements.size(); tileIndex++) {
-            SlotSample slotSample = sampleSlot(frame, layoutPlan, placements.get(tileIndex), tileIndex, samplingEvidence);
+            SlotSample slotSample = sampleSlot(
+                    frame,
+                    layoutPlan,
+                    placements.get(tileIndex),
+                    tileIndex,
+                    samplingEvidence,
+                    paletteContext
+            );
             if (slotSample.status() == SlotSampleStatus.EMPTY
                     || slotSample.status() == SlotSampleStatus.NO_SIGNATURE_CONTENT) {
                 continue;
@@ -250,12 +304,20 @@ public final class CaptureMediaTilePayloadSampler {
             }
             if (slotSample.status() == SlotSampleStatus.UNDECODABLE) {
                 Optional<PaletteConfidenceSummary> confidence = slotSample.paletteConfidence();
-                CaptureMediaDiagnostic diagnostic = colorDiagnostic(
-                        frame,
-                        CaptureMediaDiagnosticSeverity.ERROR,
-                        confidence.orElse(null),
-                        "Media tile content passed palette sampling but failed tile decode or envelope CRC validation"
-                );
+                CaptureMediaDiagnostic diagnostic = slotSample.postPaletteFailureStage()
+                        .map(stage -> postPaletteDiagnostic(
+                                frame,
+                                CaptureMediaDiagnosticSeverity.ERROR,
+                                confidence.orElse(null),
+                                stage,
+                                slotSample.postPaletteRejectedAttemptCount()
+                        ))
+                        .orElseGet(() -> colorDiagnostic(
+                                frame,
+                                CaptureMediaDiagnosticSeverity.ERROR,
+                                confidence.orElse(null),
+                                "Media tile samples did not produce supported finder candidates"
+                        ));
                 if (!partialAcceptanceAllowed) {
                     diagnostics.add(diagnostic);
                     return FrameSample.rejected(List.of(), diagnostics, confidence);
@@ -299,6 +361,11 @@ public final class CaptureMediaTilePayloadSampler {
         return FrameSample.accepted(payloads, diagnostics, confidence);
     }
 
+    private boolean hasPostPaletteDiagnostic(List<CaptureMediaDiagnostic> diagnostics) {
+        return diagnostics.stream()
+                .anyMatch(diagnostic -> diagnostic.code() == CaptureMediaDiagnosticCode.TILE_DECODE_OR_ENVELOPE_FAILURE);
+    }
+
     /**
      * Inspects sampler decisions for one normalized frame without changing restore behavior.
      *
@@ -317,6 +384,7 @@ public final class CaptureMediaTilePayloadSampler {
                     frame.sourceId(),
                     frame.layoutProfileId(),
                     Optional.empty(),
+                    paletteCalibrationInspection(paletteSampler.exactPaletteModel()),
                     List.of(),
                     0,
                     0,
@@ -351,6 +419,7 @@ public final class CaptureMediaTilePayloadSampler {
 
     private FrameInspection inspect(NormalizedCaptureFrame frame, FixedLayoutPlan layoutPlan) {
         Optional<CvSamplingEvidence> samplingEvidence = samplingEvidence(frame, layoutPlan);
+        PaletteSamplingContext paletteContext = paletteSamplingContext(frame, layoutPlan, samplingEvidence);
         List<SlotInspection> slots = new ArrayList<>();
         int candidateAttemptCount = 0;
         int paletteRejectedAttemptCount = 0;
@@ -358,7 +427,14 @@ public final class CaptureMediaTilePayloadSampler {
         int decodedPayloadCount = 0;
         List<TilePlacement> placements = layoutPlan.tilePlacements();
         for (int tileIndex = 0; tileIndex < placements.size(); tileIndex++) {
-            SlotInspection slot = inspectSlot(frame, layoutPlan, placements.get(tileIndex), tileIndex, samplingEvidence);
+            SlotInspection slot = inspectSlot(
+                    frame,
+                    layoutPlan,
+                    placements.get(tileIndex),
+                    tileIndex,
+                    samplingEvidence,
+                    paletteContext
+            );
             slots.add(slot);
             for (CandidateInspection candidate : slot.candidates()) {
                 candidateAttemptCount++;
@@ -376,6 +452,7 @@ public final class CaptureMediaTilePayloadSampler {
                 frame.sourceId(),
                 layoutPlan.profile().profileId(),
                 samplingEvidence,
+                paletteContext.paletteCalibration(),
                 slots,
                 candidateAttemptCount,
                 noFinderAttemptCount,
@@ -571,7 +648,8 @@ public final class CaptureMediaTilePayloadSampler {
             FixedLayoutPlan layoutPlan,
             TilePlacement placement,
             int tileIndex,
-            Optional<CvSamplingEvidence> samplingEvidence
+            Optional<CvSamplingEvidence> samplingEvidence,
+            PaletteSamplingContext paletteContext
     ) {
         if (!cameraDerived(frame)) {
             TileAlignment alignment = TileAlignment.of(
@@ -580,10 +658,25 @@ public final class CaptureMediaTilePayloadSampler {
                     TileAlignmentInspectionSource.NOMINAL,
                     TileEvidenceAlignmentStatus.NOT_CAMERA_DERIVED
             );
-            return sampleSlotWithAlignment(frame, layoutPlan, tileIndex, samplingEvidence, alignment, false);
+            return sampleSlotWithAlignment(
+                    frame,
+                    layoutPlan,
+                    tileIndex,
+                    samplingEvidence,
+                    alignment,
+                    false,
+                    paletteContext
+            );
         }
 
-        EvidenceAlignment evidenceAlignment = evidenceAlignedPlacement(frame, layoutPlan, placement, tileIndex, samplingEvidence);
+        EvidenceAlignment evidenceAlignment = evidenceAlignedPlacement(
+                frame,
+                layoutPlan,
+                placement,
+                tileIndex,
+                samplingEvidence,
+                paletteContext
+        );
         if (evidenceAlignment.alignment().isPresent()) {
             TileAlignment alignment = evidenceAlignment.alignment().orElseThrow();
             boolean finderAssisted = alignment.samplingEvidenceAlignmentStatus()
@@ -594,9 +687,12 @@ public final class CaptureMediaTilePayloadSampler {
                     tileIndex,
                     samplingEvidence,
                     finderAssisted
-                            ? alignment.withSamplingEvidenceAlignmentStatus(TileEvidenceAlignmentStatus.USED_FINDER_EVIDENCE)
+                            ? alignment.withSamplingEvidenceAlignmentStatus(
+                                    TileEvidenceAlignmentStatus.USED_FINDER_EVIDENCE
+                            )
                             : alignment,
-                    finderAssisted
+                    finderAssisted,
+                    paletteContext
             );
             if (!finderAssisted || evidenceSample.status() == SlotSampleStatus.DECODED) {
                 return evidenceSample;
@@ -607,9 +703,18 @@ public final class CaptureMediaTilePayloadSampler {
                 frame,
                 layoutPlan,
                 placement,
-                evidenceAlignment.status()
+                evidenceAlignment.status(),
+                paletteContext
         );
-        return sampleSlotWithAlignment(frame, layoutPlan, tileIndex, samplingEvidence, legacyAlignment, false);
+        return sampleSlotWithAlignment(
+                frame,
+                layoutPlan,
+                tileIndex,
+                samplingEvidence,
+                legacyAlignment,
+                false,
+                paletteContext
+        );
     }
 
     private SlotSample sampleSlotWithAlignment(
@@ -618,19 +723,22 @@ public final class CaptureMediaTilePayloadSampler {
             int tileIndex,
             Optional<CvSamplingEvidence> samplingEvidence,
             TileAlignment alignment,
-            boolean allowFinderAssistedEvidence
+            boolean allowFinderAssistedEvidence,
+            PaletteSamplingContext paletteContext
     ) {
         TilePlacement effectivePlacement = alignment.placement();
-        BorderSample borderSample = sampleRenderedTileBorder(frame, layoutPlan, effectivePlacement);
+        BorderSample borderSample = sampleRenderedTileBorder(frame, layoutPlan, effectivePlacement, paletteContext);
         if (borderSample.status() != BorderSampleStatus.SIGNATURE) {
-            boolean interiorContent = hasInteriorContent(frame, layoutPlan, effectivePlacement);
+            boolean interiorContent = hasInteriorContent(frame, layoutPlan, effectivePlacement, paletteContext);
             if (allowFinderAssistedEvidence && interiorContent) {
                 SlotSample finderAssistedSample = sampleSignedContent(
                         frame,
                         layoutPlan,
                         effectivePlacement,
                         tileIndex,
-                        samplingEvidence
+                        samplingEvidence,
+                        paletteContext,
+                        borderStrength(borderSample)
                 );
                 if (finderAssistedSample.status() == SlotSampleStatus.DECODED) {
                     return finderAssistedSample;
@@ -645,7 +753,15 @@ public final class CaptureMediaTilePayloadSampler {
                     : SlotSample.empty();
         }
 
-        return sampleSignedContent(frame, layoutPlan, effectivePlacement, tileIndex, samplingEvidence);
+        return sampleSignedContent(
+                frame,
+                layoutPlan,
+                effectivePlacement,
+                tileIndex,
+                samplingEvidence,
+                paletteContext,
+                borderStrength(borderSample)
+        );
     }
 
     private SlotSample sampleSignedContent(
@@ -653,43 +769,62 @@ public final class CaptureMediaTilePayloadSampler {
             FixedLayoutPlan layoutPlan,
             TilePlacement effectivePlacement,
             int tileIndex,
-            Optional<CvSamplingEvidence> samplingEvidence
+            Optional<CvSamplingEvidence> samplingEvidence,
+            PaletteSamplingContext paletteContext,
+            double borderStrength
     ) {
-        List<CandidateSample> candidates = new ArrayList<>();
         CandidateSample rejectedCandidate = null;
-        for (int sideVersion = tileCodecProfile.minSideVersion(); sideVersion <= tileCodecProfile.maxSideVersion(); sideVersion++) {
+        PhaseAttemptEvaluation firstPostPaletteRejectedEvaluation = null;
+        int postPaletteRejectedAttemptCount = 0;
+        for (int sideVersion = tileCodecProfile.minSideVersion();
+                sideVersion <= tileCodecProfile.maxSideVersion();
+                sideVersion++) {
             CandidateSamplingGeometry geometry = candidateSamplingGeometry(
                     layoutPlan,
                     tileIndex,
                     sideVersion,
                     samplingEvidence
             );
-            for (CandidateSample candidate : sampleCandidates(
+            PhaseSelection selection = selectPhase(
                     frame,
                     layoutPlan,
                     effectivePlacement,
                     tileIndex,
-                    geometry
-            )) {
-                if (candidate.status() == CandidateSampleStatus.REJECTED) {
-                    rejectedCandidate = lowerConfidence(rejectedCandidate, candidate);
-                } else if (candidate.status() == CandidateSampleStatus.CANDIDATE) {
-                    candidates.add(candidate);
-                }
+                    geometry,
+                    samplingEvidence,
+                    paletteContext,
+                    borderStrength,
+                    false
+            );
+            PhaseAttemptEvaluation selected = selection.selectedEvaluation();
+            if (selected.decodeAttempt().flatMap(DecodeAttempt::payload).isPresent()) {
+                DecodeAttempt decodeAttempt = selected.decodeAttempt().orElseThrow();
+                CandidateSample candidate = selected.sample();
+                return SlotSample.decoded(decodeAttempt.payload().orElseThrow(), candidate.paletteConfidence());
+            }
+            postPaletteRejectedAttemptCount += selection.postPaletteRejectedAttemptCount();
+            if (firstPostPaletteRejectedEvaluation == null) {
+                firstPostPaletteRejectedEvaluation = selection.firstPostPaletteRejectedEvaluation().orElse(null);
+            }
+            CandidateSample selectedSample = selected.sample();
+            if (selectedSample.status() == CandidateSampleStatus.REJECTED) {
+                rejectedCandidate = lowerConfidence(rejectedCandidate, selectedSample);
+            }
+            CandidateSample selectionRejectedCandidate = selection.lowestRejectedSample().orElse(null);
+            if (selectionRejectedCandidate != null) {
+                rejectedCandidate = lowerConfidence(rejectedCandidate, selectionRejectedCandidate);
             }
         }
-
-        for (CandidateSample candidate : candidates) {
-            TilePayload payload = decodeCandidate(layoutPlan, tileIndex, candidate.logicalTile().orElseThrow());
-            if (payload != null) {
-                return SlotSample.decoded(payload, candidate.paletteConfidence());
-            }
+        if (firstPostPaletteRejectedEvaluation != null) {
+            DecodeAttempt decodeAttempt = firstPostPaletteRejectedEvaluation.decodeAttempt().orElseThrow();
+            return SlotSample.undecodable(
+                    firstPostPaletteRejectedEvaluation.sample().optionalPaletteConfidence(),
+                    decodeAttempt.failureStage(),
+                    postPaletteRejectedAttemptCount
+            );
         }
         if (rejectedCandidate != null) {
             return SlotSample.rejected(rejectedCandidate.paletteConfidence());
-        }
-        if (!candidates.isEmpty()) {
-            return SlotSample.undecodable(Optional.of(candidates.get(0).paletteConfidence()));
         }
         return SlotSample.undecodable(Optional.empty());
     }
@@ -699,7 +834,8 @@ public final class CaptureMediaTilePayloadSampler {
             FixedLayoutPlan layoutPlan,
             TilePlacement placement,
             int tileIndex,
-            Optional<CvSamplingEvidence> samplingEvidence
+            Optional<CvSamplingEvidence> samplingEvidence,
+            PaletteSamplingContext paletteContext
     ) {
         if (!cameraDerived(frame)) {
             TileAlignment alignment = TileAlignment.of(
@@ -708,10 +844,25 @@ public final class CaptureMediaTilePayloadSampler {
                     TileAlignmentInspectionSource.NOMINAL,
                     TileEvidenceAlignmentStatus.NOT_CAMERA_DERIVED
             );
-            return inspectSlotWithAlignment(frame, layoutPlan, tileIndex, samplingEvidence, alignment, false);
+            return inspectSlotWithAlignment(
+                    frame,
+                    layoutPlan,
+                    tileIndex,
+                    samplingEvidence,
+                    alignment,
+                    false,
+                    paletteContext
+            );
         }
 
-        EvidenceAlignment evidenceAlignment = evidenceAlignedPlacement(frame, layoutPlan, placement, tileIndex, samplingEvidence);
+        EvidenceAlignment evidenceAlignment = evidenceAlignedPlacement(
+                frame,
+                layoutPlan,
+                placement,
+                tileIndex,
+                samplingEvidence,
+                paletteContext
+        );
         if (evidenceAlignment.alignment().isPresent()) {
             TileAlignment alignment = evidenceAlignment.alignment().orElseThrow();
             boolean finderAssisted = alignment.samplingEvidenceAlignmentStatus()
@@ -722,9 +873,12 @@ public final class CaptureMediaTilePayloadSampler {
                     tileIndex,
                     samplingEvidence,
                     finderAssisted
-                            ? alignment.withSamplingEvidenceAlignmentStatus(TileEvidenceAlignmentStatus.USED_FINDER_EVIDENCE)
+                            ? alignment.withSamplingEvidenceAlignmentStatus(
+                                    TileEvidenceAlignmentStatus.USED_FINDER_EVIDENCE
+                            )
                             : alignment,
-                    finderAssisted
+                    finderAssisted,
+                    paletteContext
             );
             if (!finderAssisted || hasAcceptedPayload(evidenceInspection)) {
                 return evidenceInspection;
@@ -735,9 +889,18 @@ public final class CaptureMediaTilePayloadSampler {
                 frame,
                 layoutPlan,
                 placement,
-                evidenceAlignment.status()
+                evidenceAlignment.status(),
+                paletteContext
         );
-        return inspectSlotWithAlignment(frame, layoutPlan, tileIndex, samplingEvidence, legacyAlignment, false);
+        return inspectSlotWithAlignment(
+                frame,
+                layoutPlan,
+                tileIndex,
+                samplingEvidence,
+                legacyAlignment,
+                false,
+                paletteContext
+        );
     }
 
     private SlotInspection inspectSlotWithAlignment(
@@ -746,11 +909,12 @@ public final class CaptureMediaTilePayloadSampler {
             int tileIndex,
             Optional<CvSamplingEvidence> samplingEvidence,
             TileAlignment alignment,
-            boolean allowFinderAssistedEvidence
+            boolean allowFinderAssistedEvidence,
+            PaletteSamplingContext paletteContext
     ) {
         TilePlacement effectivePlacement = alignment.placement();
-        BorderSample borderSample = sampleRenderedTileBorder(frame, layoutPlan, effectivePlacement);
-        boolean interiorContent = hasInteriorContent(frame, layoutPlan, effectivePlacement);
+        BorderSample borderSample = sampleRenderedTileBorder(frame, layoutPlan, effectivePlacement, paletteContext);
+        boolean interiorContent = hasInteriorContent(frame, layoutPlan, effectivePlacement, paletteContext);
         if (borderSample.status() != BorderSampleStatus.SIGNATURE) {
             if (allowFinderAssistedEvidence && interiorContent) {
                 List<CandidateInspection> candidates = inspectSignedContent(
@@ -758,7 +922,9 @@ public final class CaptureMediaTilePayloadSampler {
                         layoutPlan,
                         effectivePlacement,
                         tileIndex,
-                        samplingEvidence
+                        samplingEvidence,
+                        paletteContext,
+                        borderStrength(borderSample)
                 );
                 if (candidates.stream()
                         .anyMatch(candidate -> candidate.decodeStatus() == DecodeInspectionStatus.ACCEPTED_PAYLOAD)) {
@@ -791,7 +957,9 @@ public final class CaptureMediaTilePayloadSampler {
                 layoutPlan,
                 effectivePlacement,
                 tileIndex,
-                samplingEvidence
+                samplingEvidence,
+                paletteContext,
+                borderStrength(borderSample)
         );
         return new SlotInspection(
                 tileIndex,
@@ -815,24 +983,32 @@ public final class CaptureMediaTilePayloadSampler {
             FixedLayoutPlan layoutPlan,
             TilePlacement effectivePlacement,
             int tileIndex,
-            Optional<CvSamplingEvidence> samplingEvidence
+            Optional<CvSamplingEvidence> samplingEvidence,
+            PaletteSamplingContext paletteContext,
+            double borderStrength
     ) {
         List<CandidateInspection> candidates = new ArrayList<>();
-        for (int sideVersion = tileCodecProfile.minSideVersion(); sideVersion <= tileCodecProfile.maxSideVersion(); sideVersion++) {
+        for (int sideVersion = tileCodecProfile.minSideVersion();
+                sideVersion <= tileCodecProfile.maxSideVersion();
+                sideVersion++) {
             CandidateSamplingGeometry geometry = candidateSamplingGeometry(
                     layoutPlan,
                     tileIndex,
                     sideVersion,
                     samplingEvidence
             );
-            CandidateInspection candidate = inspectCandidate(
+            PhaseSelection selection = selectPhase(
                     frame,
                     layoutPlan,
                     effectivePlacement,
                     tileIndex,
-                    geometry
+                    geometry,
+                    samplingEvidence,
+                    paletteContext,
+                    borderStrength,
+                    true
             );
-            candidates.add(candidate);
+            candidates.add(candidateInspection(selection));
         }
         return List.copyOf(candidates);
     }
@@ -857,7 +1033,8 @@ public final class CaptureMediaTilePayloadSampler {
             NormalizedCaptureFrame frame,
             FixedLayoutPlan layoutPlan,
             TilePlacement placement,
-            TileEvidenceAlignmentStatus evidenceAlignmentStatus
+            TileEvidenceAlignmentStatus evidenceAlignmentStatus,
+            PaletteSamplingContext paletteContext
     ) {
         int border = layoutPlan.separatorThicknessPx();
         TilePlacement bestPlacement = placement;
@@ -865,7 +1042,8 @@ public final class CaptureMediaTilePayloadSampler {
                 frame,
                 placement,
                 border,
-                CAMERA_SLOT_ALIGNMENT_SAMPLE_STRIDE_PX
+                CAMERA_SLOT_ALIGNMENT_SAMPLE_STRIDE_PX,
+                paletteContext
         );
         for (int offsetY = -CAMERA_SLOT_ALIGNMENT_RADIUS_PX;
                 offsetY <= CAMERA_SLOT_ALIGNMENT_RADIUS_PX;
@@ -881,7 +1059,8 @@ public final class CaptureMediaTilePayloadSampler {
                         frame,
                         shiftedPlacement.orElseThrow(),
                         border,
-                        CAMERA_SLOT_ALIGNMENT_SAMPLE_STRIDE_PX
+                        CAMERA_SLOT_ALIGNMENT_SAMPLE_STRIDE_PX,
+                        paletteContext
                 );
                 if (evidence.alignmentScore() > bestEvidence.alignmentScore()) {
                     bestEvidence = evidence;
@@ -902,7 +1081,8 @@ public final class CaptureMediaTilePayloadSampler {
             FixedLayoutPlan layoutPlan,
             TilePlacement placement,
             int tileIndex,
-            Optional<CvSamplingEvidence> samplingEvidence
+            Optional<CvSamplingEvidence> samplingEvidence,
+            PaletteSamplingContext paletteContext
     ) {
         if (samplingEvidence.isEmpty()) {
             return EvidenceAlignment.unavailable(TileEvidenceAlignmentStatus.NO_SAMPLING_EVIDENCE);
@@ -932,7 +1112,8 @@ public final class CaptureMediaTilePayloadSampler {
                     frame,
                     alignment.placement(),
                     layoutPlan.separatorThicknessPx(),
-                    CAMERA_SLOT_ALIGNMENT_SAMPLE_STRIDE_PX
+                    CAMERA_SLOT_ALIGNMENT_SAMPLE_STRIDE_PX,
+                    paletteContext
             );
             if (evidenceBorder.cameraSignature()) {
                 return EvidenceAlignment.available(
@@ -1013,10 +1194,11 @@ public final class CaptureMediaTilePayloadSampler {
     private BorderSample sampleRenderedTileBorder(
             NormalizedCaptureFrame frame,
             FixedLayoutPlan layoutPlan,
-            TilePlacement placement
+            TilePlacement placement,
+            PaletteSamplingContext paletteContext
     ) {
         int border = layoutPlan.separatorThicknessPx();
-        BorderEvidence evidence = sampleBorderEvidence(frame, placement, border, 1);
+        BorderEvidence evidence = sampleBorderEvidence(frame, placement, border, 1, paletteContext);
         if (evidence.sampleCount() == 0) {
             return BorderSample.noSignature();
         }
@@ -1034,7 +1216,8 @@ public final class CaptureMediaTilePayloadSampler {
             NormalizedCaptureFrame frame,
             TilePlacement placement,
             int border,
-            int sampleStride
+            int sampleStride,
+            PaletteSamplingContext paletteContext
     ) {
         BorderEvidenceBuilder evidence = new BorderEvidenceBuilder();
         for (int row = 0; row < placement.heightPx(); row += sampleStride) {
@@ -1049,7 +1232,8 @@ public final class CaptureMediaTilePayloadSampler {
                 CaptureMediaPaletteSample sample = sampleTolerantPalette(
                         frame,
                         placement.yPx() + row,
-                        placement.xPx() + col
+                        placement.xPx() + col,
+                        paletteContext
                 );
                 evidence.add(sample, top, bottom, left, right);
             }
@@ -1057,14 +1241,20 @@ public final class CaptureMediaTilePayloadSampler {
         return evidence.toEvidence();
     }
 
-    private boolean hasInteriorContent(NormalizedCaptureFrame frame, FixedLayoutPlan layoutPlan, TilePlacement placement) {
+    private boolean hasInteriorContent(
+            NormalizedCaptureFrame frame,
+            FixedLayoutPlan layoutPlan,
+            TilePlacement placement,
+            PaletteSamplingContext paletteContext
+    ) {
         int border = layoutPlan.separatorThicknessPx();
         for (int row = border; row < placement.heightPx() - border; row++) {
             for (int col = border; col < placement.widthPx() - border; col++) {
                 CaptureMediaPaletteSample sample = sampleTolerantPalette(
                         frame,
                         placement.yPx() + row,
-                        placement.xPx() + col
+                        placement.xPx() + col,
+                        paletteContext
                 );
                 if (!sample.accepted() || sample.paletteIndex() != BLACK_INDEX) {
                     return true;
@@ -1074,106 +1264,268 @@ public final class CaptureMediaTilePayloadSampler {
         return false;
     }
 
-    private List<CandidateSample> sampleCandidates(
+    private PhaseSelection selectPhase(
             NormalizedCaptureFrame frame,
             FixedLayoutPlan layoutPlan,
             TilePlacement placement,
             int tileIndex,
-            CandidateSamplingGeometry geometry
+            CandidateSamplingGeometry baseGeometry,
+            Optional<CvSamplingEvidence> samplingEvidence,
+            PaletteSamplingContext paletteContext,
+            double borderStrength,
+            boolean includeRunnerUpEvidence
     ) {
-        CandidateSample base = sampleCandidate(frame, layoutPlan, placement, tileIndex, geometry);
-        if (!cameraDerived(frame) || base.status() == CandidateSampleStatus.CANDIDATE) {
-            return List.of(base);
+        PhaseCandidatePlan basePlan = phaseCandidatePlan(
+                frame,
+                placement,
+                tileIndex,
+                baseGeometry,
+                samplingEvidence,
+                false
+        );
+        PhaseSelection baseSelection = evaluatePhaseSelection(
+                frame,
+                layoutPlan,
+                placement,
+                tileIndex,
+                paletteContext,
+                borderStrength,
+                basePlan
+        );
+        if (!cameraDerived(frame)
+                || (!includeRunnerUpEvidence && baseSelection.selectedEvaluation().attempt().acceptedPayload())) {
+            return baseSelection;
         }
-
-        List<CandidateSample> attempts = new ArrayList<>();
-        attempts.add(base);
-        for (CandidateSamplingGeometry fallbackGeometry : fallbackSamplingGeometries(geometry)) {
-            CandidateSample fallback = sampleCandidate(frame, layoutPlan, placement, tileIndex, fallbackGeometry);
-            attempts.add(fallback);
-        }
-        return List.copyOf(attempts);
+        PhaseCandidatePlan plan = phaseCandidatePlan(
+                frame,
+                placement,
+                tileIndex,
+                baseGeometry,
+                samplingEvidence,
+                true
+        );
+        return evaluatePhaseSelection(
+                frame,
+                layoutPlan,
+                placement,
+                tileIndex,
+                paletteContext,
+                borderStrength,
+                plan
+        );
     }
 
-    private CandidateInspection inspectCandidate(
+    private PhaseSelection evaluatePhaseSelection(
             NormalizedCaptureFrame frame,
             FixedLayoutPlan layoutPlan,
             TilePlacement placement,
             int tileIndex,
+            PaletteSamplingContext paletteContext,
+            double borderStrength,
+            PhaseCandidatePlan plan
+    ) {
+        Map<CaptureMediaModulePhaseCandidate, PhaseAttemptEvaluation> evaluations = new LinkedHashMap<>();
+        CaptureMediaModulePhaseSearchResult result = modulePhaseSearch.search(
+                plan.candidates(),
+                MAX_PHASE_VARIANT_COUNT,
+                plan.capReached(),
+                candidate -> {
+                    PhaseAttemptEvaluation evaluation = evaluatePhaseCandidate(
+                            frame,
+                            layoutPlan,
+                            placement,
+                            tileIndex,
+                            candidate,
+                            plan.geometry(candidate),
+                            paletteContext,
+                            borderStrength
+                    );
+                    evaluations.put(candidate, evaluation);
+                    return evaluation.attempt();
+                }
+        );
+        return new PhaseSelection(result, evaluations);
+    }
+
+    private PhaseCandidatePlan phaseCandidatePlan(
+            NormalizedCaptureFrame frame,
+            TilePlacement placement,
+            int tileIndex,
+            CandidateSamplingGeometry baseGeometry,
+            Optional<CvSamplingEvidence> samplingEvidence,
+            boolean includeFallbacks
+    ) {
+        List<CandidateSamplingGeometry> geometries = new ArrayList<>();
+        geometries.add(baseGeometry);
+        if (includeFallbacks && cameraDerived(frame)) {
+            geometries.addAll(fallbackSamplingGeometries(baseGeometry));
+        }
+        boolean capReached = geometries.size() > MAX_PHASE_VARIANT_COUNT;
+        int variantCount = Math.min(geometries.size(), MAX_PHASE_VARIANT_COUNT);
+        List<CaptureMediaModulePhaseCandidate> candidates = new ArrayList<>(variantCount);
+        Map<CaptureMediaModulePhaseCandidate, CandidateSamplingGeometry> geometryByCandidate = new LinkedHashMap<>();
+        Optional<CaptureMediaModulePhaseEvidence> evidence = modulePhaseEvidence(samplingEvidence, tileIndex);
+        for (int index = 0; index < variantCount; index++) {
+            CandidateSamplingGeometry geometry = geometries.get(index);
+            CaptureMediaModulePhaseCandidateSource source = phaseCandidateSource(geometry);
+            Optional<CaptureMediaModulePhaseEvidence> candidateEvidence =
+                    source == CaptureMediaModulePhaseCandidateSource.NOMINAL ? Optional.empty() : evidence;
+            if (source == CaptureMediaModulePhaseCandidateSource.CV_EVIDENCE && candidateEvidence.isEmpty()) {
+                source = CaptureMediaModulePhaseCandidateSource.NOMINAL;
+            }
+            CaptureMediaModulePhaseCandidate candidate = new CaptureMediaModulePhaseCandidate(
+                    index,
+                    tileIndex,
+                    geometry.sideVersion(),
+                    source,
+                    phaseGeometry(placement, baseGeometry, geometry),
+                    candidateEvidence
+            );
+            candidates.add(candidate);
+            geometryByCandidate.put(candidate, geometry);
+        }
+        return new PhaseCandidatePlan(candidates, geometryByCandidate, capReached);
+    }
+
+    private Optional<CaptureMediaModulePhaseEvidence> modulePhaseEvidence(
+            Optional<CvSamplingEvidence> samplingEvidence,
+            int tileIndex
+    ) {
+        if (samplingEvidence.filter(this::usableSamplingEvidence).isEmpty()) {
+            return Optional.empty();
+        }
+        CvSamplingEvidence evidence = samplingEvidence.orElseThrow();
+        double offsetX = moduleCenterOffsetXPx(evidence, tileIndex);
+        double offsetY = moduleCenterOffsetYPx(evidence, tileIndex);
+        double confidence = evidence.tileEvidence(tileIndex)
+                .filter(this::usableTileEvidence)
+                .map(CvTileSamplingEvidence::confidence)
+                .orElse(evidence.confidence());
+        return Optional.of(CaptureMediaModulePhaseEvidence.cv(evidence.backendId(), offsetX, offsetY, confidence));
+    }
+
+    private CaptureMediaModulePhaseCandidateSource phaseCandidateSource(CandidateSamplingGeometry geometry) {
+        return switch (geometry.moduleSamplingOffsetSource()) {
+            case NONE -> CaptureMediaModulePhaseCandidateSource.NOMINAL;
+            case TILE_EVIDENCE, FRAME_EVIDENCE -> CaptureMediaModulePhaseCandidateSource.CV_EVIDENCE;
+            case FALLBACK_SEARCH -> CaptureMediaModulePhaseCandidateSource.BOUNDED_SEARCH;
+        };
+    }
+
+    private CaptureMediaModulePhaseGeometry phaseGeometry(
+            TilePlacement placement,
+            CandidateSamplingGeometry baseGeometry,
             CandidateSamplingGeometry geometry
     ) {
-        List<CandidateSample> attempts = sampleCandidates(frame, layoutPlan, placement, tileIndex, geometry);
-        CandidateSample tileOrEnvelopeRejected = null;
-        Optional<String> tileOrEnvelopeRejectedReason = Optional.empty();
-        Map<String, String> tileOrEnvelopeRejectedDiagnostics = Map.of();
-        CandidateSample rejected = null;
-        CandidateSample noFinder = null;
-        for (CandidateSample attempt : attempts) {
-            if (attempt.status() == CandidateSampleStatus.CANDIDATE) {
-                DecodeAttempt decodeAttempt = decodeAttempt(layoutPlan, tileIndex, attempt.logicalTile().orElseThrow());
-                if (decodeAttempt.payload().isPresent()) {
-                    TilePayload payload = decodeAttempt.payload().orElseThrow();
-                    return candidateInspection(
-                            attempt,
-                            DecodeInspectionStatus.ACCEPTED_PAYLOAD,
-                            Optional.empty(),
-                            decodeAttempt.diagnostics(),
-                            Optional.of(payload.layoutProfileId())
+        return new CaptureMediaModulePhaseGeometry(
+                firstModuleCenterXPx(placement, geometry),
+                firstModuleCenterYPx(placement, geometry),
+                geometry.moduleSizePx(),
+                geometry.moduleCenterOffsetXPx(),
+                geometry.moduleCenterOffsetYPx(),
+                (double) geometry.moduleSizePx() / baseGeometry.moduleSizePx()
+        );
+    }
+
+    private double firstModuleCenterXPx(TilePlacement placement, CandidateSamplingGeometry geometry) {
+        return placement.xPx()
+                + geometry.contentOffsetXPx()
+                + (tileCodecProfile.quietZoneModules() * geometry.moduleSizePx())
+                + ((double) geometry.moduleSizePx() / 2.0d)
+                + geometry.moduleCenterOffsetXPx();
+    }
+
+    private double firstModuleCenterYPx(TilePlacement placement, CandidateSamplingGeometry geometry) {
+        return placement.yPx()
+                + geometry.contentOffsetYPx()
+                + (tileCodecProfile.quietZoneModules() * geometry.moduleSizePx())
+                + ((double) geometry.moduleSizePx() / 2.0d)
+                + geometry.moduleCenterOffsetYPx();
+    }
+
+    private PhaseAttemptEvaluation evaluatePhaseCandidate(
+            NormalizedCaptureFrame frame,
+            FixedLayoutPlan layoutPlan,
+            TilePlacement placement,
+            int tileIndex,
+            CaptureMediaModulePhaseCandidate phaseCandidate,
+            CandidateSamplingGeometry geometry,
+            PaletteSamplingContext paletteContext,
+            double borderStrength
+    ) {
+        CandidateSample sample = sampleCandidate(frame, layoutPlan, placement, tileIndex, geometry, paletteContext);
+        Optional<DecodeAttempt> decodeAttempt = Optional.empty();
+        CaptureMediaModulePhaseAttempt phaseAttempt;
+        if (sample.status() == CandidateSampleStatus.CANDIDATE) {
+            DecodeAttempt attempt = decodeAttempt(layoutPlan, tileIndex, sample.logicalTile().orElseThrow());
+            decodeAttempt = Optional.of(attempt);
+            phaseAttempt = attempt.payload().isPresent()
+                    ? CaptureMediaModulePhaseAttempt.accepted(
+                            phaseCandidate,
+                            sample.finderCandidateCount(),
+                            sample.finderExact(),
+                            borderStrength,
+                            paletteContext.paletteModel().confidence(),
+                            rejectedSampleCount(sample)
+                    )
+                    : CaptureMediaModulePhaseAttempt.rejected(
+                            phaseCandidate,
+                            phaseOutcome(attempt.failureStage().orElseThrow()),
+                            attempt.rejectionReason(),
+                            sample.finderCandidateCount(),
+                            sample.finderExact(),
+                            borderStrength,
+                            paletteContext.paletteModel().confidence(),
+                            rejectedSampleCount(sample)
                     );
-                }
-                if (tileOrEnvelopeRejected == null) {
-                    tileOrEnvelopeRejected = attempt;
-                    tileOrEnvelopeRejectedReason = decodeAttempt.rejectionReason();
-                    tileOrEnvelopeRejectedDiagnostics = decodeAttempt.diagnostics();
-                }
-            } else if (attempt.status() == CandidateSampleStatus.REJECTED) {
-                rejected = lowerConfidence(rejected, attempt);
-            } else if (noFinder == null) {
-                noFinder = attempt;
-            }
-        }
-        if (tileOrEnvelopeRejected != null) {
-            return candidateInspection(
-                    tileOrEnvelopeRejected,
-                    DecodeInspectionStatus.REJECTED_BY_TILE_OR_ENVELOPE,
-                    tileOrEnvelopeRejectedReason,
-                    tileOrEnvelopeRejectedDiagnostics
+        } else {
+            phaseAttempt = CaptureMediaModulePhaseAttempt.rejected(
+                    phaseCandidate,
+                    CaptureMediaModulePhaseOutcome.FINDER_OR_PALETTE_FAILURE,
+                    Optional.empty(),
+                    sample.finderCandidateCount(),
+                    sample.finderExact(),
+                    borderStrength,
+                    paletteContext.paletteModel().confidence(),
+                    rejectedSampleCount(sample)
             );
         }
-        if (rejected != null) {
-            return candidateInspection(rejected, DecodeInspectionStatus.NOT_ATTEMPTED);
+        return new PhaseAttemptEvaluation(phaseAttempt, sample, decodeAttempt);
+    }
+
+    private CaptureMediaModulePhaseOutcome phaseOutcome(PostPaletteFailureStage failureStage) {
+        return switch (failureStage) {
+            case TILE_DECODE -> CaptureMediaModulePhaseOutcome.TILE_DECODE_FAILURE;
+            case ENVELOPE_VALIDATION -> CaptureMediaModulePhaseOutcome.ENVELOPE_VALIDATION_FAILURE;
+            case SLOT_VALIDATION -> CaptureMediaModulePhaseOutcome.SLOT_VALIDATION_FAILURE;
+            case UNEXPECTED -> CaptureMediaModulePhaseOutcome.UNEXPECTED_POST_PALETTE_FAILURE;
+        };
+    }
+
+    private int rejectedSampleCount(CandidateSample sample) {
+        return sample.optionalPaletteConfidence()
+                .map(PaletteConfidenceSummary::rejectedSampleCount)
+                .orElse(0);
+    }
+
+    private CandidateInspection candidateInspection(PhaseSelection selection) {
+        PhaseAttemptEvaluation evaluation = selection.selectedEvaluation();
+        CandidateSample candidate = evaluation.sample();
+        DecodeAttempt decodeAttempt = evaluation.decodeAttempt().orElse(null);
+        DecodeInspectionStatus decodeStatus = DecodeInspectionStatus.NOT_ATTEMPTED;
+        Optional<String> decodeFailureReason = Optional.empty();
+        Map<String, String> decodeDiagnostics = Map.of();
+        Optional<String> decodedPayloadLayoutProfileId = Optional.empty();
+        if (decodeAttempt != null) {
+            decodeDiagnostics = decodeAttempt.diagnostics();
+            if (decodeAttempt.payload().isPresent()) {
+                decodeStatus = DecodeInspectionStatus.ACCEPTED_PAYLOAD;
+                decodedPayloadLayoutProfileId = Optional.of(decodeAttempt.payload().orElseThrow().layoutProfileId());
+            } else {
+                decodeStatus = DecodeInspectionStatus.REJECTED_BY_TILE_OR_ENVELOPE;
+                decodeFailureReason = decodeAttempt.rejectionReason();
+            }
         }
-        return candidateInspection(noFinder == null ? attempts.get(0) : noFinder, DecodeInspectionStatus.NOT_ATTEMPTED);
-    }
-
-    private CandidateInspection candidateInspection(CandidateSample candidate, DecodeInspectionStatus decodeStatus) {
-        return candidateInspection(candidate, decodeStatus, Optional.empty(), Map.of(), Optional.empty());
-    }
-
-    private CandidateInspection candidateInspection(
-            CandidateSample candidate,
-            DecodeInspectionStatus decodeStatus,
-            Optional<String> decodeFailureReason
-    ) {
-        return candidateInspection(candidate, decodeStatus, decodeFailureReason, Map.of(), Optional.empty());
-    }
-
-    private CandidateInspection candidateInspection(
-            CandidateSample candidate,
-            DecodeInspectionStatus decodeStatus,
-            Optional<String> decodeFailureReason,
-            Map<String, String> decodeDiagnostics
-    ) {
-        return candidateInspection(candidate, decodeStatus, decodeFailureReason, decodeDiagnostics, Optional.empty());
-    }
-
-    private CandidateInspection candidateInspection(
-            CandidateSample candidate,
-            DecodeInspectionStatus decodeStatus,
-            Optional<String> decodeFailureReason,
-            Map<String, String> decodeDiagnostics,
-            Optional<String> decodedPayloadLayoutProfileId
-    ) {
         CandidateSamplingGeometry geometry = candidate.geometry();
         return new CandidateInspection(
                 geometry.sideVersion(),
@@ -1191,8 +1543,14 @@ public final class CaptureMediaTilePayloadSampler {
                         .orElse(Map.of()),
                 decodeFailureReason,
                 decodeDiagnostics,
-                decodedPayloadLayoutProfileId
+                decodedPayloadLayoutProfileId,
+                selection.phaseInspection(evaluation),
+                selection.runnerUpEvaluation().map(selection::phaseInspection)
         );
+    }
+
+    private double borderStrength(BorderSample borderSample) {
+        return borderSample.status() == BorderSampleStatus.SIGNATURE ? 1.0d : 0.0d;
     }
 
     private CandidateSample sampleCandidate(
@@ -1200,12 +1558,13 @@ public final class CaptureMediaTilePayloadSampler {
             FixedLayoutPlan layoutPlan,
             TilePlacement placement,
             int tileIndex,
-            CandidateSamplingGeometry geometry
+            CandidateSamplingGeometry geometry,
+            PaletteSamplingContext paletteContext
     ) {
         int dimension = geometry.dimension();
         int moduleSize = geometry.moduleSizePx();
         if (moduleSize < MIN_MODULE_SIZE_PX) {
-            return CandidateSample.noFinder(Optional.empty(), geometry);
+            return CandidateSample.noFinder(Optional.empty(), geometry, 0, false);
         }
 
         List<Integer> moduleColors = new ArrayList<>(dimension * dimension);
@@ -1227,7 +1586,8 @@ public final class CaptureMediaTilePayloadSampler {
                         frame,
                         sampleY,
                         sampleX,
-                        geometry.areaSampleRadiusPx()
+                        geometry.areaSampleRadiusPx(),
+                        paletteContext
                 );
                 confidence.add(sample);
                 if (!sample.accepted()) {
@@ -1239,13 +1599,20 @@ public final class CaptureMediaTilePayloadSampler {
 
         PaletteConfidenceSummary summary = confidence.summary();
         boolean sparseCameraOutliersAccepted = rejected && sparseCameraOutliersRecoverable(frame, summary);
-        if (rejected && !sparseCameraOutliersAccepted) {
+        boolean calibratedCameraOutliersAccepted = rejected
+                && calibratedCameraOutliersRecoverable(frame, summary, paletteContext);
+        if (rejected && !sparseCameraOutliersAccepted && !calibratedCameraOutliersAccepted) {
             return CandidateSample.rejected(summary, geometry);
         }
         boolean cameraDerivedCandidate = cameraDerived(frame);
         FinderPatternSummary finderSummary = finderPatternSummary(moduleColors, dimension);
         if (!finderSummary.supported(cameraDerivedCandidate)) {
-            return CandidateSample.noFinder(Optional.of(summary), geometry);
+            return CandidateSample.noFinder(
+                    Optional.of(summary),
+                    geometry,
+                    finderSummary.recoverableCount(),
+                    finderSummary.exact()
+            );
         }
         if (!credibleRecoverableFinderCandidate(
                 cameraDerivedCandidate,
@@ -1253,7 +1620,12 @@ public final class CaptureMediaTilePayloadSampler {
                 summary,
                 geometry
         )) {
-            return CandidateSample.noFinder(Optional.of(summary), geometry);
+            return CandidateSample.noFinder(
+                    Optional.of(summary),
+                    geometry,
+                    finderSummary.recoverableCount(),
+                    finderSummary.exact()
+            );
         }
         boolean finderCanonicalized = cameraDerivedCandidate && !finderSummary.exact();
         if (finderCanonicalized) {
@@ -1273,18 +1645,25 @@ public final class CaptureMediaTilePayloadSampler {
         diagnostics.put("maximumPaletteRgbDistance", formatMetric(summary.maximumRgbDistance()));
         diagnostics.put("lowConfidenceSampleCount", Integer.toString(summary.lowConfidenceSampleCount()));
         diagnostics.put("sparseCameraOutliersAccepted", Boolean.toString(sparseCameraOutliersAccepted));
+        diagnostics.put("calibratedCameraOutliersAccepted", Boolean.toString(calibratedCameraOutliersAccepted));
         diagnostics.put("rejectedSampleCount", Integer.toString(summary.rejectedSampleCount()));
         diagnostics.put("sampledMatrixSha256", sha256Hex(moduleColorBytes(moduleColors)));
         diagnostics.put("sampledMatrixPrefix", moduleColorPrefix(moduleColors, 64));
         diagnostics.put("sampledMatrixHistogram", moduleColorHistogram(moduleColors));
-        return CandidateSample.candidate(new LogicalTile(
-                dimension,
-                dimension,
-                tileCodecProfile.quietZoneModules(),
-                tileCodecProfile.profileId(),
-                moduleColors,
-                diagnostics
-        ), summary, geometry);
+        return CandidateSample.candidate(
+                new LogicalTile(
+                        dimension,
+                        dimension,
+                        tileCodecProfile.quietZoneModules(),
+                        tileCodecProfile.profileId(),
+                        moduleColors,
+                        diagnostics
+                ),
+                summary,
+                geometry,
+                finderSummary.recoverableCount(),
+                finderSummary.exact()
+        );
     }
 
     private boolean credibleRecoverableFinderCandidate(
@@ -1356,6 +1735,23 @@ public final class CaptureMediaTilePayloadSampler {
         return rejectedRatio <= CAMERA_MAX_SPARSE_REJECTED_RATIO
                 && summary.rejectedSampleCount() <= CAMERA_MAX_SPARSE_REJECTED_SAMPLE_COUNT
                 && summary.maximumRgbDistance() <= CAMERA_MAX_SPARSE_REJECTED_RGB_DISTANCE;
+    }
+
+    private boolean calibratedCameraOutliersRecoverable(
+            NormalizedCaptureFrame frame,
+            PaletteConfidenceSummary summary,
+            PaletteSamplingContext paletteContext
+    ) {
+        if (!cameraDerived(frame)
+                || summary.rejectedSampleCount() <= 0
+                || !paletteContext.paletteModel().calibrated()) {
+            return false;
+        }
+        double rejectedRatio = (double) summary.rejectedSampleCount() / summary.sampledModuleCount();
+        return rejectedRatio <= CAMERA_MAX_CALIBRATED_REJECTED_RATIO
+                && summary.rejectedSampleCount() <= CAMERA_MAX_CALIBRATED_REJECTED_SAMPLE_COUNT
+                && summary.maximumRgbDistance() <= CAMERA_MAX_CALIBRATED_REJECTED_RGB_DISTANCE
+                && summary.averageConfidence() >= MIN_CAMERA_CALIBRATED_REJECTED_AVERAGE_CONFIDENCE;
     }
 
     private CandidateSamplingGeometry candidateSamplingGeometry(
@@ -1469,22 +1865,439 @@ public final class CaptureMediaTilePayloadSampler {
         geometries.add(base.withModuleCenterOffset(offsetX, offsetY, ModuleSamplingInspectionSource.FALLBACK_SEARCH));
     }
 
-    private CaptureMediaPaletteSample sampleTolerantPalette(NormalizedCaptureFrame frame, int row, int col) {
-        return sampleTolerantPalette(frame, row, col, 0);
+    private PaletteSamplingContext paletteSamplingContext(
+            NormalizedCaptureFrame frame,
+            FixedLayoutPlan layoutPlan,
+            Optional<CvSamplingEvidence> samplingEvidence
+    ) {
+        if (!cameraDerived(frame)) {
+            CaptureMediaPaletteModel exactPaletteModel = paletteSampler.exactPaletteModel();
+            return new PaletteSamplingContext(
+                    exactPaletteModel,
+                    paletteCalibrationInspection(exactPaletteModel),
+                    false
+            );
+        }
+
+        List<CaptureMediaPaletteCalibrationSample> baseReferences = new ArrayList<>();
+        addBorderCalibrationReferences(frame, layoutPlan, baseReferences);
+        addSyncBandCalibrationReferences(frame, layoutPlan, baseReferences);
+        CaptureMediaCalibratedPalette bestPalette = paletteSampler.calibratePalette(baseReferences);
+        List<CaptureMediaPaletteCalibrationSample> evidenceReferences = new ArrayList<>();
+        addSamplingEvidenceCalibrationReferences(samplingEvidence, evidenceReferences);
+        if (!evidenceReferences.isEmpty()) {
+            bestPalette = betterCalibratedPalette(bestPalette, paletteSampler.calibratePalette(evidenceReferences));
+        }
+        for (int sideVersion = tileCodecProfile.minSideVersion();
+                sideVersion <= tileCodecProfile.maxSideVersion();
+                sideVersion++) {
+            List<CaptureMediaPaletteCalibrationSample> references = new ArrayList<>(baseReferences);
+            addCandidateCalibrationReferences(frame, layoutPlan, samplingEvidence, sideVersion, references);
+            bestPalette = betterCalibratedPalette(bestPalette, paletteSampler.calibratePalette(references));
+            if (!evidenceReferences.isEmpty()) {
+                List<CaptureMediaPaletteCalibrationSample> evidenceCandidateReferences =
+                        new ArrayList<>(evidenceReferences);
+                addCandidateCalibrationReferences(
+                        frame,
+                        layoutPlan,
+                        samplingEvidence,
+                        sideVersion,
+                        evidenceCandidateReferences
+                );
+                bestPalette = betterCalibratedPalette(
+                        bestPalette,
+                        paletteSampler.calibratePalette(evidenceCandidateReferences)
+                );
+            }
+        }
+        return new PaletteSamplingContext(
+                bestPalette.model(),
+                paletteCalibrationInspection(bestPalette.model()),
+                false
+        );
+    }
+
+    private PaletteCalibrationInspection paletteCalibrationInspection(CaptureMediaPaletteModel paletteModel) {
+        Objects.requireNonNull(paletteModel, "paletteModel must not be null");
+        List<PaletteColorCalibrationInspection> observedColors = paletteModel.observedColors().stream()
+                .map(color -> new PaletteColorCalibrationInspection(
+                        color.paletteIndex(),
+                        color.expectedArgb(),
+                        color.modelArgb(),
+                        color.sampleCount(),
+                        color.maximumRgbDistance(),
+                        color.confidence()
+                ))
+                .toList();
+        return new PaletteCalibrationInspection(
+                paletteModel.calibrated(),
+                paletteModel.confidence(),
+                paletteModel.observedColorCount(),
+                paletteModel.fallbackReason(),
+                paletteModel.maximumRgbDistance(),
+                observedColors
+        );
+    }
+
+    private CaptureMediaCalibratedPalette betterCalibratedPalette(
+            CaptureMediaCalibratedPalette current,
+            CaptureMediaCalibratedPalette candidate
+    ) {
+        Objects.requireNonNull(current, "current must not be null");
+        Objects.requireNonNull(candidate, "candidate must not be null");
+        if (candidate.model().calibrated() && !current.model().calibrated()) {
+            return candidate;
+        }
+        if (!candidate.model().calibrated() || !current.model().calibrated()) {
+            return current;
+        }
+        if (candidate.observedColorCount() != current.observedColorCount()) {
+            return candidate.observedColorCount() > current.observedColorCount() ? candidate : current;
+        }
+        if (Double.compare(candidate.confidence(), current.confidence()) != 0) {
+            return candidate.confidence() > current.confidence() ? candidate : current;
+        }
+        return candidate.maximumRgbDistance() < current.maximumRgbDistance() ? candidate : current;
+    }
+
+    private void addBorderCalibrationReferences(
+            NormalizedCaptureFrame frame,
+            FixedLayoutPlan layoutPlan,
+            List<CaptureMediaPaletteCalibrationSample> references
+    ) {
+        int border = layoutPlan.separatorThicknessPx();
+        for (TilePlacement placement : layoutPlan.tilePlacements()) {
+            for (int row = 0; row < placement.heightPx(); row += CALIBRATION_BORDER_SAMPLE_STRIDE_PX) {
+                for (int col = 0; col < placement.widthPx(); col += CALIBRATION_BORDER_SAMPLE_STRIDE_PX) {
+                    boolean top = row < border;
+                    boolean bottom = row >= placement.heightPx() - border;
+                    boolean left = col < border;
+                    boolean right = col >= placement.widthPx() - border;
+                    if (top || bottom || left || right) {
+                        addExpectedCalibrationReference(
+                                frame,
+                                placement.yPx() + row,
+                                placement.xPx() + col,
+                                WHITE_INDEX,
+                                references
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    private void addSyncBandCalibrationReferences(
+            NormalizedCaptureFrame frame,
+            FixedLayoutPlan layoutPlan,
+            List<CaptureMediaPaletteCalibrationSample> references
+    ) {
+        LayoutProfile profile = layoutPlan.profile();
+        int top = profile.outerMarginPx();
+        int bottomExclusive = Math.min(frame.normalizedHeightPixels(), top + profile.topSyncBandPx());
+        int left = profile.outerMarginPx();
+        int rightExclusive = Math.min(frame.normalizedWidthPixels(), profile.frameWidthPx() - profile.outerMarginPx());
+        if (top >= bottomExclusive || left >= rightExclusive) {
+            return;
+        }
+
+        List<CaptureMediaPaletteCalibrationSample> syncReferences = new ArrayList<>();
+        int whiteReferenceCount = 0;
+        int blackReferenceCount = 0;
+        int cellWidth = syncCellWidth(layoutPlan);
+        for (int row = top; row < bottomExclusive; row += CALIBRATION_SYNC_SAMPLE_STRIDE_PX) {
+            for (int col = left; col < rightExclusive; col += CALIBRATION_SYNC_SAMPLE_STRIDE_PX) {
+                int expectedIndex = ((col - left) / cellWidth) % 2 == 0 ? WHITE_INDEX : BLACK_INDEX;
+                if (addExpectedCalibrationReference(frame, row, col, expectedIndex, syncReferences)) {
+                    if (expectedIndex == WHITE_INDEX) {
+                        whiteReferenceCount++;
+                    } else {
+                        blackReferenceCount++;
+                    }
+                }
+            }
+        }
+        if (whiteReferenceCount > 0 && blackReferenceCount > 0) {
+            references.addAll(syncReferences);
+        }
+    }
+
+    private int syncCellWidth(FixedLayoutPlan layoutPlan) {
+        return Math.max(8, layoutPlan.separatorThicknessPx() * 2);
+    }
+
+    private void addSamplingEvidenceCalibrationReferences(
+            Optional<CvSamplingEvidence> samplingEvidence,
+            List<CaptureMediaPaletteCalibrationSample> references
+    ) {
+        if (samplingEvidence.filter(this::usableSamplingEvidence).isEmpty()) {
+            return;
+        }
+        CvSamplingEvidence evidence = samplingEvidence.orElseThrow();
+        evidence.gridPhase()
+                .filter(this::usableGridPhase)
+                .ifPresent(phase -> {
+                    addLocalCalibrationReference(phase.localWhiteReferenceArgb(), WHITE_INDEX, references);
+                    addLocalCalibrationReference(phase.localBlackReferenceArgb(), BLACK_INDEX, references);
+                });
+        for (CvTileSamplingEvidence tileEvidence : evidence.tileEvidence()) {
+            if (!usableTileEvidence(tileEvidence)) {
+                continue;
+            }
+            addLocalCalibrationReference(tileEvidence.localWhiteReferenceArgb(), WHITE_INDEX, references);
+            addLocalCalibrationReference(tileEvidence.localBlackReferenceArgb(), BLACK_INDEX, references);
+        }
+    }
+
+    private void addLocalCalibrationReference(
+            OptionalInt observedArgb,
+            int expectedIndex,
+            List<CaptureMediaPaletteCalibrationSample> references
+    ) {
+        if (observedArgb.isEmpty()) {
+            return;
+        }
+        int argb = observedArgb.getAsInt();
+        Optional<PaletteReferenceMatch> match = paletteReferenceMatch(argb);
+        if (match.isPresent() && match.orElseThrow().paletteIndex() == expectedIndex) {
+            references.add(new CaptureMediaPaletteCalibrationSample(expectedIndex, argb));
+        }
+    }
+
+    private void addCandidateCalibrationReferences(
+            NormalizedCaptureFrame frame,
+            FixedLayoutPlan layoutPlan,
+            Optional<CvSamplingEvidence> samplingEvidence,
+            int sideVersion,
+            List<CaptureMediaPaletteCalibrationSample> references
+    ) {
+        List<TilePlacement> placements = layoutPlan.tilePlacements();
+        for (int tileIndex = 0; tileIndex < placements.size(); tileIndex++) {
+            CandidateSamplingGeometry geometry = candidateSamplingGeometry(
+                    layoutPlan,
+                    tileIndex,
+                    sideVersion,
+                    samplingEvidence
+            );
+            if (geometry.moduleSizePx() < MIN_MODULE_SIZE_PX) {
+                continue;
+            }
+            TilePlacement placement = placements.get(tileIndex);
+            if (!hasBorderCalibrationReferences(frame, layoutPlan, placement)) {
+                continue;
+            }
+            addFinderCalibrationReferences(frame, placement, geometry, references);
+            addModuleClusterCalibrationReferences(frame, placement, geometry, references);
+        }
+    }
+
+    private boolean hasBorderCalibrationReferences(
+            NormalizedCaptureFrame frame,
+            FixedLayoutPlan layoutPlan,
+            TilePlacement placement
+    ) {
+        int border = layoutPlan.separatorThicknessPx();
+        int referenceCount = 0;
+        for (int row = 0; row < placement.heightPx(); row += CALIBRATION_BORDER_SAMPLE_STRIDE_PX) {
+            for (int col = 0; col < placement.widthPx(); col += CALIBRATION_BORDER_SAMPLE_STRIDE_PX) {
+                boolean top = row < border;
+                boolean bottom = row >= placement.heightPx() - border;
+                boolean left = col < border;
+                boolean right = col >= placement.widthPx() - border;
+                if ((top || bottom || left || right)
+                        && paletteReferenceMatches(
+                                frame,
+                                placement.yPx() + row,
+                                placement.xPx() + col,
+                                WHITE_INDEX
+                        )) {
+                    referenceCount++;
+                    if (referenceCount >= 4) {
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
+    }
+
+    private void addFinderCalibrationReferences(
+            NormalizedCaptureFrame frame,
+            TilePlacement placement,
+            CandidateSamplingGeometry geometry,
+            List<CaptureMediaPaletteCalibrationSample> references
+    ) {
+        int dimension = geometry.dimension();
+        addFinderCalibrationReferences(frame, placement, geometry, 0, 0, BLACK_INDEX, references);
+        addFinderCalibrationReferences(
+                frame,
+                placement,
+                geometry,
+                0,
+                dimension - FINDER_SIZE_MODULES,
+                BLACK_INDEX,
+                references
+        );
+        addFinderCalibrationReferences(
+                frame,
+                placement,
+                geometry,
+                dimension - FINDER_SIZE_MODULES,
+                0,
+                6,
+                references
+        );
+        addFinderCalibrationReferences(
+                frame,
+                placement,
+                geometry,
+                dimension - FINDER_SIZE_MODULES,
+                dimension - FINDER_SIZE_MODULES,
+                3,
+                references
+        );
+    }
+
+    private void addFinderCalibrationReferences(
+            NormalizedCaptureFrame frame,
+            TilePlacement placement,
+            CandidateSamplingGeometry geometry,
+            int startRow,
+            int startCol,
+            int expectedIndex,
+            List<CaptureMediaPaletteCalibrationSample> references
+    ) {
+        for (int row = startRow; row < startRow + FINDER_SIZE_MODULES; row++) {
+            for (int col = startCol; col < startCol + FINDER_SIZE_MODULES; col++) {
+                addExpectedCalibrationReference(
+                        frame,
+                        moduleCenterY(placement, geometry, row),
+                        moduleCenterX(placement, geometry, col),
+                        expectedIndex,
+                        references
+                );
+            }
+        }
+    }
+
+    private void addModuleClusterCalibrationReferences(
+            NormalizedCaptureFrame frame,
+            TilePlacement placement,
+            CandidateSamplingGeometry geometry,
+            List<CaptureMediaPaletteCalibrationSample> references
+    ) {
+        for (int row = 0; row < geometry.dimension(); row++) {
+            for (int col = 0; col < geometry.dimension(); col++) {
+                int argb = frameArgbAt(
+                        frame,
+                        moduleCenterY(placement, geometry, row),
+                        moduleCenterX(placement, geometry, col)
+                );
+                paletteReferenceMatch(argb).ifPresent(match -> references.add(
+                        new CaptureMediaPaletteCalibrationSample(match.paletteIndex(), argb)
+                ));
+            }
+        }
+    }
+
+    private boolean addExpectedCalibrationReference(
+            NormalizedCaptureFrame frame,
+            int row,
+            int col,
+            int expectedIndex,
+            List<CaptureMediaPaletteCalibrationSample> references
+    ) {
+        int argb = frameArgbAt(frame, row, col);
+        Optional<PaletteReferenceMatch> match = paletteReferenceMatch(argb);
+        if (match.isEmpty() || match.orElseThrow().paletteIndex() != expectedIndex) {
+            return false;
+        }
+        references.add(new CaptureMediaPaletteCalibrationSample(expectedIndex, argb));
+        return true;
+    }
+
+    private boolean paletteReferenceMatches(
+            NormalizedCaptureFrame frame,
+            int row,
+            int col,
+            int expectedIndex
+    ) {
+        Optional<PaletteReferenceMatch> match = paletteReferenceMatch(frameArgbAt(frame, row, col));
+        return match.isPresent() && match.orElseThrow().paletteIndex() == expectedIndex;
+    }
+
+    private Optional<PaletteReferenceMatch> paletteReferenceMatch(int argb) {
+        int nearestIndex = 0;
+        double nearestDistance = Double.POSITIVE_INFINITY;
+        double runnerUpDistance = Double.POSITIVE_INFINITY;
+        for (int index = 0; index < paletteArgb.size(); index++) {
+            double distance = rgbDistance(argb, paletteArgb.get(index));
+            if (distance < nearestDistance) {
+                runnerUpDistance = nearestDistance;
+                nearestDistance = distance;
+                nearestIndex = index;
+            } else if (distance < runnerUpDistance) {
+                runnerUpDistance = distance;
+            }
+        }
+        double distanceMargin = runnerUpDistance - nearestDistance;
+        if (nearestDistance > MAX_CALIBRATION_REFERENCE_RGB_DISTANCE
+                || distanceMargin < MIN_CALIBRATION_REFERENCE_DISTANCE_MARGIN) {
+            return Optional.empty();
+        }
+        return Optional.of(new PaletteReferenceMatch(nearestIndex, nearestDistance, distanceMargin));
+    }
+
+    private int moduleCenterX(TilePlacement placement, CandidateSamplingGeometry geometry, int moduleCol) {
+        return placement.xPx()
+                + geometry.contentOffsetXPx()
+                + ((moduleCol + tileCodecProfile.quietZoneModules()) * geometry.moduleSizePx())
+                + (geometry.moduleSizePx() / 2)
+                + geometry.moduleCenterOffsetXPx();
+    }
+
+    private int moduleCenterY(TilePlacement placement, CandidateSamplingGeometry geometry, int moduleRow) {
+        return placement.yPx()
+                + geometry.contentOffsetYPx()
+                + ((moduleRow + tileCodecProfile.quietZoneModules()) * geometry.moduleSizePx())
+                + (geometry.moduleSizePx() / 2)
+                + geometry.moduleCenterOffsetYPx();
+    }
+
+    private int frameArgbAt(NormalizedCaptureFrame frame, int row, int col) {
+        int safeRow = clamp(row, 0, frame.normalizedHeightPixels() - 1);
+        int safeCol = clamp(col, 0, frame.normalizedWidthPixels() - 1);
+        return frame.argbPixelAt(safeRow, safeCol);
     }
 
     private CaptureMediaPaletteSample sampleTolerantPalette(
             NormalizedCaptureFrame frame,
             int row,
             int col,
-            int areaSampleRadius
+            PaletteSamplingContext paletteContext
+    ) {
+        return sampleTolerantPalette(frame, row, col, 0, paletteContext);
+    }
+
+    private CaptureMediaPaletteSample sampleTolerantPalette(
+            NormalizedCaptureFrame frame,
+            int row,
+            int col,
+            int areaSampleRadius,
+            PaletteSamplingContext paletteContext
     ) {
         int safeRow = clamp(row, 0, frame.normalizedHeightPixels() - 1);
         int safeCol = clamp(col, 0, frame.normalizedWidthPixels() - 1);
         CaptureMediaPaletteSample standardSample = areaSampleRadius > 0
-                ? paletteSampler.sampleTolerantPaletteArea(frame, safeRow, safeCol, areaSampleRadius)
-                : paletteSampler.sampleTolerantPalette(frame, safeRow, safeCol);
-        if (standardSample.accepted() || !cameraDerived(frame)) {
+                ? paletteSampler.sampleTolerantPaletteArea(
+                        frame,
+                        safeRow,
+                        safeCol,
+                        areaSampleRadius,
+                        paletteContext.paletteModel()
+                )
+                : paletteSampler.sampleTolerantPalette(frame, safeRow, safeCol, paletteContext.paletteModel());
+        if (standardSample.accepted() || !paletteContext.legacyCameraBroadeningAllowed()) {
             return standardSample;
         }
 
@@ -1673,26 +2486,28 @@ public final class CaptureMediaTilePayloadSampler {
         return new FinderMatch(matches);
     }
 
-    private TilePayload decodeCandidate(FixedLayoutPlan layoutPlan, int tileIndex, LogicalTile candidate) {
-        return decodeAttempt(layoutPlan, tileIndex, candidate).payload().orElse(null);
-    }
-
     private DecodeAttempt decodeAttempt(FixedLayoutPlan layoutPlan, int tileIndex, LogicalTile candidate) {
         try {
             byte[] envelope = tileDecoder.decode(candidate, tileCodecProfile);
             TilePayload payload = envelopeCodec.parse(envelope, SUPPORTED_PROTOCOL_COMPATIBILITY_VERSION);
             SlotValidationResult slotValidation = slotValidationResult(layoutPlan, tileIndex, payload);
             return slotValidation.rejectionReason()
-                    .map(reason -> DecodeAttempt.rejected(reason, slotValidation.diagnostics()))
+                    .map(reason -> DecodeAttempt.rejected(
+                            PostPaletteFailureStage.SLOT_VALIDATION,
+                            reason,
+                            slotValidation.diagnostics()
+                    ))
                     .orElseGet(() -> DecodeAttempt.accepted(payload));
         } catch (TileCodecException exception) {
             String reason = "tileDecode: " + exception.getMessage();
             return DecodeAttempt.rejected(
+                    PostPaletteFailureStage.TILE_DECODE,
                     reason,
                     CaptureMediaTileDecodeDiagnostics.inspect(candidate, tileCodecProfile, Optional.of(reason))
             );
         } catch (TransportException exception) {
             return DecodeAttempt.rejected(
+                    PostPaletteFailureStage.ENVELOPE_VALIDATION,
                     "envelopeValidation: " + exception.getMessage(),
                     Map.of(
                             "envelopeValidation.stage", "ENVELOPE_VALIDATION",
@@ -1701,6 +2516,7 @@ public final class CaptureMediaTilePayloadSampler {
             );
         } catch (RuntimeException exception) {
             return DecodeAttempt.rejected(
+                    PostPaletteFailureStage.UNEXPECTED,
                     "unexpected: " + exception.getClass().getSimpleName(),
                     Map.of(
                             "tileDecode.unexpectedStage", "UNEXPECTED",
@@ -1825,6 +2641,24 @@ public final class CaptureMediaTilePayloadSampler {
         );
     }
 
+    private CaptureMediaDiagnostic postPaletteDiagnostic(
+            NormalizedCaptureFrame frame,
+            CaptureMediaDiagnosticSeverity severity,
+            PaletteConfidenceSummary confidence,
+            PostPaletteFailureStage failureStage,
+            int rejectedAttemptCount
+    ) {
+        Objects.requireNonNull(failureStage, "failureStage must not be null");
+        return sourceDiagnostic(
+                frame,
+                CaptureMediaDiagnosticCode.TILE_DECODE_OR_ENVELOPE_FAILURE,
+                severity,
+                postPaletteMetrics(confidence, rejectedAttemptCount),
+                "Media tile content passed palette and finder sampling but failed "
+                        + postPaletteFailureDescription(failureStage)
+        );
+    }
+
     private CaptureMediaDiagnostic sourceDiagnostic(
             NormalizedCaptureFrame frame,
             CaptureMediaDiagnosticCode code,
@@ -1856,6 +2690,24 @@ public final class CaptureMediaTilePayloadSampler {
         values.put("averagePaletteConfidence", confidence.averageConfidence());
         values.put("maximumPaletteRgbDistance", confidence.maximumRgbDistance());
         return Map.copyOf(values);
+    }
+
+    private Map<String, Double> postPaletteMetrics(PaletteConfidenceSummary confidence, int rejectedAttemptCount) {
+        Map<String, Double> values = new LinkedHashMap<>();
+        if (confidence != null) {
+            values.putAll(metrics(confidence));
+        }
+        values.put("postPaletteRejectedAttemptCount", (double) rejectedAttemptCount);
+        return Map.copyOf(values);
+    }
+
+    private String postPaletteFailureDescription(PostPaletteFailureStage failureStage) {
+        return switch (failureStage) {
+            case TILE_DECODE -> "tile decode validation";
+            case ENVELOPE_VALIDATION -> "envelope parse or CRC validation";
+            case SLOT_VALIDATION -> "slot validation";
+            case UNEXPECTED -> "unexpected post-palette validation";
+        };
     }
 
     private CaptureMediaDiagnostic partialAcceptanceDiagnostic(
@@ -1957,12 +2809,25 @@ public final class CaptureMediaTilePayloadSampler {
         REJECTED
     }
 
+    private static void requireNonNegativeFinite(double value, String fieldName) {
+        if (!Double.isFinite(value) || value < 0.0d) {
+            throw new IllegalArgumentException(fieldName + " must be finite and non-negative");
+        }
+    }
+
+    private static void requireUnitScore(double value, String fieldName) {
+        if (!Double.isFinite(value) || value < 0.0d || value > 1.0d) {
+            throw new IllegalArgumentException(fieldName + " must be between 0.0 and 1.0");
+        }
+    }
+
     /**
      * Diagnostic sampler evidence for one normalized media frame.
      *
      * @param sourceId source identifier of the normalized frame
      * @param layoutProfileId normalized layout profile id
      * @param samplingEvidence backend-neutral grid-phase and tile sampling evidence used by the sampler, when available
+     * @param paletteCalibration selected palette calibration evidence used by the sampler
      * @param slots per-slot sampler evidence
      * @param candidateAttemptCount side-version attempts across all signed slots
      * @param noFinderAttemptCount attempts that failed finder-pattern checks
@@ -1976,6 +2841,7 @@ public final class CaptureMediaTilePayloadSampler {
             String sourceId,
             String layoutProfileId,
             Optional<CvSamplingEvidence> samplingEvidence,
+            PaletteCalibrationInspection paletteCalibration,
             List<SlotInspection> slots,
             int candidateAttemptCount,
             int noFinderAttemptCount,
@@ -1992,6 +2858,7 @@ public final class CaptureMediaTilePayloadSampler {
          * @param sourceId source identifier of the normalized frame
          * @param layoutProfileId active layout profile id
          * @param samplingEvidence backend-neutral grid-phase and tile sampling evidence used by the sampler
+         * @param paletteCalibration selected palette calibration evidence used by the sampler
          * @param slots per-slot sampler evidence
          * @param candidateAttemptCount side-version attempts across all signed slots
          * @param noFinderAttemptCount attempts that failed finder-pattern checks
@@ -2002,6 +2869,7 @@ public final class CaptureMediaTilePayloadSampler {
                 String sourceId,
                 String layoutProfileId,
                 Optional<CvSamplingEvidence> samplingEvidence,
+                PaletteCalibrationInspection paletteCalibration,
                 List<SlotInspection> slots,
                 int candidateAttemptCount,
                 int noFinderAttemptCount,
@@ -2012,6 +2880,7 @@ public final class CaptureMediaTilePayloadSampler {
                     sourceId,
                     layoutProfileId,
                     samplingEvidence,
+                    paletteCalibration,
                     slots,
                     candidateAttemptCount,
                     noFinderAttemptCount,
@@ -2034,6 +2903,7 @@ public final class CaptureMediaTilePayloadSampler {
                 throw new IllegalArgumentException("layoutProfileId must not be blank");
             }
             Objects.requireNonNull(samplingEvidence, "samplingEvidence must not be null");
+            Objects.requireNonNull(paletteCalibration, "paletteCalibration must not be null");
             slots = List.copyOf(Objects.requireNonNull(slots, "slots must not be null"));
             if (slots.stream().anyMatch(Objects::isNull)) {
                 throw new IllegalArgumentException("slots must not contain null values");
@@ -2072,6 +2942,7 @@ public final class CaptureMediaTilePayloadSampler {
                     sourceId,
                     layoutProfileId,
                     samplingEvidence,
+                    paletteCalibration,
                     slots,
                     candidateAttemptCount,
                     noFinderAttemptCount,
@@ -2182,6 +3053,188 @@ public final class CaptureMediaTilePayloadSampler {
     }
 
     /**
+     * Ranked reader-owned phase-search evidence for one selected or runner-up module sampling variant.
+     *
+     * @param rank one-based rank after phase-search scoring
+     * @param generationOrdinal deterministic generation order used as final tie-breaker
+     * @param source reader-owned phase candidate source
+     * @param evidenceSource external evidence source identifier, when the phase was evidence-derived
+     * @param attemptedVariantCount number of phase variants evaluated for the side-version attempt
+     * @param variantCap maximum phase variants allowed for the side-version attempt
+     * @param capReached true when additional variants were not evaluated because the cap was reached
+     * @param outcome reader-owned phase outcome
+     * @param failureStage post-palette failure stage, when decode or validation rejected the phase
+     * @param failureDetail specific failure detail, when available
+     * @param moduleCenterOffsetXPx horizontal module-center offset in normalized pixels
+     * @param moduleCenterOffsetYPx vertical module-center offset in normalized pixels
+     * @param moduleSizePx module size used for sampling
+     * @param moduleSizeScale scale applied relative to the base side-version module size
+     * @param finderCandidateCount count of recoverable finder patterns observed
+     * @param finderExact true when all finder patterns matched exactly
+     * @param borderStrength normalized border-signature strength used in ranking
+     * @param paletteCalibrationConfidence normalized selected-palette calibration confidence
+     * @param rejectedSampleCount rejected palette sample count for this phase
+     */
+    public record PhaseInspection(
+            int rank,
+            int generationOrdinal,
+            CaptureMediaModulePhaseCandidateSource source,
+            Optional<String> evidenceSource,
+            int attemptedVariantCount,
+            int variantCap,
+            boolean capReached,
+            CaptureMediaModulePhaseOutcome outcome,
+            Optional<String> failureStage,
+            Optional<String> failureDetail,
+            double moduleCenterOffsetXPx,
+            double moduleCenterOffsetYPx,
+            double moduleSizePx,
+            double moduleSizeScale,
+            int finderCandidateCount,
+            boolean finderExact,
+            double borderStrength,
+            double paletteCalibrationConfidence,
+            int rejectedSampleCount
+    ) {
+
+        /**
+         * Creates validated immutable phase-search inspection evidence.
+         */
+        public PhaseInspection {
+            if (rank <= 0 || generationOrdinal < 0 || attemptedVariantCount <= 0 || variantCap <= 0) {
+                throw new IllegalArgumentException("phase ranks and counts must be positive");
+            }
+            if (attemptedVariantCount > variantCap) {
+                throw new IllegalArgumentException("attemptedVariantCount must not exceed variantCap");
+            }
+            Objects.requireNonNull(source, "source must not be null");
+            evidenceSource = Objects.requireNonNull(evidenceSource, "evidenceSource must not be null")
+                    .map(String::trim);
+            evidenceSource.ifPresent(value -> {
+                if (value.isBlank()) {
+                    throw new IllegalArgumentException("evidenceSource must not be blank when present");
+                }
+            });
+            Objects.requireNonNull(outcome, "outcome must not be null");
+            failureStage = Objects.requireNonNull(failureStage, "failureStage must not be null")
+                    .map(String::trim);
+            failureStage.ifPresent(value -> {
+                if (value.isBlank()) {
+                    throw new IllegalArgumentException("failureStage must not be blank when present");
+                }
+            });
+            failureDetail = Objects.requireNonNull(failureDetail, "failureDetail must not be null")
+                    .map(String::trim);
+            failureDetail.ifPresent(value -> {
+                if (value.isBlank()) {
+                    throw new IllegalArgumentException("failureDetail must not be blank when present");
+                }
+            });
+            requireFinite(moduleCenterOffsetXPx, "moduleCenterOffsetXPx");
+            requireFinite(moduleCenterOffsetYPx, "moduleCenterOffsetYPx");
+            if (!Double.isFinite(moduleSizePx) || moduleSizePx <= 0.0d) {
+                throw new IllegalArgumentException("moduleSizePx must be finite and positive");
+            }
+            if (!Double.isFinite(moduleSizeScale) || moduleSizeScale <= 0.0d) {
+                throw new IllegalArgumentException("moduleSizeScale must be finite and positive");
+            }
+            if (finderCandidateCount < 0 || rejectedSampleCount < 0) {
+                throw new IllegalArgumentException("phase sample counts must be non-negative");
+            }
+            requireUnitScore(borderStrength, "borderStrength");
+            requireUnitScore(paletteCalibrationConfidence, "paletteCalibrationConfidence");
+        }
+
+        private static void requireFinite(double value, String fieldName) {
+            if (!Double.isFinite(value)) {
+                throw new IllegalArgumentException(fieldName + " must be finite");
+            }
+        }
+
+        private static void requireUnitScore(double value, String fieldName) {
+            if (!Double.isFinite(value) || value < 0.0d || value > 1.0d) {
+                throw new IllegalArgumentException(fieldName + " must be between 0.0 and 1.0");
+            }
+        }
+    }
+
+    /**
+     * Diagnostic evidence for the palette calibration selected during frame inspection.
+     *
+     * @param enabled true when observed calibration colors were used as palette centers
+     * @param confidence aggregate calibration confidence for the selected palette model
+     * @param observedColorCount distinct palette indexes observed while calibrating
+     * @param fallbackReason reason calibration fell back to exact palette sampling, when available
+     * @param maximumObservedRgbDistance largest observed RGB distance from exact rendered palette colors
+     * @param observedColors per-index observed color evidence retained for the selected calibrated model
+     */
+    public record PaletteCalibrationInspection(
+            boolean enabled,
+            double confidence,
+            int observedColorCount,
+            Optional<String> fallbackReason,
+            double maximumObservedRgbDistance,
+            List<PaletteColorCalibrationInspection> observedColors
+    ) {
+
+        /**
+         * Creates validated immutable palette calibration inspection evidence.
+         */
+        public PaletteCalibrationInspection {
+            requireUnitScore(confidence, "confidence");
+            if (observedColorCount < 0) {
+                throw new IllegalArgumentException("observedColorCount must be non-negative");
+            }
+            fallbackReason = Objects.requireNonNull(fallbackReason, "fallbackReason must not be null")
+                    .map(String::trim);
+            fallbackReason.ifPresent(reason -> {
+                if (reason.isBlank()) {
+                    throw new IllegalArgumentException("fallbackReason must not be blank when present");
+                }
+            });
+            requireNonNegativeFinite(maximumObservedRgbDistance, "maximumObservedRgbDistance");
+            observedColors = List.copyOf(Objects.requireNonNull(
+                    observedColors,
+                    "observedColors must not be null"
+            ));
+            if (observedColors.stream().anyMatch(Objects::isNull)) {
+                throw new IllegalArgumentException("observedColors must not contain null values");
+            }
+        }
+    }
+
+    /**
+     * Per-index observed palette calibration evidence.
+     *
+     * @param paletteIndex rendered palette index
+     * @param expectedArgb exact rendered ARGB color
+     * @param modelArgb observed ARGB color center used by the calibrated model
+     * @param sampleCount number of observed samples used for this color center
+     * @param maximumObservedRgbDistance largest observed RGB distance from the exact rendered color
+     * @param confidence normalized confidence for this observed color center
+     */
+    public record PaletteColorCalibrationInspection(
+            int paletteIndex,
+            int expectedArgb,
+            int modelArgb,
+            int sampleCount,
+            double maximumObservedRgbDistance,
+            double confidence
+    ) {
+
+        /**
+         * Creates validated immutable per-color calibration inspection evidence.
+         */
+        public PaletteColorCalibrationInspection {
+            if (paletteIndex < 0 || sampleCount <= 0) {
+                throw new IllegalArgumentException("paletteIndex must be non-negative and sampleCount must be positive");
+            }
+            requireNonNegativeFinite(maximumObservedRgbDistance, "maximumObservedRgbDistance");
+            requireUnitScore(confidence, "confidence");
+        }
+    }
+
+    /**
      * Diagnostic sampler evidence for one side-version attempt in one tile slot.
      *
      * @param sideVersion tile codec side version attempted
@@ -2198,6 +3251,8 @@ public final class CaptureMediaTilePayloadSampler {
      * @param decodeFailureReason stable tile, envelope, or slot-validation reason when decode was attempted and rejected
      * @param decodeDiagnostics compact tile-decode diagnostics when decode was attempted and rejected
      * @param decodedPayloadLayoutProfileId payload-derived layout profile id when the attempt decoded successfully
+     * @param selectedPhase selected ranked phase evidence
+     * @param runnerUpPhase second-ranked phase evidence, when another variant was evaluated
      */
     public record CandidateInspection(
             int sideVersion,
@@ -2213,7 +3268,9 @@ public final class CaptureMediaTilePayloadSampler {
             Map<String, String> samplingDiagnostics,
             Optional<String> decodeFailureReason,
             Map<String, String> decodeDiagnostics,
-            Optional<String> decodedPayloadLayoutProfileId
+            Optional<String> decodedPayloadLayoutProfileId,
+            PhaseInspection selectedPhase,
+            Optional<PhaseInspection> runnerUpPhase
     ) {
 
         /**
@@ -2251,6 +3308,8 @@ public final class CaptureMediaTilePayloadSampler {
                     throw new IllegalArgumentException("decodedPayloadLayoutProfileId must not be blank when present");
                 }
             });
+            Objects.requireNonNull(selectedPhase, "selectedPhase must not be null");
+            runnerUpPhase = Objects.requireNonNull(runnerUpPhase, "runnerUpPhase must not be null");
         }
     }
 
@@ -2515,36 +3574,91 @@ public final class CaptureMediaTilePayloadSampler {
         DECODED
     }
 
+    private enum PostPaletteFailureStage {
+        TILE_DECODE,
+        ENVELOPE_VALIDATION,
+        SLOT_VALIDATION,
+        UNEXPECTED
+    }
+
     private record SlotSample(
             SlotSampleStatus status,
             Optional<TilePayload> payload,
-            Optional<PaletteConfidenceSummary> paletteConfidence
+            Optional<PaletteConfidenceSummary> paletteConfidence,
+            Optional<PostPaletteFailureStage> postPaletteFailureStage,
+            int postPaletteRejectedAttemptCount
     ) {
 
         private SlotSample {
             Objects.requireNonNull(status, "status must not be null");
             Objects.requireNonNull(payload, "payload must not be null");
             Objects.requireNonNull(paletteConfidence, "paletteConfidence must not be null");
+            Objects.requireNonNull(postPaletteFailureStage, "postPaletteFailureStage must not be null");
+            if (postPaletteRejectedAttemptCount < 0) {
+                throw new IllegalArgumentException("postPaletteRejectedAttemptCount must be non-negative");
+            }
+            if (postPaletteFailureStage.isPresent()
+                    && status != SlotSampleStatus.UNDECODABLE) {
+                throw new IllegalArgumentException("post-palette failure stage requires an undecodable slot");
+            }
         }
 
         private static SlotSample empty() {
-            return new SlotSample(SlotSampleStatus.EMPTY, Optional.empty(), Optional.empty());
+            return new SlotSample(
+                    SlotSampleStatus.EMPTY,
+                    Optional.empty(),
+                    Optional.empty(),
+                    Optional.empty(),
+                    0
+            );
         }
 
         private static SlotSample noSignatureContent() {
-            return new SlotSample(SlotSampleStatus.NO_SIGNATURE_CONTENT, Optional.empty(), Optional.empty());
+            return new SlotSample(
+                    SlotSampleStatus.NO_SIGNATURE_CONTENT,
+                    Optional.empty(),
+                    Optional.empty(),
+                    Optional.empty(),
+                    0
+            );
         }
 
         private static SlotSample rejected(PaletteConfidenceSummary confidence) {
-            return new SlotSample(SlotSampleStatus.REJECTED, Optional.empty(), Optional.of(confidence));
+            return new SlotSample(
+                    SlotSampleStatus.REJECTED,
+                    Optional.empty(),
+                    Optional.of(confidence),
+                    Optional.empty(),
+                    0
+            );
         }
 
         private static SlotSample undecodable(Optional<PaletteConfidenceSummary> confidence) {
-            return new SlotSample(SlotSampleStatus.UNDECODABLE, Optional.empty(), confidence);
+            return undecodable(confidence, Optional.empty(), 0);
+        }
+
+        private static SlotSample undecodable(
+                Optional<PaletteConfidenceSummary> confidence,
+                Optional<PostPaletteFailureStage> postPaletteFailureStage,
+                int postPaletteRejectedAttemptCount
+        ) {
+            return new SlotSample(
+                    SlotSampleStatus.UNDECODABLE,
+                    Optional.empty(),
+                    confidence,
+                    postPaletteFailureStage,
+                    postPaletteRejectedAttemptCount
+            );
         }
 
         private static SlotSample decoded(TilePayload payload, PaletteConfidenceSummary confidence) {
-            return new SlotSample(SlotSampleStatus.DECODED, Optional.of(payload), Optional.of(confidence));
+            return new SlotSample(
+                    SlotSampleStatus.DECODED,
+                    Optional.of(payload),
+                    Optional.of(confidence),
+                    Optional.empty(),
+                    0
+            );
         }
     }
 
@@ -2685,6 +3799,21 @@ public final class CaptureMediaTilePayloadSampler {
     private record NearestPaletteColor(int paletteIndex, int paletteArgb, double rgbDistance) {
     }
 
+    private record PaletteReferenceMatch(int paletteIndex, double rgbDistance, double distanceMargin) {
+    }
+
+    private record PaletteSamplingContext(
+            CaptureMediaPaletteModel paletteModel,
+            PaletteCalibrationInspection paletteCalibration,
+            boolean legacyCameraBroadeningAllowed
+    ) {
+
+        private PaletteSamplingContext {
+            Objects.requireNonNull(paletteModel, "paletteModel must not be null");
+            Objects.requireNonNull(paletteCalibration, "paletteCalibration must not be null");
+        }
+    }
+
     private record FinderMatch(int matchedModules) {
 
         private boolean exact() {
@@ -2731,27 +3860,49 @@ public final class CaptureMediaTilePayloadSampler {
 
     private record DecodeAttempt(
             Optional<TilePayload> payload,
+            Optional<PostPaletteFailureStage> failureStage,
             Optional<String> rejectionReason,
             Map<String, String> diagnostics
     ) {
 
         private DecodeAttempt {
             Objects.requireNonNull(payload, "payload must not be null");
+            Objects.requireNonNull(failureStage, "failureStage must not be null");
             Objects.requireNonNull(rejectionReason, "rejectionReason must not be null");
             diagnostics = Map.copyOf(Objects.requireNonNull(diagnostics, "diagnostics must not be null"));
+            if (payload.isPresent() && (failureStage.isPresent() || rejectionReason.isPresent())) {
+                throw new IllegalArgumentException("accepted decode attempts must not contain rejection details");
+            }
+            if (payload.isEmpty() && (failureStage.isEmpty() || rejectionReason.isEmpty())) {
+                throw new IllegalArgumentException("rejected decode attempts require stage and reason");
+            }
         }
 
         private static DecodeAttempt accepted(TilePayload payload) {
             Objects.requireNonNull(payload, "payload must not be null");
-            return new DecodeAttempt(Optional.of(payload), Optional.empty(), Map.of(
+            return new DecodeAttempt(Optional.of(payload), Optional.empty(), Optional.empty(), Map.of(
                     "decodedPayload.layoutProfileId", payload.layoutProfileId(),
                     "decodedPayload.tileIndex", Integer.toString(payload.tileIndex().value()),
                     "decodedPayload.totalTiles", Integer.toString(payload.totalTilesInFrame())
             ));
         }
 
-        private static DecodeAttempt rejected(String reason, Map<String, String> diagnostics) {
-            return new DecodeAttempt(Optional.empty(), Optional.of(reason), diagnostics);
+        private static DecodeAttempt rejected(
+                PostPaletteFailureStage failureStage,
+                String reason,
+                Map<String, String> diagnostics
+        ) {
+            Objects.requireNonNull(failureStage, "failureStage must not be null");
+            Map<String, String> enrichedDiagnostics = new LinkedHashMap<>(
+                    Objects.requireNonNull(diagnostics, "diagnostics must not be null")
+            );
+            enrichedDiagnostics.put("postPalette.failureStage", failureStage.name());
+            return new DecodeAttempt(
+                    Optional.empty(),
+                    Optional.of(failureStage),
+                    Optional.of(reason),
+                    enrichedDiagnostics
+            );
         }
     }
 
@@ -2775,11 +3926,156 @@ public final class CaptureMediaTilePayloadSampler {
         }
     }
 
+    private record PhaseCandidatePlan(
+            List<CaptureMediaModulePhaseCandidate> candidates,
+            Map<CaptureMediaModulePhaseCandidate, CandidateSamplingGeometry> geometryByCandidate,
+            boolean capReached
+    ) {
+
+        private PhaseCandidatePlan {
+            candidates = List.copyOf(Objects.requireNonNull(candidates, "candidates must not be null"));
+            geometryByCandidate = Map.copyOf(Objects.requireNonNull(
+                    geometryByCandidate,
+                    "geometryByCandidate must not be null"
+            ));
+            if (candidates.isEmpty()) {
+                throw new IllegalArgumentException("candidates must not be empty");
+            }
+        }
+
+        private CandidateSamplingGeometry geometry(CaptureMediaModulePhaseCandidate candidate) {
+            CandidateSamplingGeometry geometry = geometryByCandidate.get(candidate);
+            if (geometry == null) {
+                throw new IllegalArgumentException("phase candidate was not generated by this plan");
+            }
+            return geometry;
+        }
+    }
+
+    private record PhaseAttemptEvaluation(
+            CaptureMediaModulePhaseAttempt attempt,
+            CandidateSample sample,
+            Optional<DecodeAttempt> decodeAttempt
+    ) {
+
+        private PhaseAttemptEvaluation {
+            Objects.requireNonNull(attempt, "attempt must not be null");
+            Objects.requireNonNull(sample, "sample must not be null");
+            Objects.requireNonNull(decodeAttempt, "decodeAttempt must not be null");
+        }
+    }
+
+    private record PhaseSelection(
+            CaptureMediaModulePhaseSearchResult result,
+            Map<CaptureMediaModulePhaseCandidate, PhaseAttemptEvaluation> evaluations
+    ) {
+
+        private PhaseSelection {
+            Objects.requireNonNull(result, "result must not be null");
+            evaluations = Map.copyOf(Objects.requireNonNull(evaluations, "evaluations must not be null"));
+            for (CaptureMediaModulePhaseAttempt attempt : result.rankedAttempts()) {
+                if (!evaluations.containsKey(attempt.candidate())) {
+                    throw new IllegalArgumentException("evaluations must contain every ranked phase candidate");
+                }
+            }
+        }
+
+        private PhaseAttemptEvaluation selectedEvaluation() {
+            return evaluation(result.selectedAttempt());
+        }
+
+        private Optional<PhaseAttemptEvaluation> runnerUpEvaluation() {
+            return result.rankedAttempts().size() > 1
+                    ? Optional.of(evaluation(result.rankedAttempts().get(1)))
+                    : Optional.empty();
+        }
+
+        private Optional<PhaseAttemptEvaluation> firstPostPaletteRejectedEvaluation() {
+            return result.rankedAttempts().stream()
+                    .filter(attempt -> attempt.tileDecodeAttempted() && !attempt.acceptedPayload())
+                    .map(this::evaluation)
+                    .findFirst();
+        }
+
+        private int postPaletteRejectedAttemptCount() {
+            return (int) result.rankedAttempts().stream()
+                    .filter(attempt -> attempt.tileDecodeAttempted() && !attempt.acceptedPayload())
+                    .count();
+        }
+
+        private Optional<CandidateSample> lowestRejectedSample() {
+            CandidateSample lowest = null;
+            for (PhaseAttemptEvaluation evaluation : evaluations.values()) {
+                if (evaluation.sample().status() == CandidateSampleStatus.REJECTED) {
+                    lowest = lowerConfidence(lowest, evaluation.sample());
+                }
+            }
+            return Optional.ofNullable(lowest);
+        }
+
+        private PhaseInspection phaseInspection(PhaseAttemptEvaluation evaluation) {
+            CaptureMediaModulePhaseAttempt attempt = evaluation.attempt();
+            CaptureMediaModulePhaseCandidate candidate = attempt.candidate();
+            CaptureMediaModulePhaseGeometry geometry = candidate.geometry();
+            return new PhaseInspection(
+                    rank(candidate),
+                    candidate.ordinal(),
+                    candidate.source(),
+                    candidate.evidence().map(CaptureMediaModulePhaseEvidence::source),
+                    result.attemptedVariantCount(),
+                    result.variantCap(),
+                    result.capReached(),
+                    attempt.outcome(),
+                    failureStage(evaluation),
+                    attempt.failureDetail(),
+                    geometry.centerOffsetXPx(),
+                    geometry.centerOffsetYPx(),
+                    geometry.moduleSizePx(),
+                    geometry.moduleSizeScale(),
+                    attempt.finderCandidateCount(),
+                    attempt.finderExact(),
+                    attempt.borderStrength(),
+                    attempt.paletteCalibrationConfidence(),
+                    attempt.rejectedSampleCount()
+            );
+        }
+
+        private PhaseAttemptEvaluation evaluation(CaptureMediaModulePhaseAttempt attempt) {
+            return evaluations.get(attempt.candidate());
+        }
+
+        private int rank(CaptureMediaModulePhaseCandidate candidate) {
+            for (int index = 0; index < result.rankedAttempts().size(); index++) {
+                if (result.rankedAttempts().get(index).candidate().equals(candidate)) {
+                    return index + 1;
+                }
+            }
+            throw new IllegalArgumentException("candidate is not present in ranked attempts");
+        }
+
+        private Optional<String> failureStage(PhaseAttemptEvaluation evaluation) {
+            return evaluation.decodeAttempt()
+                    .flatMap(DecodeAttempt::failureStage)
+                    .map(Enum::name);
+        }
+
+        private CandidateSample lowerConfidence(CandidateSample current, CandidateSample candidate) {
+            if (current == null) {
+                return candidate;
+            }
+            double currentMinimum = current.paletteConfidence().minimumConfidence();
+            double candidateMinimum = candidate.paletteConfidence().minimumConfidence();
+            return candidateMinimum < currentMinimum ? candidate : current;
+        }
+    }
+
     private record CandidateSample(
             CandidateSampleStatus status,
             Optional<LogicalTile> logicalTile,
             Optional<PaletteConfidenceSummary> optionalPaletteConfidence,
-            CandidateSamplingGeometry geometry
+            CandidateSamplingGeometry geometry,
+            int finderCandidateCount,
+            boolean finderExact
     ) {
 
         private CandidateSample {
@@ -2790,6 +4086,9 @@ public final class CaptureMediaTilePayloadSampler {
                     "optionalPaletteConfidence must not be null"
             );
             Objects.requireNonNull(geometry, "geometry must not be null");
+            if (finderCandidateCount < 0) {
+                throw new IllegalArgumentException("finderCandidateCount must be non-negative");
+            }
         }
 
         private PaletteConfidenceSummary paletteConfidence() {
@@ -2798,21 +4097,46 @@ public final class CaptureMediaTilePayloadSampler {
 
         private static CandidateSample noFinder(
                 Optional<PaletteConfidenceSummary> confidence,
-                CandidateSamplingGeometry geometry
+                CandidateSamplingGeometry geometry,
+                int finderCandidateCount,
+                boolean finderExact
         ) {
-            return new CandidateSample(CandidateSampleStatus.NO_FINDER, Optional.empty(), confidence, geometry);
+            return new CandidateSample(
+                    CandidateSampleStatus.NO_FINDER,
+                    Optional.empty(),
+                    confidence,
+                    geometry,
+                    finderCandidateCount,
+                    finderExact
+            );
         }
 
         private static CandidateSample rejected(PaletteConfidenceSummary confidence, CandidateSamplingGeometry geometry) {
-            return new CandidateSample(CandidateSampleStatus.REJECTED, Optional.empty(), Optional.of(confidence), geometry);
+            return new CandidateSample(
+                    CandidateSampleStatus.REJECTED,
+                    Optional.empty(),
+                    Optional.of(confidence),
+                    geometry,
+                    0,
+                    false
+            );
         }
 
         private static CandidateSample candidate(
                 LogicalTile tile,
                 PaletteConfidenceSummary confidence,
-                CandidateSamplingGeometry geometry
+                CandidateSamplingGeometry geometry,
+                int finderCandidateCount,
+                boolean finderExact
         ) {
-            return new CandidateSample(CandidateSampleStatus.CANDIDATE, Optional.of(tile), Optional.of(confidence), geometry);
+            return new CandidateSample(
+                    CandidateSampleStatus.CANDIDATE,
+                    Optional.of(tile),
+                    Optional.of(confidence),
+                    geometry,
+                    finderCandidateCount,
+                    finderExact
+            );
         }
     }
 

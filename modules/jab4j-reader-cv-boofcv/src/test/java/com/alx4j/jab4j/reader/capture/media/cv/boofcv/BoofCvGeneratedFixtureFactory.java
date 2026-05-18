@@ -32,6 +32,7 @@ import com.alx4j.jab4j.render.frame.FrameRasterRenderer;
 import com.alx4j.jab4j.render.frame.RenderedFrame;
 import com.alx4j.jab4j.render.layout.FixedLayoutPlan;
 import com.alx4j.jab4j.render.layout.FixedLayoutPlanner;
+import com.alx4j.jab4j.render.layout.TilePlacement;
 import com.alx4j.jab4j.render.tile.RenderedTile;
 import com.alx4j.jab4j.render.tile.TileRasterRenderer;
 import com.alx4j.jab4j.tile.LogicalTile;
@@ -46,6 +47,8 @@ final class BoofCvGeneratedFixtureFactory {
 
     static final String CAMERA_LIKE_MONITOR_PNG = "CM-MVP3-GENERATED-CAMERA-LIKE-MONITOR-PNG";
     static final String CAMERA_LIKE_MONITOR_JPEG = "CM-MVP3-GENERATED-CAMERA-LIKE-MONITOR-JPEG";
+    static final String CAMERA_LIKE_MONITOR_INVALID_PAYLOAD_PNG =
+            "CM-MVP7-GENERATED-CAMERA-LIKE-MONITOR-INVALID-PAYLOAD-PNG";
     static final String SKEWED_BLURRED_MONITOR_PNG = "CM-MVP7-GENERATED-SKEWED-BLURRED-MONITOR-PNG";
     static final String BRIGHT_MONITOR_WITHOUT_JAB = "CM-MVP4-GENERATED-BRIGHT-MONITOR-WITHOUT-JAB";
     static final String UI_CHROME_WITHOUT_JAB = "CM-MVP4-GENERATED-UI-CHROME-WITHOUT-JAB";
@@ -80,6 +83,21 @@ final class BoofCvGeneratedFixtureFactory {
      */
     static MediaInputFrame cameraLikeMonitorPng() {
         return pngFrame(CAMERA_LIKE_MONITOR_PNG, cameraLikeMonitorImage(renderJabFrame()));
+    }
+
+    /**
+     * Returns a camera-like monitor fixture with frame geometry evidence but no valid tile payload interiors.
+     *
+     * @return decoded media input frame
+     */
+    static MediaInputFrame cameraLikeMonitorInvalidPayloadPng() {
+        FixedLayoutPlan layoutPlan = new FixedLayoutPlanner().plan(CAPTURE_LAYOUT);
+        BufferedImage frameImage = toImage(renderJabFrame());
+        clearTilePayloadInteriors(frameImage, layoutPlan);
+        return pngFrame(
+                CAMERA_LIKE_MONITOR_INVALID_PAYLOAD_PNG,
+                cameraLikeMonitorImage(colorShiftedImage(frameImage, 18))
+        );
     }
 
     /**
@@ -247,7 +265,10 @@ final class BoofCvGeneratedFixtureFactory {
     }
 
     private static BufferedImage cameraLikeMonitorImage(RenderedFrame frame) {
-        BufferedImage frameImage = colorShiftedImage(frame, 18);
+        return cameraLikeMonitorImage(colorShiftedImage(frame, 18));
+    }
+
+    private static BufferedImage cameraLikeMonitorImage(BufferedImage frameImage) {
         int canvasWidth = 1700;
         int canvasHeight = 1000;
         BufferedImage canvas = new BufferedImage(canvasWidth, canvasHeight, BufferedImage.TYPE_INT_ARGB);
@@ -266,6 +287,21 @@ final class BoofCvGeneratedFixtureFactory {
             graphics.dispose();
         }
         return canvas;
+    }
+
+    private static void clearTilePayloadInteriors(BufferedImage image, FixedLayoutPlan layoutPlan) {
+        int border = layoutPlan.separatorThicknessPx();
+        for (TilePlacement placement : layoutPlan.tilePlacements()) {
+            int left = placement.xPx() + border;
+            int top = placement.yPx() + border;
+            int rightExclusive = placement.xPx() + placement.widthPx() - border;
+            int bottomExclusive = placement.yPx() + placement.heightPx() - border;
+            for (int y = top; y < bottomExclusive; y++) {
+                for (int x = left; x < rightExclusive; x++) {
+                    image.setRGB(x, y, 0xFFFFFFFF);
+                }
+            }
+        }
     }
 
     private static BufferedImage skewedBlurredMonitorImage(RenderedFrame frame) {
@@ -308,6 +344,10 @@ final class BoofCvGeneratedFixtureFactory {
 
     private static BufferedImage colorShiftedImage(RenderedFrame frame, int colorShift) {
         BufferedImage image = toImage(frame);
+        return colorShiftedImage(image, colorShift);
+    }
+
+    private static BufferedImage colorShiftedImage(BufferedImage image, int colorShift) {
         for (int y = 0; y < image.getHeight(); y++) {
             for (int x = 0; x < image.getWidth(); x++) {
                 image.setRGB(x, y, shiftPaletteColor(image.getRGB(x, y), colorShift));

@@ -29,6 +29,9 @@ public final class BoofCvCaptureMediaCvBackend implements CaptureMediaCvBackend 
     private static final int MAX_PLAUSIBLE_VALIDATION_CANDIDATES = 2;
     private static final int MAX_NORMALIZED_FRAMES = 3;
     private static final String BACKEND_ID = new String(new char[] { 'b', 'o', 'o', 'f', 'c', 'v' });
+    private static final double SELECTED_BACKEND_CODE = 1.0d;
+    private static final double PREPROCESSING_MODE_NONE_CODE = 0.0d;
+    private static final double PREPROCESSING_MODE_PERSPECTIVE_CORRECTION_CODE = 1.0d;
     private static final String NOT_FOUND_MESSAGE =
             "Media normalization did not find a clean supported rendered frame region";
     private static final String FAILURE_MESSAGE = "Capture-media CV backend failed while evaluating the frame";
@@ -145,7 +148,14 @@ public final class BoofCvCaptureMediaCvBackend implements CaptureMediaCvBackend 
             }
             return acceptedResult(frame, acceptedCandidates, metrics);
         } catch (RuntimeException exception) {
-            return CvDetectionResult.backendFailure(Map.of("backendFailureCount", 1.0d), FAILURE_MESSAGE);
+            return CvDetectionResult.backendFailure(
+                    Map.of(
+                            "backendFailureCount", 1.0d,
+                            "boofCvSelectedBackendCode", SELECTED_BACKEND_CODE,
+                            "boofCvPreprocessingModeCode", PREPROCESSING_MODE_NONE_CODE
+                    ),
+                    FAILURE_MESSAGE
+            );
         }
     }
 
@@ -222,6 +232,7 @@ public final class BoofCvCaptureMediaCvBackend implements CaptureMediaCvBackend 
                 metrics.getOrDefault("boofCvAcceptedCandidateCount", 0.0d));
         normalizedMetrics.put("boofCvNormalizedFrameCount", (double) normalizedFrameCount);
         normalizedMetrics.put("boofCvAcceptedCandidateCount", (double) normalizedFrameCount);
+        normalizedMetrics.put("boofCvPreprocessingModeCode", PREPROCESSING_MODE_PERSPECTIVE_CORRECTION_CODE);
         return Map.copyOf(normalizedMetrics);
     }
 
@@ -248,6 +259,8 @@ public final class BoofCvCaptureMediaCvBackend implements CaptureMediaCvBackend 
             List<CvFrameCandidate> acceptedCandidates
     ) {
         Map<String, Double> metrics = new LinkedHashMap<>(proposal.metrics());
+        metrics.put("boofCvSelectedBackendCode", SELECTED_BACKEND_CODE);
+        metrics.put("boofCvPreprocessingModeCode", PREPROCESSING_MODE_NONE_CODE);
         metrics.put("boofCvScoredCandidateCount", (double) scoredCandidates.size());
         metrics.put("boofCvJabEvidenceCandidateCount", (double) strictEvidenceCandidates.size());
         metrics.put("boofCvStrictEvidenceCandidateCount", (double) strictEvidenceCandidates.size());
