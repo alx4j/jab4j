@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.zip.CRC32C;
@@ -29,9 +30,17 @@ import com.alx4j.jab4j.reader.capture.media.evidence.ModuleEvidence;
 import com.alx4j.jab4j.reader.capture.media.evidence.ModuleSampleStatus;
 import com.alx4j.jab4j.reader.capture.media.evidence.ModuleSamplingEvidence;
 import com.alx4j.jab4j.reader.capture.media.evidence.ModuleSamplingStatus;
+import com.alx4j.jab4j.reader.capture.media.evidence.ObservedPaletteCenterSource;
+import com.alx4j.jab4j.reader.capture.media.evidence.ObservedPaletteClassificationMode;
+import com.alx4j.jab4j.reader.capture.media.evidence.ObservedPaletteColorMethod;
+import com.alx4j.jab4j.reader.capture.media.evidence.ObservedPaletteStatus;
+import com.alx4j.jab4j.reader.capture.media.evidence.PatternEvidence;
+import com.alx4j.jab4j.reader.capture.media.evidence.PatternEvidenceStatus;
 import com.alx4j.jab4j.reader.capture.media.evidence.ReprojectionMetrics;
+import com.alx4j.jab4j.reader.capture.media.geometry.CaptureMediaGeometryFitter;
 import com.alx4j.jab4j.reader.capture.media.geometry.CaptureMediaLocalLatticeRefiner;
 import com.alx4j.jab4j.reader.capture.media.geometry.ModuleLatticeProjector;
+import com.alx4j.jab4j.reader.capture.media.geometry.SupportedTileFinderEvaluator;
 import com.alx4j.jab4j.reader.capture.media.input.MediaInputFrame;
 import com.alx4j.jab4j.reader.capture.media.normalize.FrameCorners;
 import com.alx4j.jab4j.reader.capture.media.normalize.NormalizedCaptureFrame;
@@ -91,6 +100,10 @@ class CaptureMediaSourceSpaceModuleSamplerTest {
                 () -> assertTrue(first.get(0).tileDecodeAttempted()),
                 () -> assertEquals(1, first.get(0).tileDecodeAttemptCount()),
                 () -> assertEquals(0, first.get(0).acceptedPayloadCount()),
+                () -> assertEquals(0, first.get(0).weakModuleCount()),
+                () -> assertEquals(0, first.get(0).poorFootprintModuleCount()),
+                () -> assertTrue(first.get(0).moduleConfidenceSummary().get("min") >= 0.20d),
+                () -> assertTrue(first.get(0).geometryFootprintQualitySummary().get("min") >= 0.25d),
                 () -> assertTrue(first.get(0).tileDecodeFailureStages().contains("TILE_DECODE")),
                 () -> assertEquals(
                         first.stream().map(ModuleSamplingEvidence::readableModuleCount).toList(),
@@ -150,8 +163,11 @@ class CaptureMediaSourceSpaceModuleSamplerTest {
                 .orElseThrow();
         assertAll(
                 () -> assertTrue(unreadable.sampleCount() < 9),
+                () -> assertTrue(unreadable.geometryFootprintQuality() < 0.25d),
+                () -> assertTrue(unreadable.moduleConfidence() < 0.25d),
                 () -> assertTrue(unreadable.reasonCodes()
                         .contains(CaptureMediaEvidenceReasonCode.INSUFFICIENT_SAMPLE_COUNT)),
+                () -> assertTrue(evidence.get(0).poorFootprintModuleCount() > 0),
                 () -> assertTrue(evidence.get(0).unreadableModuleCount() > 0)
         );
     }
@@ -390,6 +406,40 @@ class CaptureMediaSourceSpaceModuleSamplerTest {
     }
 
     @Test
+    @DisplayName("Provisional CV corner geometry samples source pixels but keeps envelope CRC validation authoritative")
+    void provisionalCvCornerGeometrySamplesSourcePixelsButKeepsEnvelopeCrcValidationAuthoritative() {
+        TilePayload payload = validationPayload(0, 1, validationLayoutProfile().profileId(), "crc-provisional-cv");
+        byte[] envelope = ENVELOPE_CODEC.serialize(payload);
+        envelope[envelope.length - 1] = (byte) (envelope[envelope.length - 1] ^ 0x01);
+        ValidationFixture fixture = validationFixtureWithGeometrySource(
+                pixelsForLogicalTile(TileCodecs.defaultEncoder().encode(envelope, TileCodecProfiles.balancedV1())),
+                "boofcv-fitted-quadrilateral"
+        );
+        GeometryFitEvidence geometry = provisionalCvGeometryFor(fixture.normalizedFrame());
+
+        CaptureMediaSourceSpaceModuleSampler.SourceSpaceValidationSample sample =
+                validationSampler().sampleAndValidate(
+                        fixture.sourceFrame(),
+                        fixture.normalizedFrame(),
+                        geometry
+                );
+        ModuleSamplingEvidence evidence = sample.evidence().get(0);
+
+        assertAll(
+                () -> assertEquals(GeometryFitStatus.ACCEPTED, geometry.status()),
+                () -> assertTrue(geometry.reasonCodes()
+                        .contains(CaptureMediaEvidenceReasonCode.PROVISIONAL_CV_GEOMETRY)),
+                () -> assertTrue(evidence.sampledModuleCount() > 0),
+                () -> assertTrue(evidence.tileDecodeAttempted()),
+                () -> assertEquals(1, evidence.tileDecodeAttemptCount()),
+                () -> assertEquals(0, evidence.acceptedPayloadCount()),
+                () -> assertTrue(sample.acceptedPayloads().isEmpty()),
+                () -> assertEquals(List.of("ENVELOPE_VALIDATION"), evidence.tileDecodeFailureStages()),
+                () -> assertTrue(evidence.reasonCodes().contains(CaptureMediaEvidenceReasonCode.PAYLOAD_CRC_FAILED))
+        );
+    }
+
+    @Test
     @DisplayName("Readable source-space logical tile candidates record slot identity failure")
     void readableSourceSpaceLogicalTileCandidatesRecordSlotIdentityFailure() {
         TilePayload wrongSlotPayload =
@@ -436,9 +486,49 @@ class CaptureMediaSourceSpaceModuleSamplerTest {
                 () -> assertTrue(evidence.tileDecodeAttempted()),
                 () -> assertEquals(1, evidence.tileDecodeAttemptCount()),
                 () -> assertEquals(1, evidence.acceptedPayloadCount()),
+                () -> assertEquals(ObservedPaletteStatus.SAFE_FOR_CLASSIFICATION,
+                        evidence.observedPaletteEvidence().status()),
+                () -> assertEquals(ObservedPaletteColorMethod.LINEAR_RGB_V1,
+                        evidence.observedPaletteEvidence().colorMethod()),
+                () -> assertEquals(ObservedPaletteClassificationMode.HYBRID_OBSERVED_EXACT,
+                        evidence.observedPaletteEvidence().classificationMode()),
+                () -> assertTrue(evidence.observedPaletteEvidence().colors().stream()
+                        .anyMatch(color -> color.centerSource() == ObservedPaletteCenterSource.OBSERVED)),
+                () -> assertTrue(evidence.modules().stream()
+                        .filter(module -> module.status() == ModuleSampleStatus.READABLE)
+                        .allMatch(module -> module.classificationMode()
+                                == ObservedPaletteClassificationMode.HYBRID_OBSERVED_EXACT)),
                 () -> assertTrue(evidence.tileDecodeFailureStages().isEmpty()),
                 () -> assertFalse(evidence.reasonCodes()
                         .contains(CaptureMediaEvidenceReasonCode.TILE_DECODE_NOT_ATTEMPTED))
+        );
+    }
+
+    @Test
+    @DisplayName("Observed palette classification can be withheld while exact fallback remains available")
+    void observedPaletteClassificationCanBeWithheldWhileExactFallbackRemainsAvailable() {
+        TilePayload payload = validationPayload(0, 1, validationLayoutProfile().profileId(), "rollback-source-space");
+        ValidationFixture fixture = validationFixture(pixelsForLogicalTile(TileCodecs.defaultEncoder()
+                .encode(ENVELOPE_CODEC.serialize(payload), TileCodecProfiles.balancedV1())));
+
+        CaptureMediaSourceSpaceModuleSampler.SourceSpaceValidationSample sample =
+                validationSampler(false).sampleAndValidate(
+                        fixture.sourceFrame(),
+                        fixture.normalizedFrame(),
+                        acceptedGeometryFor(validationLayoutProfile(), identityTransform())
+                );
+        ModuleSamplingEvidence evidence = sample.evidence().get(0);
+
+        assertAll(
+                () -> assertEquals(List.of(payload), sample.acceptedPayloads()),
+                () -> assertEquals(ObservedPaletteStatus.WITHHELD, evidence.observedPaletteEvidence().status()),
+                () -> assertEquals(ObservedPaletteClassificationMode.EXACT,
+                        evidence.observedPaletteEvidence().classificationMode()),
+                () -> assertTrue(evidence.reasonCodes()
+                        .contains(CaptureMediaEvidenceReasonCode.OBSERVED_PALETTE_WITHHELD)),
+                () -> assertTrue(evidence.modules().stream()
+                        .filter(module -> module.status() == ModuleSampleStatus.READABLE)
+                        .allMatch(module -> module.classificationMode() == ObservedPaletteClassificationMode.EXACT))
         );
     }
 
@@ -591,11 +681,22 @@ class CaptureMediaSourceSpaceModuleSamplerTest {
     }
 
     private CaptureMediaSourceSpaceModuleSampler validationSampler() {
+        return validationSampler(true);
+    }
+
+    private CaptureMediaSourceSpaceModuleSampler validationSampler(boolean observedPaletteClassificationEnabled) {
         return new CaptureMediaSourceSpaceModuleSampler(
                 new CaptureRenderedLayoutCatalog(List.of(validationLayoutProfile())),
                 TileCodecProfiles.balancedV1(),
                 new ModuleLatticeProjector(),
-                new CaptureMediaPaletteSampler()
+                new CaptureMediaPaletteSampler(),
+                new FixedLayoutPlanner(),
+                new CaptureMediaLogicalTileValidator(),
+                true,
+                true,
+                new CaptureMediaLocalLatticeRefiner(),
+                new SupportedTileFinderEvaluator(),
+                observedPaletteClassificationEnabled
         );
     }
 
@@ -618,6 +719,74 @@ class CaptureMediaSourceSpaceModuleSamplerTest {
         return new ValidationFixture(
                 sourceFrame(sourcePixels, layoutProfile.frameWidthPx(), layoutProfile.frameHeightPx()),
                 normalizedFrame(fill(BLACK, layoutProfile.frameWidthPx(), layoutProfile.frameHeightPx()), layoutProfile)
+        );
+    }
+
+    private ValidationFixture validationFixtureWithGeometrySource(int[] sourcePixels, String geometrySource) {
+        LayoutProfile layoutProfile = validationLayoutProfile();
+        return new ValidationFixture(
+                sourceFrame(sourcePixels, layoutProfile.frameWidthPx(), layoutProfile.frameHeightPx()),
+                normalizedFrameWithGeometrySource(
+                        fill(BLACK, layoutProfile.frameWidthPx(), layoutProfile.frameHeightPx()),
+                        layoutProfile,
+                        geometrySource
+                )
+        );
+    }
+
+    private GeometryFitEvidence provisionalCvGeometryFor(NormalizedCaptureFrame normalizedFrame) {
+        return new CaptureMediaGeometryFitter().fit(
+                normalizedFrame,
+                weakPatternEvidence(normalizedFrame.layoutProfileId())
+        );
+    }
+
+    private PatternEvidence weakPatternEvidence(String layoutProfileId) {
+        return new PatternEvidence(
+                1,
+                patternCandidateId(),
+                layoutProfileId,
+                PatternEvidenceStatus.NOT_FOUND,
+                List.of(),
+                Map.of(),
+                Map.of(),
+                false,
+                List.of(
+                        CaptureMediaEvidenceReasonCode.NO_DIRECT_FINDER_EVIDENCE,
+                        CaptureMediaEvidenceReasonCode.NO_FEATURE_EVIDENCE
+                ),
+                List.of(),
+                0.0d,
+                0.0d
+        );
+    }
+
+    private NormalizedCaptureFrame normalizedFrameWithGeometrySource(
+            int[] pixels,
+            LayoutProfile layoutProfile,
+            String geometrySource
+    ) {
+        return new NormalizedCaptureFrame(
+                SOURCE_ID,
+                CaptureMediaSourceKind.STILL_IMAGE_FILE,
+                0,
+                layoutProfile.frameWidthPx(),
+                layoutProfile.frameHeightPx(),
+                layoutProfile.frameWidthPx(),
+                layoutProfile.frameHeightPx(),
+                "png",
+                PIXEL_SHA256,
+                layoutProfile.profileId(),
+                Optional.empty(),
+                Optional.empty(),
+                FrameCorners.exactFrame(layoutProfile.frameWidthPx(), layoutProfile.frameHeightPx()),
+                CaptureMediaQualityMetrics.perspectiveCorrected(0.72d, 0.0d),
+                pixels,
+                Optional.empty(),
+                Optional.of(geometrySource),
+                1,
+                1,
+                1
         );
     }
 

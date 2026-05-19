@@ -231,6 +231,92 @@ class CaptureMediaGeometryFitterTest {
         );
     }
 
+    @Test
+    @DisplayName("Bridges BoofCV candidate corners into provisional sampling geometry when pattern evidence is weak")
+    void bridgesBoofCvCandidateCornersIntoProvisionalSamplingGeometryWhenPatternEvidenceIsWeak() {
+        FrameCorners sourceCorners = new FrameCorners(
+                20.0d,
+                30.0d,
+                920.0d,
+                50.0d,
+                950.0d,
+                760.0d,
+                40.0d,
+                730.0d
+        );
+
+        GeometryFitEvidence evidence = fitter.fit(
+                normalizedFrame(sourceCorners, Optional.of("boofcv-fitted-quadrilateral")),
+                weakPatternEvidence()
+        );
+
+        GeometryCandidateEvidence candidate = evidence.retainedCandidates().get(0);
+        assertAll(
+                () -> assertEquals(GeometryFitStatus.ACCEPTED, evidence.status()),
+                () -> assertTrue(evidence.selectedGeometryCandidateId().isPresent()),
+                () -> assertEquals(1, evidence.retainedCandidates().size()),
+                () -> assertEquals(GeometryFitStatus.ACCEPTED, candidate.status()),
+                () -> assertTrue(candidate.retainedForSampling()),
+                () -> assertTrue(candidate.invertible()),
+                () -> assertEquals(4, candidate.matchedPointCount()),
+                () -> assertEquals(0.25d, candidate.score(), 0.000001d),
+                () -> assertTrue(candidate.canonicalCoordinateSystem()
+                        .startsWith("provisional-cv-normalized-frame-pixels:")),
+                () -> assertTrue(evidence.reasonCodes()
+                        .contains(CaptureMediaEvidenceReasonCode.PROVISIONAL_CV_GEOMETRY)),
+                () -> assertTrue(candidate.reasonCodes()
+                        .contains(CaptureMediaEvidenceReasonCode.NO_DIRECT_FINDER_EVIDENCE))
+        );
+    }
+
+    @Test
+    @DisplayName("Does not bridge BoofCV corners over rejected strict pattern geometry")
+    void doesNotBridgeBoofCvCornersOverRejectedStrictPatternGeometry() {
+        PatternFeatureEvidence duplicate = feature(
+                FinderRole.TOP_LEFT,
+                new CanonicalPolygon(List.of(
+                        new CanonicalPoint(100.0d, 100.0d),
+                        new CanonicalPoint(130.0d, 100.0d),
+                        new CanonicalPoint(130.0d, 100.0d),
+                        new CanonicalPoint(100.0d, 130.0d)
+                )),
+                sourcePolygon(TOP_LEFT),
+                CoordinateObservationSource.SOURCE_SPACE
+        );
+
+        GeometryFitEvidence evidence = fitter.fit(
+                normalizedFrame(FrameCorners.exactFrame(FRAME_WIDTH, FRAME_HEIGHT),
+                        Optional.of("boofcv-fitted-quadrilateral")),
+                detectedPatternEvidence(List.of(duplicate))
+        );
+
+        assertAll(
+                () -> assertEquals(GeometryFitStatus.REJECTED, evidence.status()),
+                () -> assertTrue(evidence.reasonCodes().contains(CaptureMediaEvidenceReasonCode.DUPLICATE_POINTS)),
+                () -> assertFalse(evidence.reasonCodes()
+                        .contains(CaptureMediaEvidenceReasonCode.PROVISIONAL_CV_GEOMETRY)),
+                () -> assertFalse(evidence.retainedCandidates().get(0).retainedForSampling())
+        );
+    }
+
+    @Test
+    @DisplayName("Does not bridge BoofCV corners over ambiguous pattern evidence")
+    void doesNotBridgeBoofCvCornersOverAmbiguousPatternEvidence() {
+        GeometryFitEvidence evidence = fitter.fit(
+                normalizedFrame(FrameCorners.exactFrame(FRAME_WIDTH, FRAME_HEIGHT),
+                        Optional.of("boofcv-fitted-quadrilateral")),
+                ambiguousPatternEvidence()
+        );
+
+        assertAll(
+                () -> assertEquals(GeometryFitStatus.NOT_AVAILABLE, evidence.status()),
+                () -> assertFalse(evidence.selectedGeometryCandidateId().isPresent()),
+                () -> assertTrue(evidence.retainedCandidates().isEmpty()),
+                () -> assertFalse(evidence.reasonCodes()
+                        .contains(CaptureMediaEvidenceReasonCode.PROVISIONAL_CV_GEOMETRY))
+        );
+    }
+
     private List<Double> candidateScores(GeometryFitEvidence evidence) {
         return evidence.retainedCandidates().stream().map(GeometryCandidateEvidence::score).toList();
     }
@@ -279,6 +365,46 @@ class CaptureMediaGeometryFitterTest {
                 List.of(),
                 1.0d,
                 1.0d
+        );
+    }
+
+    private PatternEvidence weakPatternEvidence() {
+        return new PatternEvidence(
+                1,
+                patternCandidateId(),
+                LAYOUT_PROFILE_ID,
+                PatternEvidenceStatus.NOT_FOUND,
+                List.of(),
+                Map.of(),
+                Map.of(),
+                false,
+                List.of(
+                        CaptureMediaEvidenceReasonCode.NO_DIRECT_FINDER_EVIDENCE,
+                        CaptureMediaEvidenceReasonCode.NO_FEATURE_EVIDENCE
+                ),
+                List.of(),
+                0.0d,
+                0.0d
+        );
+    }
+
+    private PatternEvidence ambiguousPatternEvidence() {
+        return new PatternEvidence(
+                1,
+                patternCandidateId(),
+                LAYOUT_PROFILE_ID,
+                PatternEvidenceStatus.AMBIGUOUS,
+                List.of(),
+                Map.of("rotation-0", 0.6d, "rotation-90", 0.55d),
+                Map.of(LAYOUT_PROFILE_ID, 0.6d),
+                false,
+                List.of(
+                        CaptureMediaEvidenceReasonCode.MULTIPLE_ORIENTATIONS,
+                        CaptureMediaEvidenceReasonCode.NO_FEATURE_EVIDENCE
+                ),
+                List.of(),
+                0.6d,
+                0.05d
         );
     }
 
@@ -351,6 +477,31 @@ class CaptureMediaGeometryFitterTest {
                 frameCorners,
                 CaptureMediaQualityMetrics.exactRenderedFrame(),
                 new int[FRAME_WIDTH * FRAME_HEIGHT]
+        );
+    }
+
+    private NormalizedCaptureFrame normalizedFrame(FrameCorners frameCorners, Optional<String> geometrySource) {
+        return new NormalizedCaptureFrame(
+                "geometry-test.png",
+                CaptureMediaSourceKind.STILL_IMAGE_FILE,
+                0,
+                FRAME_WIDTH,
+                FRAME_HEIGHT,
+                FRAME_WIDTH,
+                FRAME_HEIGHT,
+                "png",
+                PIXEL_SHA256,
+                LAYOUT_PROFILE_ID,
+                Optional.empty(),
+                Optional.empty(),
+                frameCorners,
+                CaptureMediaQualityMetrics.perspectiveCorrected(0.72d, 0.08d),
+                new int[FRAME_WIDTH * FRAME_HEIGHT],
+                Optional.empty(),
+                geometrySource,
+                1,
+                1,
+                1
         );
     }
 

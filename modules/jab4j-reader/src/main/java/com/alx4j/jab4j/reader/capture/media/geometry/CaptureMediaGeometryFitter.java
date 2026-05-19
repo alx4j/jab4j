@@ -41,6 +41,7 @@ public final class CaptureMediaGeometryFitter {
     private static final double DUPLICATE_TOLERANCE = 1.0e-7d;
     private static final double COLLINEAR_AREA_RATIO = 1.0e-10d;
     private static final double UNSTABLE_AREA_RATIO = 1.0e-6d;
+    private static final double PROVISIONAL_CV_GEOMETRY_SCORE = 0.25d;
     private static final int MIN_ACCEPTED_CONTROL_POINTS = 4;
     private static final int MAX_SUBSET_ATTEMPTS = 256;
 
@@ -79,6 +80,10 @@ public final class CaptureMediaGeometryFitter {
         Objects.requireNonNull(frame, "frame must not be null");
         Objects.requireNonNull(patternEvidence, "patternEvidence must not be null");
 
+        return withProvisionalCvGeometry(frame, patternEvidence, fitStrict(frame, patternEvidence));
+    }
+
+    private GeometryFitEvidence fitStrict(NormalizedCaptureFrame frame, PatternEvidence patternEvidence) {
         FeaturePointExtraction extraction = extractControlPoints(frame, patternEvidence);
         if (extraction.expectedPointCount() == 0 || extraction.matchedPoints().isEmpty()) {
             return aggregateEvidence(
@@ -115,6 +120,160 @@ public final class CaptureMediaGeometryFitter {
                 .limit(CaptureMediaCandidateId.MAX_GEOMETRY_CANDIDATE_RANK)
                 .toList();
         return retainedEvidence(patternEvidence, sorted, retained, aggregateStatus);
+    }
+
+    private GeometryFitEvidence withProvisionalCvGeometry(
+            NormalizedCaptureFrame frame,
+            PatternEvidence patternEvidence,
+            GeometryFitEvidence strictEvidence
+    ) {
+        if (hasSamplingCandidate(strictEvidence)
+                || !eligibleForProvisionalCvGeometry(frame)
+                || !eligibleProvisionalFailure(patternEvidence, strictEvidence)) {
+            return strictEvidence;
+        }
+
+        Optional<GeometryCandidateEvidence> provisionalCandidate =
+                provisionalGeometryCandidate(frame, patternEvidence, strictEvidence);
+        if (provisionalCandidate.isEmpty()) {
+            return strictEvidence;
+        }
+        GeometryCandidateEvidence candidate = provisionalCandidate.orElseThrow();
+        List<CaptureMediaEvidenceReasonCode> reasonCodes = new ArrayList<>();
+        reasonCodes.add(CaptureMediaEvidenceReasonCode.PROVISIONAL_CV_GEOMETRY);
+        reasonCodes.addAll(strictEvidence.reasonCodes());
+        reasonCodes.addAll(patternEvidence.reasonCodes());
+        return new GeometryFitEvidence(
+                SCHEMA_VERSION,
+                patternEvidence.candidateId(),
+                GeometryFitStatus.ACCEPTED,
+                List.of(candidate),
+                candidate.candidateId().geometryCandidateId(),
+                Optional.empty(),
+                deduplicated(reasonCodes)
+        );
+    }
+
+    private boolean hasSamplingCandidate(GeometryFitEvidence evidence) {
+        return evidence.retainedCandidates()
+                .stream()
+                .anyMatch(candidate -> candidate.status() == GeometryFitStatus.ACCEPTED
+                        && candidate.retainedForSampling()
+                        && candidate.invertible());
+    }
+
+    private boolean eligibleForProvisionalCvGeometry(NormalizedCaptureFrame frame) {
+        return frame.geometrySource().isPresent();
+    }
+
+    private boolean eligibleProvisionalFailure(
+            PatternEvidence patternEvidence,
+            GeometryFitEvidence strictEvidence
+    ) {
+        if (patternEvidence.status() == PatternEvidenceStatus.AMBIGUOUS) {
+            return false;
+        }
+        if (strictEvidence.status() == GeometryFitStatus.REJECTED
+                || strictEvidence.status() == GeometryFitStatus.AMBIGUOUS) {
+            return false;
+        }
+        List<CaptureMediaEvidenceReasonCode> reasonCodes = new ArrayList<>();
+        reasonCodes.addAll(strictEvidence.reasonCodes());
+        reasonCodes.addAll(patternEvidence.reasonCodes());
+        return reasonCodes.stream().anyMatch(this::bridgeableProvisionalReason)
+                && reasonCodes.stream().noneMatch(this::contradictoryGeometryReason);
+    }
+
+    private boolean bridgeableProvisionalReason(CaptureMediaEvidenceReasonCode reasonCode) {
+        return reasonCode == CaptureMediaEvidenceReasonCode.NO_DIRECT_FINDER_EVIDENCE
+                || reasonCode == CaptureMediaEvidenceReasonCode.NO_FEATURE_EVIDENCE
+                || reasonCode == CaptureMediaEvidenceReasonCode.TOO_FEW_POINTS
+                || reasonCode == CaptureMediaEvidenceReasonCode.INSUFFICIENT_FINDER_MATCHES
+                || reasonCode == CaptureMediaEvidenceReasonCode.PARTIAL_FINDER_EVIDENCE
+                || reasonCode == CaptureMediaEvidenceReasonCode.NORMALIZED_CANDIDATE_ONLY;
+    }
+
+    private boolean contradictoryGeometryReason(CaptureMediaEvidenceReasonCode reasonCode) {
+        return reasonCode == CaptureMediaEvidenceReasonCode.DEGENERATE_POINTS
+                || reasonCode == CaptureMediaEvidenceReasonCode.DUPLICATE_POINTS
+                || reasonCode == CaptureMediaEvidenceReasonCode.MIRRORED_OR_SWAPPED_ROLES
+                || reasonCode == CaptureMediaEvidenceReasonCode.NOT_SUPPORTED_FOR_PROFILE
+                || reasonCode == CaptureMediaEvidenceReasonCode.NON_INVERTIBLE_TRANSFORM
+                || reasonCode == CaptureMediaEvidenceReasonCode.UNSTABLE_TRANSFORM
+                || reasonCode == CaptureMediaEvidenceReasonCode.HIGH_REPROJECTION_ERROR
+                || reasonCode == CaptureMediaEvidenceReasonCode.MULTIPLE_ORIENTATIONS
+                || reasonCode == CaptureMediaEvidenceReasonCode.MULTIPLE_PROFILE_CANDIDATES
+                || reasonCode == CaptureMediaEvidenceReasonCode.MULTIPLE_PLAUSIBLE_FITS
+                || reasonCode == CaptureMediaEvidenceReasonCode.LOW_DOMINANCE_MARGIN
+                || reasonCode == CaptureMediaEvidenceReasonCode.DOWNSTREAM_CONFLICT;
+    }
+
+    private Optional<GeometryCandidateEvidence> provisionalGeometryCandidate(
+            NormalizedCaptureFrame frame,
+            PatternEvidence patternEvidence,
+            GeometryFitEvidence strictEvidence
+    ) {
+        Optional<HomographyTransform> fitted = HomographyTransform.fit(cornerPointPairs(frame));
+        if (fitted.isEmpty()) {
+            return Optional.empty();
+        }
+        HomographyTransform transform = fitted.orElseThrow();
+        if (!transform.stable()) {
+            return Optional.empty();
+        }
+        List<CaptureMediaEvidenceReasonCode> reasonCodes = new ArrayList<>();
+        reasonCodes.add(CaptureMediaEvidenceReasonCode.PROVISIONAL_CV_GEOMETRY);
+        reasonCodes.addAll(strictEvidence.reasonCodes());
+        reasonCodes.addAll(patternEvidence.reasonCodes());
+        return Optional.of(new GeometryCandidateEvidence(
+                CaptureMediaCandidateId.geometryCandidate(patternEvidence.candidateId(), 1),
+                1,
+                GeometryFitStatus.ACCEPTED,
+                GeometryFitModelType.HOMOGRAPHY,
+                "provisional-cv-normalized-frame-pixels:" + patternEvidence.layoutProfileId(),
+                frame.geometrySource()
+                        .map(source -> "source-image-pixels:" + source)
+                        .orElse("source-image-pixels"),
+                transform.parameters(),
+                transform.conditionScore(),
+                List.of(),
+                true,
+                MIN_ACCEPTED_CONTROL_POINTS,
+                MIN_ACCEPTED_CONTROL_POINTS,
+                MIN_ACCEPTED_CONTROL_POINTS,
+                MIN_ACCEPTED_CONTROL_POINTS,
+                0,
+                0,
+                ReprojectionMetrics.zero(),
+                PROVISIONAL_CV_GEOMETRY_SCORE,
+                0.0d,
+                true,
+                false,
+                deduplicated(reasonCodes)
+        ));
+    }
+
+    private List<HomographyTransform.PointPair> cornerPointPairs(NormalizedCaptureFrame frame) {
+        double right = frame.normalizedWidthPixels();
+        double bottom = frame.normalizedHeightPixels();
+        return List.of(
+                new HomographyTransform.PointPair(
+                        new CanonicalPoint(0.0d, 0.0d),
+                        new SourcePoint(frame.frameCorners().topLeftX(), frame.frameCorners().topLeftY())
+                ),
+                new HomographyTransform.PointPair(
+                        new CanonicalPoint(right, 0.0d),
+                        new SourcePoint(frame.frameCorners().topRightX(), frame.frameCorners().topRightY())
+                ),
+                new HomographyTransform.PointPair(
+                        new CanonicalPoint(right, bottom),
+                        new SourcePoint(frame.frameCorners().bottomRightX(), frame.frameCorners().bottomRightY())
+                ),
+                new HomographyTransform.PointPair(
+                        new CanonicalPoint(0.0d, bottom),
+                        new SourcePoint(frame.frameCorners().bottomLeftX(), frame.frameCorners().bottomLeftY())
+                )
+        );
     }
 
     private FeaturePointExtraction extractControlPoints(NormalizedCaptureFrame frame, PatternEvidence patternEvidence) {

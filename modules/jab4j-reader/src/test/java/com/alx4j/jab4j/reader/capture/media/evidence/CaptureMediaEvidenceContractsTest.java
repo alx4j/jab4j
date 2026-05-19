@@ -132,6 +132,10 @@ class CaptureMediaEvidenceContractsTest {
         confidenceSummary.put("mean", 0.45d);
         Map<String, Double> varianceSummary = new HashMap<>();
         varianceSummary.put("max", 12.0d);
+        Map<String, Double> moduleConfidenceSummary = new HashMap<>();
+        moduleConfidenceSummary.put("mean", 1.0d);
+        Map<String, Double> footprintSummary = new HashMap<>();
+        footprintSummary.put("min", 1.0d);
         List<ModuleEvidence> modules = new ArrayList<>(List.of(module));
         ModuleSamplingEvidence sampling = new ModuleSamplingEvidence(
                 1,
@@ -155,9 +159,15 @@ class CaptureMediaEvidenceContractsTest {
                 0,
                 confidenceSummary,
                 varianceSummary,
+                moduleConfidenceSummary,
+                footprintSummary,
+                0,
+                0,
+                observedPaletteEvidence(samplingId),
                 true,
                 1,
                 1,
+                List.of(),
                 List.of(),
                 modules,
                 reasons
@@ -196,6 +206,8 @@ class CaptureMediaEvidenceContractsTest {
         retained.clear();
         confidenceSummary.clear();
         varianceSummary.clear();
+        moduleConfidenceSummary.clear();
+        footprintSummary.clear();
         modules.clear();
         baseSamplingMetrics.clear();
         improvementMetrics.clear();
@@ -208,6 +220,8 @@ class CaptureMediaEvidenceContractsTest {
                 () -> assertEquals(1, fit.retainedCandidates().size()),
                 () -> assertEquals(1, sampling.confidenceMarginSummary().size()),
                 () -> assertEquals(1, sampling.colorVarianceSummary().size()),
+                () -> assertEquals(1, sampling.moduleConfidenceSummary().size()),
+                () -> assertEquals(1, sampling.geometryFootprintQualitySummary().size()),
                 () -> assertEquals(1, sampling.modules().size()),
                 () -> assertEquals(1, refinement.baseSamplingMetrics().size()),
                 () -> assertEquals(1, refinement.improvementMetrics().size()),
@@ -277,6 +291,16 @@ class CaptureMediaEvidenceContractsTest {
                                 2.0d,
                                 1.0d,
                                 0.0d,
+                                1.0d,
+                                1.0d,
+                                100.0d,
+                                25.0d,
+                                5.0d,
+                                1.0d,
+                                0.0d,
+                                ObservedPaletteColorMethod.SRGB_EUCLIDEAN_V1,
+                                ObservedPaletteClassificationMode.EXACT,
+                                "exact-rendered-palette-v1",
                                 ModuleSampleStatus.READABLE,
                                 List.of()
                         )),
@@ -303,9 +327,15 @@ class CaptureMediaEvidenceContractsTest {
                                 0,
                                 Map.of(),
                                 Map.of(),
+                                Map.of(),
+                                Map.of(),
+                                0,
+                                0,
+                                observedPaletteEvidence(samplingId),
                                 true,
                                 1,
                                 0,
+                                List.of(),
                                 List.of("TILE_DECODE"),
                                 List.of(),
                                 List.of()
@@ -379,6 +409,14 @@ class CaptureMediaEvidenceContractsTest {
                         names(ModuleSampleStatus.values())
                 ),
                 () -> assertEquals(
+                        List.of("EXACT", "OBSERVED", "HYBRID_OBSERVED_EXACT", "WITHHELD"),
+                        names(ObservedPaletteClassificationMode.values())
+                ),
+                () -> assertEquals(
+                        List.of("SRGB_EUCLIDEAN_V1", "LINEAR_RGB_V1", "CIE_LAB_V1"),
+                        names(ObservedPaletteColorMethod.values())
+                ),
+                () -> assertEquals(
                         List.of("NOT_AVAILABLE", "APPLIED", "REJECTED", "LEFT_GLOBAL", "AMBIGUOUS"),
                         names(LocalRefinementStatus.values())
                 ),
@@ -390,7 +428,8 @@ class CaptureMediaEvidenceContractsTest {
                 () -> assertTrue(reasonNames.contains("NO_ACCEPTED_GLOBAL_GEOMETRY")),
                 () -> assertTrue(reasonNames.contains("SMOOTHNESS_CONSTRAINT_FAILED")),
                 () -> assertTrue(reasonNames.contains("LOCAL_GEOMETRIC_DRIFT_SUSPECTED")),
-                () -> assertTrue(reasonNames.contains("RESTORE_GATES_NOT_MET"))
+                () -> assertTrue(reasonNames.contains("RESTORE_GATES_NOT_MET")),
+                () -> assertTrue(reasonNames.contains("PROVISIONAL_CV_GEOMETRY"))
         );
     }
 
@@ -430,8 +469,38 @@ class CaptureMediaEvidenceContractsTest {
                 1.0d,
                 2.0d,
                 1.0d,
+                1.0d,
+                1.0d,
+                100.0d,
+                25.0d,
+                5.0d,
+                1.0d,
+                0.0d,
+                ObservedPaletteColorMethod.SRGB_EUCLIDEAN_V1,
+                ObservedPaletteClassificationMode.EXACT,
+                "exact-rendered-palette-v1",
                 ModuleSampleStatus.READABLE,
                 List.of()
+        );
+    }
+
+    private ObservedPaletteEvidence observedPaletteEvidence(CaptureMediaCandidateId samplingId) {
+        return new ObservedPaletteEvidence(
+                1,
+                samplingId,
+                ObservedPaletteStatus.FALLBACK_EXACT,
+                "exact-rendered-palette-v1",
+                ObservedPaletteColorMethod.SRGB_EUCLIDEAN_V1,
+                ObservedPaletteClassificationMode.EXACT,
+                0.0d,
+                0.0d,
+                Optional.empty(),
+                0.0d,
+                "mvp10-palette-thresholds-v1",
+                Optional.of("test fallback"),
+                ObservedPaletteSafetyDecision.FALLBACK_EXACT,
+                List.of(),
+                List.of(CaptureMediaEvidenceReasonCode.EXACT_PALETTE_FALLBACK_SELECTED)
         );
     }
 

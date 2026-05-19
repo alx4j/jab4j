@@ -9,6 +9,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Optional;
 import java.util.stream.Stream;
 import javax.imageio.ImageIO;
 import org.junit.jupiter.api.DisplayName;
@@ -20,6 +21,7 @@ import org.junit.jupiter.params.provider.MethodSource;
 import com.alx4j.jab4j.reader.capture.media.CaptureMediaReceiverRequest;
 import com.alx4j.jab4j.reader.capture.media.CaptureMediaReceiverResult;
 import com.alx4j.jab4j.reader.capture.media.CaptureMediaReceiverService;
+import com.alx4j.jab4j.reader.capture.media.CaptureMediaReceiverStatus;
 import com.alx4j.jab4j.reader.capture.media.evidence.CaptureMediaEvidenceReasonCode;
 import com.alx4j.jab4j.reader.capture.media.evidence.CoordinateObservationSource;
 import com.alx4j.jab4j.reader.capture.media.evidence.GeometryCandidateEvidence;
@@ -137,6 +139,66 @@ class CaptureMediaGeneratedEvidenceGateTest {
         );
     }
 
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("mvp10BaselineFixtures")
+    @DisplayName("MVP-10 generated fixtures record current reader baseline metrics")
+    void mvp10GeneratedFixturesRecordCurrentReaderBaselineMetrics(
+            String scenarioId,
+            FixtureFactory fixtureFactory,
+            CaptureMediaFixtureMetrics expectedMetrics
+    ) throws Exception {
+        GeneratedCaptureMediaFixture fixture = fixtureFactory.generate(tempDir);
+        Path outputDirectory = tempDir.resolve("restore-baseline-" + scenarioId);
+
+        CaptureMediaReceiverResult result = new CaptureMediaReceiverService().restore(
+                CaptureMediaReceiverRequest.restoreStillImages(List.of(fixture.mediaDirectory()), outputDirectory)
+        );
+        CaptureMediaFixtureMetrics actualMetrics = CaptureMediaFixtureMetrics.from(
+                fixture.scenarioId(),
+                result,
+                samplingEvidenceForFirstFile(fixture)
+        );
+
+        assertEquals(expectedMetrics, actualMetrics, () -> "actual baseline: " + actualMetrics);
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("mvp10SafetyGateFixtures")
+    @DisplayName("MVP-10 ambiguous, false-positive, and structurally invalid fixtures fail closed")
+    void mvp10AmbiguousFalsePositiveAndStructurallyInvalidFixturesFailClosed(
+            String scenarioId,
+            FixtureFactory fixtureFactory
+    ) throws Exception {
+        GeneratedCaptureMediaFixture fixture = fixtureFactory.generate(tempDir);
+        Path outputDirectory = tempDir.resolve("restore-safety-" + scenarioId);
+
+        CaptureMediaReceiverResult result = new CaptureMediaReceiverService().restore(
+                CaptureMediaReceiverRequest.restoreStillImages(List.of(fixture.mediaDirectory()), outputDirectory)
+        );
+        CaptureMediaFixtureMetrics metrics = CaptureMediaFixtureMetrics.from(
+                fixture.scenarioId(),
+                result,
+                samplingEvidenceForFirstFile(fixture)
+        );
+
+        assertAll(
+                () -> assertEquals(scenarioId, fixture.scenarioId()),
+                () -> assertFalse(result.restored()),
+                () -> assertFalse(result.eligibleForRestore()),
+                () -> assertEquals(0, result.summary().decodedTileCount()),
+                () -> assertEquals(0, result.summary().recoveredUniqueFrameCount()),
+                () -> assertEquals(0, result.summary().restoredFileCount()),
+                () -> assertTrue(result.restoreResult().isEmpty()),
+                () -> assertFalse(Files.exists(outputDirectory.resolve("payload"))),
+                () -> assertTrue(List.of(
+                                "SCREEN_OR_FRAME_NOT_FOUND",
+                                "COLOR_OR_COMPRESSION_SHIFT",
+                                "TILE_DECODE_OR_ENVELOPE_FAILURE"
+                        ).contains(metrics.primaryDiagnosticCode()),
+                        () -> "unexpected primary diagnostic: " + metrics.primaryDiagnosticCode())
+        );
+    }
+
     @Test
     @DisplayName("Generated local-distortion fixture exists before applied refinement and remains diagnostics-only")
     void generatedLocalDistortionFixtureExistsBeforeAppliedRefinementAndRemainsDiagnosticsOnly() throws Exception {
@@ -227,6 +289,35 @@ class CaptureMediaGeneratedEvidenceGateTest {
         }
     }
 
+    private Optional<ModuleSamplingEvidence> samplingEvidenceForFirstFile(GeneratedCaptureMediaFixture fixture) {
+        MediaIntakeResult intakeResult = intake.read(List.of(fixture.mediaFiles().get(0)));
+        if (intakeResult.readableFrames().isEmpty()) {
+            return Optional.empty();
+        }
+        MediaInputFrame sourceFrame = intakeResult.readableFrames().get(0);
+        NormalizedCaptureFrame normalizedFrame = null;
+        try {
+            MediaNormalizationResult normalization = normalizer.normalize(sourceFrame);
+            if (!normalization.accepted() || normalization.frame().isEmpty()) {
+                return Optional.empty();
+            }
+            normalizedFrame = normalization.frame().orElseThrow();
+            PatternEvidence pattern = patternDetector.detect(sourceFrame, normalizedFrame);
+            GeometryFitEvidence geometry = geometryFitter.fit(normalizedFrame, pattern);
+            SourceSpaceValidationSample sampling = sourceSpaceSampler.sampleAndValidate(
+                    sourceFrame,
+                    normalizedFrame,
+                    geometry
+            );
+            return sampling.evidence().stream().findFirst();
+        } finally {
+            sourceFrame.releaseArgbPixels();
+            if (normalizedFrame != null) {
+                normalizedFrame.releaseArgbPixels();
+            }
+        }
+    }
+
     private static Stream<Arguments> sourceSpacePositiveFixtures() {
         return Stream.of(
                 Arguments.of(
@@ -249,6 +340,183 @@ class CaptureMediaGeneratedEvidenceGateTest {
                         CaptureMediaCorpusFixtures.GENERATED_LOCAL_DISTORTION_PNG,
                         (FixtureFactory) CaptureMediaCorpusFixtures::generatedLocalDistortionPng
                 )
+        );
+    }
+
+    private static Stream<Arguments> mvp10BaselineFixtures() {
+        return Stream.of(
+                Arguments.of(
+                        CaptureMediaCorpusFixtures.MVP10_SEPARABLE_COLOR_SHIFT_PNG,
+                        (FixtureFactory) CaptureMediaCorpusFixtures::mvp10SeparableColorShiftPng,
+                        expectedMetrics(
+                                CaptureMediaCorpusFixtures.MVP10_SEPARABLE_COLOR_SHIFT_PNG,
+                                CaptureMediaReceiverStatus.INCOMPLETE,
+                                23,
+                                23,
+                                0,
+                                23,
+                                0,
+                                0,
+                                0,
+                                0,
+                                0,
+                                "COLOR_OR_COMPRESSION_SHIFT",
+                                "FALLBACK_EXACT",
+                                "WITHHELD",
+                                "none",
+                                -1.0d,
+                                -1.0d
+                        )
+                ),
+                Arguments.of(
+                        CaptureMediaCorpusFixtures.MVP10_COMPRESSION_LIKE_JPEG,
+                        (FixtureFactory) CaptureMediaCorpusFixtures::mvp10CompressionLikeJpeg,
+                        expectedMetrics(
+                                CaptureMediaCorpusFixtures.MVP10_COMPRESSION_LIKE_JPEG,
+                                CaptureMediaReceiverStatus.INCOMPLETE,
+                                23,
+                                23,
+                                1,
+                                22,
+                                1,
+                                1,
+                                63,
+                                770,
+                                49,
+                                "COLOR_OR_COMPRESSION_SHIFT",
+                                "SAFE_FOR_CLASSIFICATION",
+                                "PARTIAL",
+                                "none",
+                                0.0034572365765129787d,
+                                0.5055508080335283d
+                        )
+                ),
+                Arguments.of(
+                        CaptureMediaCorpusFixtures.MVP10_AMBIGUOUS_COLOR_PNG,
+                        (FixtureFactory) CaptureMediaCorpusFixtures::mvp10AmbiguousColorPng,
+                        expectedMetrics(
+                                CaptureMediaCorpusFixtures.MVP10_AMBIGUOUS_COLOR_PNG,
+                                CaptureMediaReceiverStatus.REJECTED,
+                                1,
+                                1,
+                                0,
+                                1,
+                                0,
+                                0,
+                                0,
+                                0,
+                                0,
+                                "SCREEN_OR_FRAME_NOT_FOUND",
+                                "NOT_AVAILABLE",
+                                "NOT_AVAILABLE",
+                                "not_available",
+                                -1.0d,
+                                -1.0d
+                        )
+                ),
+                Arguments.of(
+                        CaptureMediaCorpusFixtures.MVP10_FALSE_POSITIVE_COLOR_GRID_PNG,
+                        (FixtureFactory) CaptureMediaCorpusFixtures::mvp10FalsePositiveColorGridPng,
+                        expectedMetrics(
+                                CaptureMediaCorpusFixtures.MVP10_FALSE_POSITIVE_COLOR_GRID_PNG,
+                                CaptureMediaReceiverStatus.REJECTED,
+                                1,
+                                1,
+                                0,
+                                1,
+                                0,
+                                0,
+                                0,
+                                0,
+                                0,
+                                "SCREEN_OR_FRAME_NOT_FOUND",
+                                "NOT_AVAILABLE",
+                                "NOT_AVAILABLE",
+                                "not_available",
+                                -1.0d,
+                                -1.0d
+                        )
+                ),
+                Arguments.of(
+                        CaptureMediaCorpusFixtures.MVP10_STRUCTURALLY_INVALID_COLOR_SHIFT_PNG,
+                        (FixtureFactory) CaptureMediaCorpusFixtures::mvp10StructurallyInvalidColorShiftPng,
+                        expectedMetrics(
+                                CaptureMediaCorpusFixtures.MVP10_STRUCTURALLY_INVALID_COLOR_SHIFT_PNG,
+                                CaptureMediaReceiverStatus.INCOMPLETE,
+                                1,
+                                1,
+                                0,
+                                1,
+                                0,
+                                0,
+                                41,
+                                151,
+                                690,
+                                "TILE_DECODE_OR_ENVELOPE_FAILURE",
+                                "SAFE_FOR_CLASSIFICATION",
+                                "PARTIAL",
+                                "none",
+                                0.02610696498308618d,
+                                0.34059416086524297d
+                        )
+                )
+        );
+    }
+
+    private static CaptureMediaFixtureMetrics expectedMetrics(
+            String scenarioId,
+            CaptureMediaReceiverStatus receiverStatus,
+            int submittedMediaCount,
+            int readableMediaCount,
+            int acceptedCandidateCount,
+            int rejectedCandidateCount,
+            int decodedTileCount,
+            int recoveredUniqueFrameCount,
+            int samplingReadableModuleCount,
+            int samplingAmbiguousModuleCount,
+            int samplingUnreadableModuleCount,
+            String primaryDiagnosticCode,
+            String paletteFallbackStatus,
+            String samplingStatus,
+            String downstreamFailureStages,
+            double minimumConfidenceMargin,
+            double averageConfidenceMargin
+    ) {
+        return new CaptureMediaFixtureMetrics(
+                scenarioId,
+                receiverStatus,
+                submittedMediaCount,
+                readableMediaCount,
+                acceptedCandidateCount,
+                rejectedCandidateCount,
+                0,
+                decodedTileCount,
+                recoveredUniqueFrameCount,
+                false,
+                false,
+                0,
+                primaryDiagnosticCode,
+                paletteFallbackStatus,
+                samplingStatus,
+                samplingReadableModuleCount,
+                samplingAmbiguousModuleCount,
+                samplingUnreadableModuleCount,
+                0,
+                0,
+                downstreamFailureStages,
+                minimumConfidenceMargin,
+                averageConfidenceMargin
+        );
+    }
+
+    private static Stream<Arguments> mvp10SafetyGateFixtures() {
+        return Stream.of(
+                Arguments.of(CaptureMediaCorpusFixtures.MVP10_AMBIGUOUS_COLOR_PNG,
+                        (FixtureFactory) CaptureMediaCorpusFixtures::mvp10AmbiguousColorPng),
+                Arguments.of(CaptureMediaCorpusFixtures.MVP10_FALSE_POSITIVE_COLOR_GRID_PNG,
+                        (FixtureFactory) CaptureMediaCorpusFixtures::mvp10FalsePositiveColorGridPng),
+                Arguments.of(CaptureMediaCorpusFixtures.MVP10_STRUCTURALLY_INVALID_COLOR_SHIFT_PNG,
+                        (FixtureFactory) CaptureMediaCorpusFixtures::mvp10StructurallyInvalidColorShiftPng)
         );
     }
 

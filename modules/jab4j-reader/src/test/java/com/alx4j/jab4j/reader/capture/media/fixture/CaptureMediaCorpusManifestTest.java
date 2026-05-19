@@ -37,6 +37,11 @@ class CaptureMediaCorpusManifestTest {
             "mvp9_geometry_expectation",
             "mvp9_sampling_expectation",
             "mvp9_local_refinement_expectation",
+            "mvp10_transform_family",
+            "mvp10_metric_expectation",
+            "mvp10_palette_safety_expectation",
+            "mvp10_module_confidence_expectation",
+            "mvp10_downstream_expectation",
             "notes"
     );
 
@@ -74,6 +79,16 @@ class CaptureMediaCorpusManifestTest {
                         "expected_diagnostics", "tile_decode_or_envelope_failure"),
                 () -> assertColumn(rows, CaptureMediaCorpusFixtures.GENERATED_SKEWED_BLURRED_MONITOR_PNG,
                         "capture_condition", "mildly skewed blurred monitor-like PNG still"),
+                () -> assertColumn(rows, CaptureMediaCorpusFixtures.MVP10_SEPARABLE_COLOR_SHIFT_PNG,
+                        "source_kind", "generated_color_shift_frame_sequence"),
+                () -> assertColumn(rows, CaptureMediaCorpusFixtures.MVP10_COMPRESSION_LIKE_JPEG,
+                        "format", "JPEG"),
+                () -> assertColumn(rows, CaptureMediaCorpusFixtures.MVP10_AMBIGUOUS_COLOR_PNG,
+                        "expected_status", "fail_closed"),
+                () -> assertColumn(rows, CaptureMediaCorpusFixtures.MVP10_FALSE_POSITIVE_COLOR_GRID_PNG,
+                        "expected_diagnostics", "screen_or_frame_not_found"),
+                () -> assertColumn(rows, CaptureMediaCorpusFixtures.MVP10_STRUCTURALLY_INVALID_COLOR_SHIFT_PNG,
+                        "source_kind", "generated_structurally_invalid_still"),
                 () -> assertColumn(rows, CaptureMediaCorpusFixtures.DUPLICATE_FRAMES, "expected_diagnostics", "duplicate_media_frame"),
                 () -> assertColumn(rows, CaptureMediaCorpusFixtures.MISSING_UNIQUE_FRAMES, "expected_status", "incomplete"),
                 () -> assertColumn(rows, CaptureMediaCorpusFixtures.MISSING_UNIQUE_FRAMES, "expected_diagnostics", "missing_unique_frames"),
@@ -97,12 +112,43 @@ class CaptureMediaCorpusManifestTest {
                 () -> assertColumn(rows, CaptureMediaCorpusFixtures.UNSUPPORTED_HEIC_PLACEHOLDER, "expected_diagnostics", "unsupported_image_format"),
                 () -> assertColumn(rows, CaptureMediaCorpusFixtures.CORRUPTED_UNREADABLE_IMAGE, "expected_diagnostics", "unreadable_media"),
                 () -> assertColumn(rows, CaptureMediaCorpusFixtures.EXTERNAL_IPHONE_STILLS, "asset_availability", "external_private"),
+                () -> assertColumn(rows, CaptureMediaCorpusFixtures.MVP10_LOCAL_HEIC2_EVIDENCE,
+                        "asset_availability", "external_private"),
                 () -> assertColumn(rows, CaptureMediaCorpusFixtures.EXTRACTED_VIDEO_FRAMES, "source_kind", "extracted_video_frame_folder"),
                 () -> assertColumn(rows, CaptureMediaCorpusFixtures.EXTRACTED_VIDEO_QUALITY_MIX, "expected_status", "eligible_with_warning"),
                 () -> assertColumn(rows, CaptureMediaCorpusFixtures.EXTRACTED_VIDEO_QUALITY_MIX, "expected_diagnostics",
                         "duplicate_media_frame;color_or_compression_shift;glare_or_overexposure;blur"),
                 () -> assertColumn(rows, CaptureMediaCorpusFixtures.FUTURE_DIRECT_VIDEO, "format", "MOV_OR_MP4"),
                 () -> assertColumn(rows, CaptureMediaCorpusFixtures.FUTURE_DIRECT_VIDEO, "expected_diagnostics", "unsupported_container_or_codec")
+        );
+    }
+
+    @Test
+    @DisplayName("Manifest records MVP-10 sampling and color expectations as text")
+    void manifestRecordsMvp10SamplingAndColorExpectationsAsText() throws Exception {
+        Map<String, ManifestRow> rows = readManifest().rowsByScenarioId();
+
+        assertAll(
+                () -> assertColumn(rows, CaptureMediaCorpusFixtures.GENERATED_EXACT_PNG,
+                        "mvp10_transform_family", "exact"),
+                () -> assertColumn(rows, CaptureMediaCorpusFixtures.GENERATED_EXACT_PNG,
+                        "mvp10_downstream_expectation", "restore_expected"),
+                () -> assertColumn(rows, CaptureMediaCorpusFixtures.MVP10_SEPARABLE_COLOR_SHIFT_PNG,
+                        "mvp10_transform_family", "color_shift"),
+                () -> assertColumn(rows, CaptureMediaCorpusFixtures.MVP10_SEPARABLE_COLOR_SHIFT_PNG,
+                        "mvp10_metric_expectation", "record_current_baseline_before_adaptive_classification"),
+                () -> assertColumn(rows, CaptureMediaCorpusFixtures.MVP10_COMPRESSION_LIKE_JPEG,
+                        "mvp10_transform_family", "compression_camera_like"),
+                () -> assertColumn(rows, CaptureMediaCorpusFixtures.MVP10_AMBIGUOUS_COLOR_PNG,
+                        "mvp10_palette_safety_expectation", "unsafe_for_observed_classification"),
+                () -> assertColumn(rows, CaptureMediaCorpusFixtures.MVP10_FALSE_POSITIVE_COLOR_GRID_PNG,
+                        "mvp10_module_confidence_expectation", "no_sampling_expected"),
+                () -> assertColumn(rows, CaptureMediaCorpusFixtures.MVP10_STRUCTURALLY_INVALID_COLOR_SHIFT_PNG,
+                        "mvp10_downstream_expectation", "tile_envelope_validation_failure"),
+                () -> assertColumn(rows, CaptureMediaCorpusFixtures.MVP10_LOCAL_HEIC2_EVIDENCE,
+                        "mvp10_metric_expectation", "local_manual_non_gating_evidence"),
+                () -> assertColumn(rows, CaptureMediaCorpusFixtures.MVP10_LOCAL_HEIC2_EVIDENCE,
+                        "asset_policy", "external_not_committed")
         );
     }
 

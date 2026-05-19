@@ -28,9 +28,15 @@ import java.util.Objects;
  * @param outOfBoundsModuleCount modules outside source boundaries
  * @param confidenceMarginSummary bounded confidence-margin metrics
  * @param colorVarianceSummary bounded color-variance metrics
+ * @param moduleConfidenceSummary bounded combined module-confidence metrics
+ * @param geometryFootprintQualitySummary bounded source-footprint quality metrics
+ * @param weakModuleCount modules sampled but not strong enough for confident tile construction
+ * @param poorFootprintModuleCount modules whose geometry footprint quality is below the readable threshold
+ * @param observedPaletteEvidence observed palette extraction and safety evidence for this sampling candidate
  * @param tileDecodeAttempted whether sampled modules were sent to the existing tile decoder
  * @param tileDecodeAttemptCount number of logical tile candidates sent to the existing tile decoder
  * @param acceptedPayloadCount number of tile payloads accepted by tile, envelope, and slot validation
+ * @param weakTileEvidence bounded weak-tile diagnostics for logical tile regions
  * @param tileDecodeFailureStages downstream validation stages that rejected attempted candidates
  * @param modules bounded per-module evidence details
  * @param reasonCodes sampling-stage reason codes
@@ -57,9 +63,15 @@ public record ModuleSamplingEvidence(
         int outOfBoundsModuleCount,
         Map<String, Double> confidenceMarginSummary,
         Map<String, Double> colorVarianceSummary,
+        Map<String, Double> moduleConfidenceSummary,
+        Map<String, Double> geometryFootprintQualitySummary,
+        int weakModuleCount,
+        int poorFootprintModuleCount,
+        ObservedPaletteEvidence observedPaletteEvidence,
         boolean tileDecodeAttempted,
         int tileDecodeAttemptCount,
         int acceptedPayloadCount,
+        List<WeakTileEvidence> weakTileEvidence,
         List<String> tileDecodeFailureStages,
         List<ModuleEvidence> modules,
         List<CaptureMediaEvidenceReasonCode> reasonCodes
@@ -89,9 +101,15 @@ public record ModuleSamplingEvidence(
      * @param outOfBoundsModuleCount out-of-bounds module count
      * @param confidenceMarginSummary confidence-margin summary metrics
      * @param colorVarianceSummary color-variance summary metrics
+     * @param moduleConfidenceSummary module-confidence summary metrics
+     * @param geometryFootprintQualitySummary geometry-footprint quality summary metrics
+     * @param weakModuleCount weak module count
+     * @param poorFootprintModuleCount poor-footprint module count
+     * @param observedPaletteEvidence observed palette evidence
      * @param tileDecodeAttempted whether tile decode was attempted
      * @param tileDecodeAttemptCount tile decode attempt count
      * @param acceptedPayloadCount accepted payload count
+     * @param weakTileEvidence weak-tile diagnostics
      * @param tileDecodeFailureStages downstream failure stages
      * @param modules bounded module details
      * @param reasonCodes sampling-stage reason codes
@@ -141,6 +159,23 @@ public record ModuleSamplingEvidence(
                 "confidenceMarginSummary"
         );
         colorVarianceSummary = EvidenceValidation.copyMetricMap(colorVarianceSummary, "colorVarianceSummary");
+        moduleConfidenceSummary = EvidenceValidation.copyMetricMap(
+                moduleConfidenceSummary,
+                "moduleConfidenceSummary"
+        );
+        geometryFootprintQualitySummary = EvidenceValidation.copyMetricMap(
+                geometryFootprintQualitySummary,
+                "geometryFootprintQualitySummary"
+        );
+        EvidenceValidation.requireNonNegative(weakModuleCount, "weakModuleCount");
+        EvidenceValidation.requireNonNegative(poorFootprintModuleCount, "poorFootprintModuleCount");
+        if (weakModuleCount > totalModuleCount || poorFootprintModuleCount > totalModuleCount) {
+            throw new IllegalArgumentException("weak module counts must not exceed totalModuleCount");
+        }
+        Objects.requireNonNull(observedPaletteEvidence, "observedPaletteEvidence must not be null");
+        if (!observedPaletteEvidence.candidateId().equals(candidateId)) {
+            throw new IllegalArgumentException("observedPaletteEvidence candidateId must match sampling candidateId");
+        }
         EvidenceValidation.requireNonNegative(tileDecodeAttemptCount, "tileDecodeAttemptCount");
         EvidenceValidation.requireNonNegative(acceptedPayloadCount, "acceptedPayloadCount");
         if (!tileDecodeAttempted && tileDecodeAttemptCount != 0) {
@@ -151,6 +186,10 @@ public record ModuleSamplingEvidence(
         }
         if (acceptedPayloadCount > tileDecodeAttemptCount) {
             throw new IllegalArgumentException("acceptedPayloadCount must not exceed tileDecodeAttemptCount");
+        }
+        weakTileEvidence = EvidenceValidation.copyList(weakTileEvidence, "weakTileEvidence");
+        if (weakTileEvidence.size() > Math.max(1, totalModuleCount)) {
+            throw new IllegalArgumentException("weakTileEvidence must be bounded by totalModuleCount");
         }
         tileDecodeFailureStages = EvidenceValidation.copyTextList(
                 tileDecodeFailureStages,

@@ -23,8 +23,18 @@ import com.alx4j.jab4j.reader.capture.media.evidence.ModuleSampleStatus;
 import com.alx4j.jab4j.reader.capture.media.evidence.ModuleSamplingAggregationMethod;
 import com.alx4j.jab4j.reader.capture.media.evidence.ModuleSamplingEvidence;
 import com.alx4j.jab4j.reader.capture.media.evidence.ModuleSamplingStatus;
+import com.alx4j.jab4j.reader.capture.media.evidence.ObservedPaletteClassificationMode;
+import com.alx4j.jab4j.reader.capture.media.evidence.ObservedPaletteCenterSource;
+import com.alx4j.jab4j.reader.capture.media.evidence.ObservedPaletteColorEvidence;
+import com.alx4j.jab4j.reader.capture.media.evidence.ObservedPaletteColorMethod;
+import com.alx4j.jab4j.reader.capture.media.evidence.ObservedPaletteEvidence;
+import com.alx4j.jab4j.reader.capture.media.evidence.ObservedPaletteSafetyDecision;
+import com.alx4j.jab4j.reader.capture.media.evidence.ObservedPaletteStatus;
 import com.alx4j.jab4j.reader.capture.media.evidence.SourcePoint;
 import com.alx4j.jab4j.reader.capture.media.evidence.SourcePolygon;
+import com.alx4j.jab4j.reader.capture.media.evidence.WeakTileEvidence;
+import com.alx4j.jab4j.reader.capture.media.geometry.SupportedTileFinderEvaluator;
+import com.alx4j.jab4j.reader.capture.media.geometry.SupportedTileFinderEvaluator.FinderWindow;
 import com.alx4j.jab4j.reader.capture.media.geometry.CaptureMediaLocalLatticeRefiner;
 import com.alx4j.jab4j.reader.capture.media.geometry.CaptureMediaLocalLatticeRefiner.LocalRefinementAttempt;
 import com.alx4j.jab4j.reader.capture.media.geometry.LocalGridRefinement;
@@ -51,9 +61,18 @@ public final class CaptureMediaSourceSpaceModuleSampler {
     private static final List<Double> CENTRAL_SCALES = List.of(0.50d, 0.40d, 0.60d);
     private static final int SAMPLE_GRID_SIZE = 7;
     private static final int MIN_READABLE_SAMPLE_COUNT = 9;
+    private static final int GOOD_SAMPLE_COUNT = 25;
     private static final double HIGH_VARIANCE_THRESHOLD = 900.0d;
+    private static final double GOOD_COLOR_MARGIN = 64.0d;
     private static final double LOW_DISTANCE_MARGIN_THRESHOLD = 16.0d;
+    private static final double GOOD_INNER_FOOTPRINT_AREA_PX = 4.0d;
+    private static final double GOOD_MINIMUM_FOOTPRINT_EDGE_PX = 2.0d;
+    private static final double MIN_READABLE_MODULE_CONFIDENCE = 0.20d;
+    private static final double MIN_READABLE_FOOTPRINT_QUALITY = 0.25d;
     private static final String CENTRAL_REGION_POLICY = "canonical-center-shrink-v1:grid7:min9";
+    private static final String EXACT_PALETTE_SOURCE = "exact-rendered-palette-v1";
+    private static final String EXPECTED_INDEX_REFERENCE_SOURCE = "expected-index-finder-modules-v1";
+    private static final String PALETTE_THRESHOLD_VERSION = "mvp10-palette-thresholds-v1";
 
     private final CaptureRenderedLayoutCatalog layoutCatalog;
     private final TileCodecProfile tileCodecProfile;
@@ -63,7 +82,9 @@ public final class CaptureMediaSourceSpaceModuleSampler {
     private final CaptureMediaLogicalTileValidator logicalTileValidator;
     private final boolean sourceSpaceSamplingEnabled;
     private final boolean localRefinementEnabled;
+    private final boolean observedPaletteClassificationEnabled;
     private final CaptureMediaLocalLatticeRefiner localLatticeRefiner;
+    private final SupportedTileFinderEvaluator tileFinderEvaluator;
 
     /**
      * Creates a source-space sampler using current reader-owned layout and palette defaults.
@@ -78,7 +99,8 @@ public final class CaptureMediaSourceSpaceModuleSampler {
                 new CaptureMediaLogicalTileValidator(),
                 true,
                 true,
-                new CaptureMediaLocalLatticeRefiner()
+                new CaptureMediaLocalLatticeRefiner(),
+                new SupportedTileFinderEvaluator()
         );
     }
 
@@ -105,7 +127,8 @@ public final class CaptureMediaSourceSpaceModuleSampler {
                 new CaptureMediaLogicalTileValidator(),
                 true,
                 true,
-                new CaptureMediaLocalLatticeRefiner()
+                new CaptureMediaLocalLatticeRefiner(),
+                new SupportedTileFinderEvaluator()
         );
     }
 
@@ -128,6 +151,21 @@ public final class CaptureMediaSourceSpaceModuleSampler {
             boolean sourceSpaceSamplingEnabled,
             boolean localRefinementEnabled
     ) {
+        this(sourceSpaceSamplingEnabled, localRefinementEnabled, true);
+    }
+
+    /**
+     * Creates a source-space sampler with explicit internal enablement for rollback tests.
+     *
+     * @param sourceSpaceSamplingEnabled true when source-space sampling should run
+     * @param localRefinementEnabled true when bounded local-grid refinement may run after baseline sampling
+     * @param observedPaletteClassificationEnabled true when safe observed palettes may classify modules
+     */
+    public CaptureMediaSourceSpaceModuleSampler(
+            boolean sourceSpaceSamplingEnabled,
+            boolean localRefinementEnabled,
+            boolean observedPaletteClassificationEnabled
+    ) {
         this(
                 new CaptureRenderedLayoutCatalog(),
                 TileCodecProfiles.balancedV1(),
@@ -137,7 +175,9 @@ public final class CaptureMediaSourceSpaceModuleSampler {
                 new CaptureMediaLogicalTileValidator(),
                 sourceSpaceSamplingEnabled,
                 localRefinementEnabled,
-                new CaptureMediaLocalLatticeRefiner()
+                new CaptureMediaLocalLatticeRefiner(),
+                new SupportedTileFinderEvaluator(),
+                observedPaletteClassificationEnabled
         );
     }
 
@@ -169,7 +209,9 @@ public final class CaptureMediaSourceSpaceModuleSampler {
                 logicalTileValidator,
                 sourceSpaceSamplingEnabled,
                 true,
-                new CaptureMediaLocalLatticeRefiner()
+                new CaptureMediaLocalLatticeRefiner(),
+                new SupportedTileFinderEvaluator(),
+                true
         );
     }
 
@@ -197,6 +239,61 @@ public final class CaptureMediaSourceSpaceModuleSampler {
             boolean localRefinementEnabled,
             CaptureMediaLocalLatticeRefiner localLatticeRefiner
     ) {
+        this(
+                layoutCatalog,
+                tileCodecProfile,
+                latticeProjector,
+                paletteSampler,
+                layoutPlanner,
+                logicalTileValidator,
+                sourceSpaceSamplingEnabled,
+                localRefinementEnabled,
+                localLatticeRefiner,
+                new SupportedTileFinderEvaluator(),
+                true
+        );
+    }
+
+    CaptureMediaSourceSpaceModuleSampler(
+            CaptureRenderedLayoutCatalog layoutCatalog,
+            TileCodecProfile tileCodecProfile,
+            ModuleLatticeProjector latticeProjector,
+            CaptureMediaPaletteSampler paletteSampler,
+            FixedLayoutPlanner layoutPlanner,
+            CaptureMediaLogicalTileValidator logicalTileValidator,
+            boolean sourceSpaceSamplingEnabled,
+            boolean localRefinementEnabled,
+            CaptureMediaLocalLatticeRefiner localLatticeRefiner,
+            SupportedTileFinderEvaluator tileFinderEvaluator
+    ) {
+        this(
+                layoutCatalog,
+                tileCodecProfile,
+                latticeProjector,
+                paletteSampler,
+                layoutPlanner,
+                logicalTileValidator,
+                sourceSpaceSamplingEnabled,
+                localRefinementEnabled,
+                localLatticeRefiner,
+                tileFinderEvaluator,
+                true
+        );
+    }
+
+    CaptureMediaSourceSpaceModuleSampler(
+            CaptureRenderedLayoutCatalog layoutCatalog,
+            TileCodecProfile tileCodecProfile,
+            ModuleLatticeProjector latticeProjector,
+            CaptureMediaPaletteSampler paletteSampler,
+            FixedLayoutPlanner layoutPlanner,
+            CaptureMediaLogicalTileValidator logicalTileValidator,
+            boolean sourceSpaceSamplingEnabled,
+            boolean localRefinementEnabled,
+            CaptureMediaLocalLatticeRefiner localLatticeRefiner,
+            SupportedTileFinderEvaluator tileFinderEvaluator,
+            boolean observedPaletteClassificationEnabled
+    ) {
         this.layoutCatalog = Objects.requireNonNull(layoutCatalog, "layoutCatalog must not be null");
         this.tileCodecProfile = Objects.requireNonNull(tileCodecProfile, "tileCodecProfile must not be null");
         this.latticeProjector = Objects.requireNonNull(latticeProjector, "latticeProjector must not be null");
@@ -208,10 +305,12 @@ public final class CaptureMediaSourceSpaceModuleSampler {
         );
         this.sourceSpaceSamplingEnabled = sourceSpaceSamplingEnabled;
         this.localRefinementEnabled = localRefinementEnabled;
+        this.observedPaletteClassificationEnabled = observedPaletteClassificationEnabled;
         this.localLatticeRefiner = Objects.requireNonNull(
                 localLatticeRefiner,
                 "localLatticeRefiner must not be null"
         );
+        this.tileFinderEvaluator = Objects.requireNonNull(tileFinderEvaluator, "tileFinderEvaluator must not be null");
     }
 
     /**
@@ -439,14 +538,51 @@ public final class CaptureMediaSourceSpaceModuleSampler {
             ));
         }
 
-        CaptureMediaPaletteModel paletteModel = paletteSampler.calibratePalette(List.of()).model();
+        CaptureMediaPaletteModel exactPaletteModel = paletteSampler.exactPaletteModel();
         List<ModuleEvidence> modules = new ArrayList<>(cells.size());
         for (ProjectedModuleCell cell : cells) {
-            modules.add(sampleModule(sourceFrame, geometryCandidate, paletteModel, cell));
+            modules.add(sampleModule(
+                    sourceFrame,
+                    geometryCandidate,
+                    exactPaletteModel,
+                    ObservedPaletteColorMethod.SRGB_EUCLIDEAN_V1,
+                    ObservedPaletteClassificationMode.EXACT,
+                    EXACT_PALETTE_SOURCE,
+                    cell
+            ));
+        }
+
+        FixedLayoutPlan layoutPlan = layoutPlanner.plan(layoutProfile);
+        CaptureMediaCandidateId samplingCandidateId = CaptureMediaCandidateId.samplingCandidate(
+                geometryCandidate.candidateId(),
+                scalePercent(centralScale),
+                variantRank
+        );
+        CaptureMediaCandidateId evidenceCandidateId = localRefinement.isPresent()
+                ? CaptureMediaCandidateId.refinementCandidate(samplingCandidateId)
+                : samplingCandidateId;
+        ObservedPaletteSelection paletteSelection = observedPaletteSelection(
+                evidenceCandidateId,
+                layoutPlan,
+                sideVersion,
+                modules
+        );
+        if (paletteSelection.classificationMode() != ObservedPaletteClassificationMode.EXACT) {
+            modules = new ArrayList<>(cells.size());
+            for (ProjectedModuleCell cell : cells) {
+                modules.add(sampleModule(
+                        sourceFrame,
+                        geometryCandidate,
+                        paletteSelection.paletteModel(),
+                        paletteSelection.colorMethod(),
+                        paletteSelection.classificationMode(),
+                        paletteSelection.paletteModelSource(),
+                        cell
+                ));
+            }
         }
 
         Counts counts = Counts.from(modules);
-        FixedLayoutPlan layoutPlan = layoutPlanner.plan(layoutProfile);
         VariantValidation validation = validateVariant(
                 layoutPlan,
                 sideVersion,
@@ -457,17 +593,11 @@ public final class CaptureMediaSourceSpaceModuleSampler {
         );
         List<CaptureMediaEvidenceReasonCode> reasonCodes = aggregateReasonCodes(modules);
         reasonCodes.add(CaptureMediaEvidenceReasonCode.SIDE_VERSION_INFERRED_FROM_LAYOUT);
+        reasonCodes.addAll(paletteSelection.evidence().reasonCodes());
         reasonCodes.addAll(validation.reasonCodes());
-        CaptureMediaCandidateId samplingCandidateId = CaptureMediaCandidateId.samplingCandidate(
-                geometryCandidate.candidateId(),
-                scalePercent(centralScale),
-                variantRank
-        );
         ModuleSamplingEvidence evidence = new ModuleSamplingEvidence(
                 SCHEMA_VERSION,
-                localRefinement.isPresent()
-                        ? CaptureMediaCandidateId.refinementCandidate(samplingCandidateId)
-                        : samplingCandidateId,
+                evidenceCandidateId,
                 samplingStatus(counts),
                 geometryCandidate.candidateId().geometryCandidateId().orElseThrow(),
                 layoutProfile.profileId(),
@@ -495,9 +625,20 @@ public final class CaptureMediaSourceSpaceModuleSampler {
                         .filter(module -> module.sampleCount() > 0)
                         .map(ModuleEvidence::colorVariance)
                         .toList()),
+                summary(modules.stream()
+                        .filter(module -> module.sampleCount() > 0)
+                        .map(ModuleEvidence::moduleConfidence)
+                        .toList()),
+                summary(modules.stream()
+                        .map(ModuleEvidence::geometryFootprintQuality)
+                        .toList()),
+                weakModuleCount(modules),
+                poorFootprintModuleCount(modules),
+                paletteSelection.evidence(),
                 validation.tileDecodeAttempted(),
                 validation.attemptCount(),
                 validation.acceptedPayloads().size(),
+                validation.weakTileEvidence(),
                 validation.failureStages(),
                 modules,
                 deduplicated(reasonCodes)
@@ -505,10 +646,250 @@ public final class CaptureMediaSourceSpaceModuleSampler {
         return new VariantSample(evidence, validation.acceptedPayloads());
     }
 
+    private ObservedPaletteSelection observedPaletteSelection(
+            CaptureMediaCandidateId candidateId,
+            FixedLayoutPlan layoutPlan,
+            int sideVersion,
+            List<ModuleEvidence> modules
+    ) {
+        int dimension = tileCodecProfile.dimensionForSideVersion(sideVersion);
+        List<CaptureMediaPaletteCalibrationSample> references = finderCalibrationReferences(
+                layoutPlan,
+                dimension,
+                modules
+        );
+        CaptureMediaCalibratedPalette calibratedPalette = paletteSampler.calibratePalette(references);
+        CaptureMediaPaletteModel model = calibratedPalette.model();
+        ObservedPaletteEvidence evidence = observedPaletteEvidence(candidateId, model, references);
+        if (!observedPaletteClassificationEnabled
+                && evidence.status() == ObservedPaletteStatus.SAFE_FOR_CLASSIFICATION) {
+            ObservedPaletteEvidence withheld = withheldObservedPaletteEvidence(candidateId, evidence.colors());
+            return new ObservedPaletteSelection(
+                    paletteSampler.exactPaletteModel(),
+                    ObservedPaletteColorMethod.SRGB_EUCLIDEAN_V1,
+                    ObservedPaletteClassificationMode.EXACT,
+                    EXACT_PALETTE_SOURCE,
+                    withheld
+            );
+        }
+        if (evidence.status() != ObservedPaletteStatus.SAFE_FOR_CLASSIFICATION) {
+            return new ObservedPaletteSelection(
+                    paletteSampler.exactPaletteModel(),
+                    ObservedPaletteColorMethod.SRGB_EUCLIDEAN_V1,
+                    ObservedPaletteClassificationMode.EXACT,
+                    EXACT_PALETTE_SOURCE,
+                    evidence
+            );
+        }
+
+        ObservedPaletteClassificationMode mode = model.observedColorCount() == model.size()
+                ? ObservedPaletteClassificationMode.OBSERVED
+                : ObservedPaletteClassificationMode.HYBRID_OBSERVED_EXACT;
+        return new ObservedPaletteSelection(
+                model,
+                ObservedPaletteColorMethod.LINEAR_RGB_V1,
+                mode,
+                EXPECTED_INDEX_REFERENCE_SOURCE,
+                evidence
+        );
+    }
+
+    private List<CaptureMediaPaletteCalibrationSample> finderCalibrationReferences(
+            FixedLayoutPlan layoutPlan,
+            int dimension,
+            List<ModuleEvidence> modules
+    ) {
+        Map<ModuleCoordinate, ModuleEvidence> modulesByCoordinate = modulesByCoordinate(modules);
+        List<CaptureMediaPaletteCalibrationSample> references = new ArrayList<>();
+        int tileCount = layoutPlan.profile().rows() * layoutPlan.profile().cols();
+        for (int tileIndex = 0; tileIndex < tileCount; tileIndex++) {
+            int tileRow = tileIndex / layoutPlan.profile().cols();
+            int tileCol = tileIndex % layoutPlan.profile().cols();
+            int baseModuleX = tileCol * dimension;
+            int baseModuleY = tileRow * dimension;
+            for (FinderWindow window : tileFinderEvaluator.finderWindows(dimension)) {
+                for (int row = window.startRow(); row < window.startRow() + window.sizeModules(); row++) {
+                    for (int col = window.startCol(); col < window.startCol() + window.sizeModules(); col++) {
+                        ModuleEvidence module = modulesByCoordinate.get(new ModuleCoordinate(
+                                baseModuleX + col,
+                                baseModuleY + row
+                        ));
+                        if (usablePaletteReference(module)) {
+                            references.add(new CaptureMediaPaletteCalibrationSample(
+                                    window.expectedColor(),
+                                    module.aggregateArgb()
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        return List.copyOf(references);
+    }
+
+    private boolean usablePaletteReference(ModuleEvidence module) {
+        return module != null
+                && module.sampleCount() >= MIN_READABLE_SAMPLE_COUNT
+                && module.colorVariance() <= HIGH_VARIANCE_THRESHOLD
+                && module.geometryFootprintQuality() >= MIN_READABLE_FOOTPRINT_QUALITY
+                && module.status() != ModuleSampleStatus.CLIPPED
+                && module.status() != ModuleSampleStatus.OUT_OF_BOUNDS;
+    }
+
+    private ObservedPaletteEvidence observedPaletteEvidence(
+            CaptureMediaCandidateId candidateId,
+            CaptureMediaPaletteModel model,
+            List<CaptureMediaPaletteCalibrationSample> references
+    ) {
+        Map<Integer, List<Integer>> referencesByIndex = referencesByIndex(references);
+        List<ObservedPaletteColorEvidence> colors = observedPaletteColors(model, referencesByIndex);
+        List<CaptureMediaEvidenceReasonCode> reasonCodes = new ArrayList<>();
+        Optional<String> fallbackReason = model.fallbackReason();
+        if (fallbackReason.isPresent()) {
+            reasonCodes.add(CaptureMediaEvidenceReasonCode.EXACT_PALETTE_FALLBACK_SELECTED);
+            reasonCodes.add(fallbackReasonCode(fallbackReason.orElseThrow()));
+            return new ObservedPaletteEvidence(
+                    SCHEMA_VERSION,
+                    candidateId,
+                    ObservedPaletteStatus.FALLBACK_EXACT,
+                    EXPECTED_INDEX_REFERENCE_SOURCE,
+                    ObservedPaletteColorMethod.SRGB_EUCLIDEAN_V1,
+                    ObservedPaletteClassificationMode.EXACT,
+                    observedCoverageRatio(model),
+                    separationScore(model),
+                    weakestPalettePair(model),
+                    model.confidence(),
+                    PALETTE_THRESHOLD_VERSION,
+                    fallbackReason,
+                    ObservedPaletteSafetyDecision.FALLBACK_EXACT,
+                    colors,
+                    deduplicated(reasonCodes)
+            );
+        }
+
+        ObservedPaletteClassificationMode mode = model.observedColorCount() == model.size()
+                ? ObservedPaletteClassificationMode.OBSERVED
+                : ObservedPaletteClassificationMode.HYBRID_OBSERVED_EXACT;
+        reasonCodes.add(mode == ObservedPaletteClassificationMode.OBSERVED
+                ? CaptureMediaEvidenceReasonCode.OBSERVED_PALETTE_SELECTED
+                : CaptureMediaEvidenceReasonCode.HYBRID_OBSERVED_EXACT_SELECTED);
+        return new ObservedPaletteEvidence(
+                SCHEMA_VERSION,
+                candidateId,
+                ObservedPaletteStatus.SAFE_FOR_CLASSIFICATION,
+                EXPECTED_INDEX_REFERENCE_SOURCE,
+                ObservedPaletteColorMethod.LINEAR_RGB_V1,
+                mode,
+                observedCoverageRatio(model),
+                separationScore(model),
+                weakestPalettePair(model),
+                model.confidence(),
+                PALETTE_THRESHOLD_VERSION,
+                Optional.empty(),
+                ObservedPaletteSafetyDecision.SAFE_FOR_CLASSIFICATION,
+                colors,
+                deduplicated(reasonCodes)
+        );
+    }
+
+    private ObservedPaletteEvidence fallbackObservedPaletteEvidence(
+            CaptureMediaCandidateId candidateId,
+            CaptureMediaEvidenceReasonCode reasonCode
+    ) {
+        return new ObservedPaletteEvidence(
+                SCHEMA_VERSION,
+                candidateId,
+                ObservedPaletteStatus.FALLBACK_EXACT,
+                EXACT_PALETTE_SOURCE,
+                ObservedPaletteColorMethod.SRGB_EUCLIDEAN_V1,
+                ObservedPaletteClassificationMode.EXACT,
+                0.0d,
+                0.0d,
+                Optional.empty(),
+                0.0d,
+                PALETTE_THRESHOLD_VERSION,
+                Optional.of(reasonCode.name()),
+                ObservedPaletteSafetyDecision.FALLBACK_EXACT,
+                List.of(),
+                deduplicated(List.of(
+                        CaptureMediaEvidenceReasonCode.EXACT_PALETTE_FALLBACK_SELECTED,
+                        reasonCode
+                ))
+        );
+    }
+
+    private ObservedPaletteEvidence withheldObservedPaletteEvidence(
+            CaptureMediaCandidateId candidateId,
+            List<ObservedPaletteColorEvidence> colors
+    ) {
+        return new ObservedPaletteEvidence(
+                SCHEMA_VERSION,
+                candidateId,
+                ObservedPaletteStatus.WITHHELD,
+                EXPECTED_INDEX_REFERENCE_SOURCE,
+                ObservedPaletteColorMethod.SRGB_EUCLIDEAN_V1,
+                ObservedPaletteClassificationMode.EXACT,
+                0.0d,
+                0.0d,
+                Optional.empty(),
+                0.0d,
+                PALETTE_THRESHOLD_VERSION,
+                Optional.of("observed palette classification disabled"),
+                ObservedPaletteSafetyDecision.WITHHELD,
+                colors,
+                deduplicated(List.of(
+                        CaptureMediaEvidenceReasonCode.OBSERVED_PALETTE_WITHHELD,
+                        CaptureMediaEvidenceReasonCode.EXACT_PALETTE_FALLBACK_SELECTED
+                ))
+        );
+    }
+
+    private List<ObservedPaletteColorEvidence> observedPaletteColors(
+            CaptureMediaPaletteModel model,
+            Map<Integer, List<Integer>> referencesByIndex
+    ) {
+        List<ObservedPaletteColorEvidence> colors = new ArrayList<>(model.size());
+        for (CaptureMediaPaletteModelColor color : model.colors()) {
+            List<Integer> references = referencesByIndex.getOrDefault(color.paletteIndex(), List.of());
+            colors.add(new ObservedPaletteColorEvidence(
+                    color.paletteIndex(),
+                    color.expectedArgb(),
+                    color.modelArgb(),
+                    color.sampleCount(),
+                    maximumDistanceToModel(references, color.modelArgb()),
+                    color.maximumRgbDistance(),
+                    color.confidence(),
+                    centerSource(color)
+            ));
+        }
+        return List.copyOf(colors);
+    }
+
+    private ObservedPaletteCenterSource centerSource(CaptureMediaPaletteModelColor color) {
+        if (color.calibrated()) {
+            return ObservedPaletteCenterSource.OBSERVED;
+        }
+        return color.modelArgb() == color.expectedArgb()
+                ? ObservedPaletteCenterSource.EXACT_FALLBACK
+                : ObservedPaletteCenterSource.INFERRED_FROM_BLACK_WHITE;
+    }
+
+    private Map<Integer, List<Integer>> referencesByIndex(List<CaptureMediaPaletteCalibrationSample> references) {
+        Map<Integer, List<Integer>> values = new LinkedHashMap<>();
+        for (CaptureMediaPaletteCalibrationSample reference : references) {
+            values.computeIfAbsent(reference.expectedPaletteIndex(), ignored -> new ArrayList<>())
+                    .add(reference.observedArgb());
+        }
+        return Map.copyOf(values);
+    }
+
     private ModuleEvidence sampleModule(
             MediaInputFrame sourceFrame,
             GeometryCandidateEvidence geometryCandidate,
             CaptureMediaPaletteModel paletteModel,
+            ObservedPaletteColorMethod colorMethod,
+            ObservedPaletteClassificationMode classificationMode,
+            String paletteModelSource,
             ProjectedModuleCell cell
     ) {
         List<SourcePoint> samplePoints = latticeProjector.sourceSamplePoints(
@@ -540,6 +921,7 @@ public final class CaptureMediaSourceSpaceModuleSampler {
         boolean clipped = rejectedPointCount > 0
                 || !insideSource(cell.sourcePolygon(), sourceFrame.widthPixels(), sourceFrame.heightPixels())
                 || !insideSource(cell.innerSourcePolygon(), sourceFrame.widthPixels(), sourceFrame.heightPixels());
+        FootprintMetrics footprint = footprintMetrics(cell, samplePoints.size(), rejectedPointCount, clipped);
         if (sampledArgb.isEmpty()) {
             return moduleEvidence(
                     cell,
@@ -548,35 +930,59 @@ public final class CaptureMediaSourceSpaceModuleSampler {
                     0.0d,
                     OptionalInt.empty(),
                     new PaletteDistances(0, 0.0d, 0.0d, 0.0d),
+                    0.0d,
+                    footprint,
+                    colorMethod,
+                    classificationMode,
+                    paletteModelSource,
                     ModuleSampleStatus.OUT_OF_BOUNDS,
                     List.of(CaptureMediaEvidenceReasonCode.MODULE_REGION_OUT_OF_BOUNDS)
             );
         }
 
         AggregatedColor aggregated = aggregate(sampledArgb);
-        PaletteDistances distances = paletteDistances(aggregated.argb(), paletteModel);
-        CaptureMediaPaletteSample paletteSample = paletteSampler.tolerantPaletteSample(aggregated.argb(), paletteModel);
+        PaletteDistances distances = paletteDistances(aggregated.argb(), paletteModel, colorMethod);
         ModuleSampleStatus status;
         OptionalInt assignedPaletteIndex = OptionalInt.empty();
+        double moduleConfidence = moduleConfidence(
+                sampledArgb.size(),
+                aggregated.variance(),
+                distances,
+                footprint,
+                colorMethod
+        );
         if (clipped) {
             status = ModuleSampleStatus.CLIPPED;
             reasonCodes.add(CaptureMediaEvidenceReasonCode.MODULE_REGION_CLIPPED);
+            reasonCodes.add(CaptureMediaEvidenceReasonCode.MODULE_FOOTPRINT_CLIPPED);
         } else if (sampledArgb.size() < MIN_READABLE_SAMPLE_COUNT) {
             status = ModuleSampleStatus.UNREADABLE;
             reasonCodes.add(CaptureMediaEvidenceReasonCode.INSUFFICIENT_SAMPLE_COUNT);
+        } else if (footprint.quality() < MIN_READABLE_FOOTPRINT_QUALITY) {
+            status = ModuleSampleStatus.UNREADABLE;
+            reasonCodes.add(CaptureMediaEvidenceReasonCode.MODULE_FOOTPRINT_QUALITY_BELOW_THRESHOLD);
+            if (footprint.minimumEdgePx() < GOOD_MINIMUM_FOOTPRINT_EDGE_PX
+                    || footprint.innerAreaPx() < GOOD_INNER_FOOTPRINT_AREA_PX) {
+                reasonCodes.add(CaptureMediaEvidenceReasonCode.MODULE_FOOTPRINT_TOO_SMALL);
+            }
         } else if (aggregated.variance() > HIGH_VARIANCE_THRESHOLD) {
             status = ModuleSampleStatus.AMBIGUOUS;
             reasonCodes.add(CaptureMediaEvidenceReasonCode.HIGH_COLOR_VARIANCE);
-        } else if (paletteSample.status() == CaptureMediaPaletteSampleStatus.REJECTED) {
+        } else if (paletteSampleStatus(distances.bestDistance(), colorMethod) == CaptureMediaPaletteSampleStatus.REJECTED) {
             status = ModuleSampleStatus.UNREADABLE;
             reasonCodes.add(CaptureMediaEvidenceReasonCode.LOW_COLOR_MARGIN);
-        } else if (paletteSample.status() == CaptureMediaPaletteSampleStatus.LOW_CONFIDENCE
-                || distances.margin() < LOW_DISTANCE_MARGIN_THRESHOLD) {
+        } else if (paletteSampleStatus(distances.bestDistance(), colorMethod) == CaptureMediaPaletteSampleStatus.LOW_CONFIDENCE
+                || distances.margin() < lowDistanceMarginThreshold(colorMethod)) {
             status = ModuleSampleStatus.AMBIGUOUS;
             reasonCodes.add(CaptureMediaEvidenceReasonCode.LOW_COLOR_MARGIN);
         } else {
             status = ModuleSampleStatus.READABLE;
-            assignedPaletteIndex = OptionalInt.of(paletteSample.paletteIndex());
+            assignedPaletteIndex = OptionalInt.of(distances.paletteIndex());
+        }
+        if (status == ModuleSampleStatus.READABLE && moduleConfidence < MIN_READABLE_MODULE_CONFIDENCE) {
+            status = ModuleSampleStatus.AMBIGUOUS;
+            assignedPaletteIndex = OptionalInt.empty();
+            reasonCodes.add(CaptureMediaEvidenceReasonCode.MODULE_CONFIDENCE_BELOW_THRESHOLD);
         }
 
         return moduleEvidence(
@@ -586,6 +992,11 @@ public final class CaptureMediaSourceSpaceModuleSampler {
                 aggregated.variance(),
                 assignedPaletteIndex,
                 distances,
+                moduleConfidence,
+                footprint,
+                colorMethod,
+                classificationMode,
+                paletteModelSource,
                 status,
                 deduplicated(reasonCodes)
         );
@@ -598,6 +1009,11 @@ public final class CaptureMediaSourceSpaceModuleSampler {
             double colorVariance,
             OptionalInt assignedPaletteIndex,
             PaletteDistances distances,
+            double moduleConfidence,
+            FootprintMetrics footprint,
+            ObservedPaletteColorMethod colorMethod,
+            ObservedPaletteClassificationMode classificationMode,
+            String paletteModelSource,
             ModuleSampleStatus status,
             List<CaptureMediaEvidenceReasonCode> reasonCodes
     ) {
@@ -614,6 +1030,16 @@ public final class CaptureMediaSourceSpaceModuleSampler {
                 distances.bestDistance(),
                 distances.secondBestDistance(),
                 distances.margin(),
+                moduleConfidence,
+                footprint.quality(),
+                footprint.sourceAreaPx(),
+                footprint.innerAreaPx(),
+                footprint.minimumEdgePx(),
+                footprint.aspectRatio(),
+                footprint.clippedFraction(),
+                colorMethod,
+                classificationMode,
+                paletteModelSource,
                 status,
                 reasonCodes
         );
@@ -633,6 +1059,7 @@ public final class CaptureMediaSourceSpaceModuleSampler {
         List<TilePayload> acceptedPayloads = new ArrayList<>();
         List<FailureStage> failureStages = new ArrayList<>();
         List<CaptureMediaEvidenceReasonCode> reasonCodes = new ArrayList<>();
+        List<WeakTileEvidence> weakTileEvidence = new ArrayList<>(expectedTiles);
         int attemptCount = 0;
         for (int tileIndex = 0; tileIndex < expectedTiles; tileIndex++) {
             Optional<LogicalTile> candidate = logicalTileCandidate(
@@ -644,10 +1071,27 @@ public final class CaptureMediaSourceSpaceModuleSampler {
                     variantRank,
                     modulesByCoordinate
             );
+            boolean attempted = false;
+            boolean accepted = false;
+            List<String> tileFailureStages = new ArrayList<>();
+            List<CaptureMediaEvidenceReasonCode> tileReasonCodes = new ArrayList<>();
             if (candidate.isEmpty()) {
+                tileFailureStages.add("MODULE_EVIDENCE");
+                tileReasonCodes.add(CaptureMediaEvidenceReasonCode.TILE_DECODE_NOT_ATTEMPTED);
+                weakTileEvidence.add(weakTileEvidence(
+                        layoutPlan,
+                        tileIndex,
+                        dimension,
+                        modulesByCoordinate,
+                        attempted,
+                        accepted,
+                        tileFailureStages,
+                        tileReasonCodes
+                ));
                 continue;
             }
             attemptCount++;
+            attempted = true;
             ValidationAttempt attempt = logicalTileValidator.validate(
                     layoutPlan,
                     tileIndex,
@@ -655,11 +1099,35 @@ public final class CaptureMediaSourceSpaceModuleSampler {
             );
             if (attempt.payload().isPresent()) {
                 acceptedPayloads.add(attempt.payload().orElseThrow());
+                accepted = true;
+                weakTileEvidence.add(weakTileEvidence(
+                        layoutPlan,
+                        tileIndex,
+                        dimension,
+                        modulesByCoordinate,
+                        attempted,
+                        accepted,
+                        tileFailureStages,
+                        tileReasonCodes
+                ));
                 continue;
             }
             FailureStage stage = attempt.failureStage().orElseThrow();
             failureStages.add(stage);
-            reasonCodes.add(reasonCode(stage));
+            CaptureMediaEvidenceReasonCode stageReasonCode = reasonCode(stage);
+            reasonCodes.add(stageReasonCode);
+            tileFailureStages.add(stage.name());
+            tileReasonCodes.add(stageReasonCode);
+            weakTileEvidence.add(weakTileEvidence(
+                    layoutPlan,
+                    tileIndex,
+                    dimension,
+                    modulesByCoordinate,
+                    attempted,
+                    accepted,
+                    tileFailureStages,
+                    tileReasonCodes
+            ));
         }
         if (attemptCount == 0) {
             reasonCodes.add(CaptureMediaEvidenceReasonCode.TILE_DECODE_NOT_ATTEMPTED);
@@ -667,7 +1135,90 @@ public final class CaptureMediaSourceSpaceModuleSampler {
         return new VariantValidation(
                 attemptCount,
                 acceptedPayloads,
+                weakTileEvidence,
                 deduplicatedStages(failureStages),
+                deduplicated(reasonCodes)
+        );
+    }
+
+    private WeakTileEvidence weakTileEvidence(
+            FixedLayoutPlan layoutPlan,
+            int tileIndex,
+            int dimension,
+            Map<ModuleCoordinate, ModuleEvidence> modulesByCoordinate,
+            boolean tileDecodeAttempted,
+            boolean acceptedPayload,
+            List<String> failureStages,
+            List<CaptureMediaEvidenceReasonCode> tileReasonCodes
+    ) {
+        int tileRow = tileIndex / layoutPlan.profile().cols();
+        int tileCol = tileIndex % layoutPlan.profile().cols();
+        int baseModuleX = tileCol * dimension;
+        int baseModuleY = tileRow * dimension;
+        int moduleCount = dimension * dimension;
+        int weakCount = 0;
+        int ambiguousCount = 0;
+        int unreadableCount = 0;
+        int clippedCount = 0;
+        int outOfBoundsCount = 0;
+        int poorFootprintCount = 0;
+        double minimumConfidence = 1.0d;
+        double minimumFootprintQuality = 1.0d;
+        List<CaptureMediaEvidenceReasonCode> reasonCodes = new ArrayList<>(tileReasonCodes);
+        for (int row = 0; row < dimension; row++) {
+            for (int col = 0; col < dimension; col++) {
+                ModuleEvidence module = modulesByCoordinate.get(new ModuleCoordinate(
+                        baseModuleX + col,
+                        baseModuleY + row
+                ));
+                if (module == null) {
+                    weakCount++;
+                    unreadableCount++;
+                    reasonCodes.add(CaptureMediaEvidenceReasonCode.MODULE_REGION_OUT_OF_BOUNDS);
+                    minimumConfidence = 0.0d;
+                    minimumFootprintQuality = 0.0d;
+                    continue;
+                }
+                minimumConfidence = Math.min(minimumConfidence, module.moduleConfidence());
+                minimumFootprintQuality = Math.min(minimumFootprintQuality, module.geometryFootprintQuality());
+                if (weakForTile(module)) {
+                    weakCount++;
+                    reasonCodes.addAll(module.reasonCodes());
+                }
+                if (module.status() == ModuleSampleStatus.AMBIGUOUS) {
+                    ambiguousCount++;
+                } else if (module.status() == ModuleSampleStatus.UNREADABLE) {
+                    unreadableCount++;
+                } else if (module.status() == ModuleSampleStatus.CLIPPED) {
+                    clippedCount++;
+                } else if (module.status() == ModuleSampleStatus.OUT_OF_BOUNDS) {
+                    outOfBoundsCount++;
+                }
+                if (module.geometryFootprintQuality() < MIN_READABLE_FOOTPRINT_QUALITY) {
+                    poorFootprintCount++;
+                    reasonCodes.add(CaptureMediaEvidenceReasonCode.MODULE_FOOTPRINT_QUALITY_BELOW_THRESHOLD);
+                }
+            }
+        }
+        return new WeakTileEvidence(
+                tileIndex,
+                baseModuleX,
+                baseModuleY,
+                dimension,
+                dimension,
+                moduleCount,
+                weakCount,
+                ambiguousCount,
+                unreadableCount,
+                clippedCount,
+                outOfBoundsCount,
+                poorFootprintCount,
+                (double) weakCount / (double) moduleCount,
+                minimumConfidence,
+                minimumFootprintQuality,
+                tileDecodeAttempted,
+                acceptedPayload,
+                failureStages.isEmpty() && !acceptedPayload ? List.of("NONE") : failureStages,
                 deduplicated(reasonCodes)
         );
     }
@@ -705,7 +1256,9 @@ public final class CaptureMediaSourceSpaceModuleSampler {
                 ));
                 if (module == null
                         || module.status() != ModuleSampleStatus.READABLE
-                        || module.assignedPaletteIndex().isEmpty()) {
+                        || module.assignedPaletteIndex().isEmpty()
+                        || module.moduleConfidence() < MIN_READABLE_MODULE_CONFIDENCE
+                        || module.geometryFootprintQuality() < MIN_READABLE_FOOTPRINT_QUALITY) {
                     return Optional.empty();
                 }
                 moduleColors.add(module.assignedPaletteIndex().orElseThrow());
@@ -738,6 +1291,20 @@ public final class CaptureMediaSourceSpaceModuleSampler {
         };
     }
 
+    private CaptureMediaEvidenceReasonCode fallbackReasonCode(String fallbackReason) {
+        String normalized = fallbackReason.toLowerCase(java.util.Locale.ROOT);
+        if (normalized.contains("insufficient")) {
+            return CaptureMediaEvidenceReasonCode.INSUFFICIENT_EXPECTED_INDEX_OBSERVATIONS;
+        }
+        if (normalized.contains("contradictory")) {
+            return CaptureMediaEvidenceReasonCode.CONTRADICTORY_PALETTE_OBSERVATIONS;
+        }
+        if (normalized.contains("confidence")) {
+            return CaptureMediaEvidenceReasonCode.OBSERVED_CLASSIFICATION_WITHHELD;
+        }
+        return CaptureMediaEvidenceReasonCode.PALETTE_UNAVAILABLE;
+    }
+
     private ModuleSamplingEvidence unavailableEvidence(
             NormalizedCaptureFrame normalizedFrame,
             GeometryFitEvidence geometryEvidence,
@@ -754,9 +1321,14 @@ public final class CaptureMediaSourceSpaceModuleSampler {
         int moduleWidth = layoutProfile.map(profile -> profile.cols() * dimension).orElse(1);
         int moduleHeight = layoutProfile.map(profile -> profile.rows() * dimension).orElse(1);
         String geometryCandidateId = geometryId.geometryCandidateId().orElseThrow();
+        CaptureMediaCandidateId samplingId = CaptureMediaCandidateId.samplingCandidate(
+                geometryId,
+                scalePercent(CENTRAL_SCALES.get(0)),
+                1
+        );
         return new ModuleSamplingEvidence(
                 SCHEMA_VERSION,
-                CaptureMediaCandidateId.samplingCandidate(geometryId, scalePercent(CENTRAL_SCALES.get(0)), 1),
+                samplingId,
                 status,
                 geometryCandidateId,
                 layoutProfile.map(LayoutProfile::profileId).orElse(normalizedFrame.layoutProfileId()),
@@ -780,9 +1352,15 @@ public final class CaptureMediaSourceSpaceModuleSampler {
                 0,
                 Map.of(),
                 Map.of(),
+                Map.of(),
+                Map.of(),
+                0,
+                0,
+                fallbackObservedPaletteEvidence(samplingId, reasonCode),
                 false,
                 0,
                 0,
+                List.of(),
                 List.of(),
                 List.of(),
                 deduplicated(List.of(
@@ -864,6 +1442,13 @@ public final class CaptureMediaSourceSpaceModuleSampler {
                 && point.y() <= heightPixels - 1.0d;
     }
 
+    private boolean weakForTile(ModuleEvidence module) {
+        return module.status() != ModuleSampleStatus.READABLE
+                || module.assignedPaletteIndex().isEmpty()
+                || module.moduleConfidence() < MIN_READABLE_MODULE_CONFIDENCE
+                || module.geometryFootprintQuality() < MIN_READABLE_FOOTPRINT_QUALITY;
+    }
+
     private AggregatedColor aggregate(List<Integer> argbValues) {
         int[] reds = new int[argbValues.size()];
         int[] greens = new int[argbValues.size()];
@@ -885,10 +1470,60 @@ public final class CaptureMediaSourceSpaceModuleSampler {
         return new AggregatedColor(aggregateArgb, variance / argbValues.size());
     }
 
-    private PaletteDistances paletteDistances(int argb, CaptureMediaPaletteModel paletteModel) {
+    private FootprintMetrics footprintMetrics(
+            ProjectedModuleCell cell,
+            int projectedSampleCount,
+            int rejectedPointCount,
+            boolean clipped
+    ) {
+        double sourceArea = polygonArea(cell.sourcePolygon());
+        double innerArea = polygonArea(cell.innerSourcePolygon());
+        double minimumEdge = minimumEdge(cell.innerSourcePolygon());
+        double maximumEdge = maximumEdge(cell.innerSourcePolygon());
+        double aspectRatio = minimumEdge <= 0.0d ? 0.0d : maximumEdge / minimumEdge;
+        double rejectedFraction = projectedSampleCount == 0
+                ? 1.0d
+                : Math.min(1.0d, Math.max(0.0d, rejectedPointCount / (double) projectedSampleCount));
+        double clippedFraction = clipped && rejectedFraction == 0.0d ? 1.0d : rejectedFraction;
+        double shapeQuality = aspectRatio <= 0.0d ? 0.0d : clamp01(1.0d / Math.max(aspectRatio, 1.0d));
+        double areaQuality = clamp01(innerArea / GOOD_INNER_FOOTPRINT_AREA_PX);
+        double edgeQuality = clamp01(minimumEdge / GOOD_MINIMUM_FOOTPRINT_EDGE_PX);
+        double clipQuality = clamp01(1.0d - clippedFraction);
+        double quality = Math.min(Math.min(areaQuality, edgeQuality), Math.min(clipQuality, shapeQuality));
+        return new FootprintMetrics(
+                sourceArea,
+                innerArea,
+                minimumEdge,
+                aspectRatio,
+                clippedFraction,
+                quality
+        );
+    }
+
+    private double moduleConfidence(
+            int sampleCount,
+            double colorVariance,
+            PaletteDistances distances,
+            FootprintMetrics footprint,
+            ObservedPaletteColorMethod colorMethod
+    ) {
+        double marginQuality = clamp01(distances.margin() / goodColorMargin(colorMethod));
+        double varianceQuality = clamp01(1.0d - (colorVariance / HIGH_VARIANCE_THRESHOLD));
+        double sampleQuality = clamp01(sampleCount / (double) GOOD_SAMPLE_COUNT);
+        return Math.min(Math.min(marginQuality, varianceQuality), Math.min(sampleQuality, footprint.quality()));
+    }
+
+    private PaletteDistances paletteDistances(
+            int argb,
+            CaptureMediaPaletteModel paletteModel,
+            ObservedPaletteColorMethod colorMethod
+    ) {
         List<PaletteDistance> distances = paletteModel.colors()
                 .stream()
-                .map(color -> new PaletteDistance(color.paletteIndex(), rgbDistance(argb, color.modelArgb())))
+                .map(color -> new PaletteDistance(
+                        color.paletteIndex(),
+                        CaptureMediaColorDistance.distance(argb, color.modelArgb(), colorMethod)
+                ))
                 .sorted(Comparator.comparingDouble(PaletteDistance::distance)
                         .thenComparingInt(PaletteDistance::paletteIndex))
                 .toList();
@@ -900,6 +1535,42 @@ public final class CaptureMediaSourceSpaceModuleSampler {
                 second.distance(),
                 Math.max(0.0d, second.distance() - best.distance())
         );
+    }
+
+    private CaptureMediaPaletteSampleStatus paletteSampleStatus(
+            double distance,
+            ObservedPaletteColorMethod colorMethod
+    ) {
+        if (distance <= lowConfidenceDistance(colorMethod)) {
+            return CaptureMediaPaletteSampleStatus.TOLERANT;
+        }
+        if (distance <= maxAcceptedDistance(colorMethod)) {
+            return CaptureMediaPaletteSampleStatus.LOW_CONFIDENCE;
+        }
+        return CaptureMediaPaletteSampleStatus.REJECTED;
+    }
+
+    private int weakModuleCount(List<ModuleEvidence> modules) {
+        int count = 0;
+        for (ModuleEvidence module : modules) {
+            if (module.sampleCount() > 0
+                    && (module.status() != ModuleSampleStatus.READABLE
+                    || module.moduleConfidence() < MIN_READABLE_MODULE_CONFIDENCE
+                    || module.geometryFootprintQuality() < MIN_READABLE_FOOTPRINT_QUALITY)) {
+                count++;
+            }
+        }
+        return count;
+    }
+
+    private int poorFootprintModuleCount(List<ModuleEvidence> modules) {
+        int count = 0;
+        for (ModuleEvidence module : modules) {
+            if (module.geometryFootprintQuality() < MIN_READABLE_FOOTPRINT_QUALITY) {
+                count++;
+            }
+        }
+        return count;
     }
 
     private Map<String, Double> summary(List<Double> values) {
@@ -947,6 +1618,134 @@ public final class CaptureMediaSourceSpaceModuleSampler {
 
     private double rgbDistance(int firstArgb, int secondArgb) {
         return Math.sqrt(squaredRgbDistance(firstArgb, secondArgb));
+    }
+
+    private double maximumDistanceToModel(List<Integer> references, int modelArgb) {
+        double maximum = 0.0d;
+        for (int reference : references) {
+            maximum = Math.max(maximum, rgbDistance(reference, modelArgb));
+        }
+        return maximum;
+    }
+
+    private double observedCoverageRatio(CaptureMediaPaletteModel model) {
+        return model.size() == 0 ? 0.0d : model.observedColorCount() / (double) model.size();
+    }
+
+    private double separationScore(CaptureMediaPaletteModel model) {
+        List<CaptureMediaPaletteModelColor> observed = model.observedColors();
+        if (observed.size() < 2) {
+            return 0.0d;
+        }
+        double minimum = Double.POSITIVE_INFINITY;
+        for (int first = 0; first < observed.size(); first++) {
+            for (int second = first + 1; second < observed.size(); second++) {
+                minimum = Math.min(
+                        minimum,
+                        rgbDistance(observed.get(first).modelArgb(), observed.get(second).modelArgb())
+                );
+            }
+        }
+        return Double.isFinite(minimum) ? clamp01(minimum / 96.0d) : 0.0d;
+    }
+
+    private Optional<String> weakestPalettePair(CaptureMediaPaletteModel model) {
+        List<CaptureMediaPaletteModelColor> observed = model.observedColors();
+        if (observed.size() < 2) {
+            return Optional.empty();
+        }
+        double minimum = Double.POSITIVE_INFINITY;
+        String pair = null;
+        for (int first = 0; first < observed.size(); first++) {
+            for (int second = first + 1; second < observed.size(); second++) {
+                double distance = rgbDistance(observed.get(first).modelArgb(), observed.get(second).modelArgb());
+                if (distance < minimum) {
+                    minimum = distance;
+                    pair = observed.get(first).paletteIndex() + "-" + observed.get(second).paletteIndex();
+                }
+            }
+        }
+        return Optional.ofNullable(pair);
+    }
+
+    private double lowConfidenceDistance(ObservedPaletteColorMethod colorMethod) {
+        return switch (colorMethod) {
+            case SRGB_EUCLIDEAN_V1 -> 24.0d;
+            case LINEAR_RGB_V1 -> 0.08d;
+            case CIE_LAB_V1 -> 8.0d;
+        };
+    }
+
+    private double maxAcceptedDistance(ObservedPaletteColorMethod colorMethod) {
+        return switch (colorMethod) {
+            case SRGB_EUCLIDEAN_V1 -> 64.0d;
+            case LINEAR_RGB_V1 -> 0.20d;
+            case CIE_LAB_V1 -> 18.0d;
+        };
+    }
+
+    private double lowDistanceMarginThreshold(ObservedPaletteColorMethod colorMethod) {
+        return switch (colorMethod) {
+            case SRGB_EUCLIDEAN_V1 -> LOW_DISTANCE_MARGIN_THRESHOLD;
+            case LINEAR_RGB_V1 -> 0.05d;
+            case CIE_LAB_V1 -> 5.0d;
+        };
+    }
+
+    private double goodColorMargin(ObservedPaletteColorMethod colorMethod) {
+        return switch (colorMethod) {
+            case SRGB_EUCLIDEAN_V1 -> GOOD_COLOR_MARGIN;
+            case LINEAR_RGB_V1 -> 0.15d;
+            case CIE_LAB_V1 -> 16.0d;
+        };
+    }
+
+    private double polygonArea(SourcePolygon polygon) {
+        List<SourcePoint> vertices = polygon.vertices();
+        double sum = 0.0d;
+        for (int index = 0; index < vertices.size(); index++) {
+            SourcePoint current = vertices.get(index);
+            SourcePoint next = vertices.get((index + 1) % vertices.size());
+            sum += (current.x() * next.y()) - (next.x() * current.y());
+        }
+        return Math.abs(sum) / 2.0d;
+    }
+
+    private double minimumEdge(SourcePolygon polygon) {
+        List<SourcePoint> vertices = polygon.vertices();
+        double minimum = Double.POSITIVE_INFINITY;
+        for (int index = 0; index < vertices.size(); index++) {
+            minimum = Math.min(minimum, distance(vertices.get(index), vertices.get((index + 1) % vertices.size())));
+        }
+        return Double.isFinite(minimum) ? minimum : 0.0d;
+    }
+
+    private double maximumEdge(SourcePolygon polygon) {
+        List<SourcePoint> vertices = polygon.vertices();
+        double maximum = 0.0d;
+        for (int index = 0; index < vertices.size(); index++) {
+            maximum = Math.max(maximum, distance(vertices.get(index), vertices.get((index + 1) % vertices.size())));
+        }
+        return maximum;
+    }
+
+    private double distance(SourcePoint first, SourcePoint second) {
+        double deltaX = first.x() - second.x();
+        double deltaY = first.y() - second.y();
+        return Math.sqrt((deltaX * deltaX) + (deltaY * deltaY));
+    }
+
+    private double clamp01(double value) {
+        if (!Double.isFinite(value)) {
+            return 0.0d;
+        }
+        if (value < 0.0d) {
+            return 0.0d;
+        }
+        if (value > 1.0d) {
+            return 1.0d;
+        }
+        return value;
     }
 
     private double squaredRgbDistance(int firstArgb, int secondArgb) {
@@ -1065,6 +1864,7 @@ public final class CaptureMediaSourceSpaceModuleSampler {
     private record VariantValidation(
             int attemptCount,
             List<TilePayload> acceptedPayloads,
+            List<WeakTileEvidence> weakTileEvidence,
             List<String> failureStages,
             List<CaptureMediaEvidenceReasonCode> reasonCodes
     ) {
@@ -1077,9 +1877,14 @@ public final class CaptureMediaSourceSpaceModuleSampler {
                     acceptedPayloads,
                     "acceptedPayloads must not be null"
             ));
+            weakTileEvidence = List.copyOf(Objects.requireNonNull(
+                    weakTileEvidence,
+                    "weakTileEvidence must not be null"
+            ));
             failureStages = List.copyOf(Objects.requireNonNull(failureStages, "failureStages must not be null"));
             reasonCodes = List.copyOf(Objects.requireNonNull(reasonCodes, "reasonCodes must not be null"));
             if (acceptedPayloads.stream().anyMatch(Objects::isNull)
+                    || weakTileEvidence.stream().anyMatch(Objects::isNull)
                     || failureStages.stream().anyMatch(stage -> stage == null || stage.isBlank())
                     || reasonCodes.stream().anyMatch(Objects::isNull)) {
                 throw new IllegalArgumentException("variant validation values must not contain nulls or blanks");
@@ -1103,10 +1908,37 @@ public final class CaptureMediaSourceSpaceModuleSampler {
     private record AggregatedColor(int argb, double variance) {
     }
 
+    private record FootprintMetrics(
+            double sourceAreaPx,
+            double innerAreaPx,
+            double minimumEdgePx,
+            double aspectRatio,
+            double clippedFraction,
+            double quality
+    ) {
+    }
+
     private record PaletteDistance(int paletteIndex, double distance) {
     }
 
     private record PaletteDistances(int paletteIndex, double bestDistance, double secondBestDistance, double margin) {
+    }
+
+    private record ObservedPaletteSelection(
+            CaptureMediaPaletteModel paletteModel,
+            ObservedPaletteColorMethod colorMethod,
+            ObservedPaletteClassificationMode classificationMode,
+            String paletteModelSource,
+            ObservedPaletteEvidence evidence
+    ) {
+
+        private ObservedPaletteSelection {
+            Objects.requireNonNull(paletteModel, "paletteModel must not be null");
+            Objects.requireNonNull(colorMethod, "colorMethod must not be null");
+            Objects.requireNonNull(classificationMode, "classificationMode must not be null");
+            paletteModelSource = Objects.requireNonNull(paletteModelSource, "paletteModelSource must not be null");
+            Objects.requireNonNull(evidence, "evidence must not be null");
+        }
     }
 
     private record Counts(
