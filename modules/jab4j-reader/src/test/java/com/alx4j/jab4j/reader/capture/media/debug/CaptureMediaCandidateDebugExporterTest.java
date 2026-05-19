@@ -541,6 +541,13 @@ class CaptureMediaCandidateDebugExporterTest {
                 () -> assertEquals("1", metadataValue(metadata, "sourceSampling.validatedTileCount")),
                 () -> assertEquals("false", metadataValue(metadata, "sourceSampling.moduleDetailIncluded")),
                 () -> assertFalse(metadata.contains("sourceSampling.module.0.")),
+                () -> assertFalse(metadataValue(metadata, "palette.observed.status").isBlank()),
+                () -> assertFalse(metadataValue(metadata, "classification.colorMethod").isBlank()),
+                () -> assertEquals("true", metadataValue(metadata, "weakModule.included")),
+                () -> assertEquals("true", metadataValue(metadata, "weakTile.included")),
+                () -> assertTrue(Integer.parseInt(metadataValue(metadata, "weakTile.totalTileRegionCount")) > 0),
+                () -> assertFalse(metadataValue(metadata, "frameBlocker.stage").isBlank()),
+                () -> assertEquals("true", metadataValue(metadata, "duplicateCandidate.included")),
                 () -> assertEquals("1", metadataValue(metadata, "downstream.sourceSamplingValidatedTileCount")),
                 () -> assertEquals("true", metadataValue(metadata, "overlay.sourceSamplingSummaryDrawn")),
                 () -> assertTrue(Integer.parseInt(metadataValue(

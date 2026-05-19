@@ -60,6 +60,12 @@ final class CaptureMediaCorpusFixtures {
     static final String GENERATED_CAMERA_LIKE_MONITOR_INVALID_PAYLOAD_PNG =
             "CM-MVP7-GENERATED-CAMERA-LIKE-MONITOR-INVALID-PAYLOAD-PNG";
     static final String GENERATED_SKEWED_BLURRED_MONITOR_PNG = "CM-MVP7-GENERATED-SKEWED-BLURRED-MONITOR-PNG";
+    static final String MVP10_SEPARABLE_COLOR_SHIFT_PNG = "CM-MVP10-GENERATED-SEPARABLE-COLOR-SHIFT-PNG";
+    static final String MVP10_COMPRESSION_LIKE_JPEG = "CM-MVP10-GENERATED-COMPRESSION-LIKE-JPEG";
+    static final String MVP10_AMBIGUOUS_COLOR_PNG = "CM-MVP10-GENERATED-AMBIGUOUS-COLOR-PNG";
+    static final String MVP10_FALSE_POSITIVE_COLOR_GRID_PNG = "CM-MVP10-GENERATED-FALSE-POSITIVE-COLOR-GRID-PNG";
+    static final String MVP10_STRUCTURALLY_INVALID_COLOR_SHIFT_PNG =
+            "CM-MVP10-GENERATED-STRUCTURALLY-INVALID-COLOR-SHIFT-PNG";
     static final String DUPLICATE_FRAMES = "CM-MVP3-DUPLICATE-FRAMES";
     static final String MISSING_UNIQUE_FRAMES = "CM-MVP3-MISSING-UNIQUE-FRAMES";
     static final String NO_JAB_FRAME = "CM-MVP3-NO-JAB-FRAME";
@@ -74,6 +80,7 @@ final class CaptureMediaCorpusFixtures {
     static final String UNSUPPORTED_HEIC_PLACEHOLDER = "CM-MVP3-UNSUPPORTED-HEIC-PLACEHOLDER";
     static final String CORRUPTED_UNREADABLE_IMAGE = "CM-MVP3-CORRUPTED-UNREADABLE-IMAGE";
     static final String EXTERNAL_IPHONE_STILLS = "CM-MVP3-EXTERNAL-IPHONE-STILLS";
+    static final String MVP10_LOCAL_HEIC2_EVIDENCE = "CM-MVP10-LOCAL-HEIC2-EVIDENCE";
     static final String EXTRACTED_VIDEO_FRAMES = "CM-MVP3-EXTRACTED-VIDEO-FRAMES";
     static final String EXTRACTED_VIDEO_QUALITY_MIX = "CM-MVP3-EXTRACTED-VIDEO-QUALITY-MIX";
     static final String FUTURE_DIRECT_VIDEO = "CM-MVP3-FUTURE-DIRECT-VIDEO";
@@ -244,6 +251,116 @@ final class CaptureMediaCorpusFixtures {
                 mediaDirectory,
                 List.of(path),
                 1
+        );
+    }
+
+    /**
+     * Generates color-shifted PNG frames with still-separable palette centers for MVP-10 baseline metrics.
+     *
+     * @param workspace parent directory for temporary scenario files
+     * @return generated media fixture
+     * @throws IOException if fixture files cannot be written
+     */
+    static GeneratedCaptureMediaFixture mvp10SeparableColorShiftPng(Path workspace) throws IOException {
+        GeneratedFrameSet frameSet = generateFrameSet(workspace, MVP10_SEPARABLE_COLOR_SHIFT_PNG);
+        Path mediaDirectory = Files.createDirectories(frameSet.scenarioDirectory().resolve("media"));
+        List<Path> files = new ArrayList<>(frameSet.renderedFrames().size());
+        for (int index = 0; index < frameSet.renderedFrames().size(); index++) {
+            Path path = mediaDirectory.resolve("separable-color-shift-%04d.png".formatted(index));
+            writePng(path, colorShiftedImage(frameSet.renderedFrames().get(index), 40));
+            files.add(path);
+        }
+        return new GeneratedCaptureMediaFixture(
+                MVP10_SEPARABLE_COLOR_SHIFT_PNG,
+                frameSet.scenarioDirectory(),
+                mediaDirectory,
+                files,
+                frameSet.renderedFrames().size()
+        );
+    }
+
+    /**
+     * Generates compression-like JPEG frames with deterministic color shift and blur for MVP-10 baselines.
+     *
+     * @param workspace parent directory for temporary scenario files
+     * @return generated media fixture
+     * @throws IOException if fixture files cannot be written
+     */
+    static GeneratedCaptureMediaFixture mvp10CompressionLikeJpeg(Path workspace) throws IOException {
+        GeneratedFrameSet frameSet = generateFrameSet(workspace, MVP10_COMPRESSION_LIKE_JPEG);
+        Path mediaDirectory = Files.createDirectories(frameSet.scenarioDirectory().resolve("media"));
+        List<Path> files = new ArrayList<>(frameSet.renderedFrames().size());
+        for (int index = 0; index < frameSet.renderedFrames().size(); index++) {
+            Path path = mediaDirectory.resolve("compression-like-%04d.jpeg".formatted(index));
+            writeJpeg(path, compressionLikeImage(frameSet.renderedFrames().get(index)));
+            files.add(path);
+        }
+        return new GeneratedCaptureMediaFixture(
+                MVP10_COMPRESSION_LIKE_JPEG,
+                frameSet.scenarioDirectory(),
+                mediaDirectory,
+                files,
+                frameSet.renderedFrames().size()
+        );
+    }
+
+    /**
+     * Generates a JAB-like monitor image whose rendered frame colors collapse into ambiguous nearby centers.
+     *
+     * @param workspace parent directory for temporary scenario files
+     * @return generated media fixture
+     * @throws IOException if fixture files cannot be written
+     */
+    static GeneratedCaptureMediaFixture mvp10AmbiguousColorPng(Path workspace) throws IOException {
+        GeneratedFrameSet frameSet = generateFrameSet(workspace, MVP10_AMBIGUOUS_COLOR_PNG);
+        Path mediaDirectory = Files.createDirectories(frameSet.scenarioDirectory().resolve("media"));
+        Path path = mediaDirectory.resolve("ambiguous-color.png");
+        writePng(path, cameraLikeMonitorImage(ambiguousColorImage(frameSet.renderedFrames().get(0))));
+        return new GeneratedCaptureMediaFixture(
+                MVP10_AMBIGUOUS_COLOR_PNG,
+                frameSet.scenarioDirectory(),
+                mediaDirectory,
+                List.of(path),
+                0
+        );
+    }
+
+    /**
+     * Generates a colorful non-JAB grid whose local colors are internally consistent but structurally invalid.
+     *
+     * @param workspace parent directory for temporary scenario files
+     * @return generated media fixture
+     * @throws IOException if fixture files cannot be written
+     */
+    static GeneratedCaptureMediaFixture mvp10FalsePositiveColorGridPng(Path workspace) throws IOException {
+        return generatedSinglePng(
+                workspace,
+                MVP10_FALSE_POSITIVE_COLOR_GRID_PNG,
+                "false-positive-color-grid.png",
+                falsePositiveColorGridImage()
+        );
+    }
+
+    /**
+     * Generates a color-shifted monitor image with intact visual frame evidence and invalid tile payload interiors.
+     *
+     * @param workspace parent directory for temporary scenario files
+     * @return generated media fixture
+     * @throws IOException if fixture files cannot be written
+     */
+    static GeneratedCaptureMediaFixture mvp10StructurallyInvalidColorShiftPng(Path workspace) throws IOException {
+        GeneratedFrameSet frameSet = generateFrameSet(workspace, MVP10_STRUCTURALLY_INVALID_COLOR_SHIFT_PNG);
+        Path mediaDirectory = Files.createDirectories(frameSet.scenarioDirectory().resolve("media"));
+        BufferedImage frameImage = toImage(frameSet.renderedFrames().get(0));
+        clearTilePayloadInteriors(frameImage);
+        Path path = mediaDirectory.resolve("structurally-invalid-color-shift.png");
+        writePng(path, cameraLikeMonitorImage(colorShiftedImage(frameImage, 24)));
+        return new GeneratedCaptureMediaFixture(
+                MVP10_STRUCTURALLY_INVALID_COLOR_SHIFT_PNG,
+                frameSet.scenarioDirectory(),
+                mediaDirectory,
+                List.of(path),
+                0
         );
     }
 
@@ -581,6 +698,15 @@ final class CaptureMediaCorpusFixtures {
     }
 
     /**
+     * Describes the local/private `heic2` evidence set without making it a committed release gate.
+     *
+     * @return metadata-only local evidence scenario
+     */
+    static PlannedCaptureMediaScenario mvp10LocalHeic2EvidenceScenario() {
+        return new PlannedCaptureMediaScenario(MVP10_LOCAL_HEIC2_EVIDENCE, "local_heic2_still_sequence", "external_private");
+    }
+
+    /**
      * Returns all scenario ids owned by the first corpus/fixture slice.
      *
      * @return stable scenario ids expected in `capture-media-corpus/manifest.tsv`
@@ -593,6 +719,11 @@ final class CaptureMediaCorpusFixtures {
                 GENERATED_CAMERA_LIKE_MONITOR_JPEG,
                 GENERATED_CAMERA_LIKE_MONITOR_INVALID_PAYLOAD_PNG,
                 GENERATED_SKEWED_BLURRED_MONITOR_PNG,
+                MVP10_SEPARABLE_COLOR_SHIFT_PNG,
+                MVP10_COMPRESSION_LIKE_JPEG,
+                MVP10_AMBIGUOUS_COLOR_PNG,
+                MVP10_FALSE_POSITIVE_COLOR_GRID_PNG,
+                MVP10_STRUCTURALLY_INVALID_COLOR_SHIFT_PNG,
                 DUPLICATE_FRAMES,
                 MISSING_UNIQUE_FRAMES,
                 NO_JAB_FRAME,
@@ -607,6 +738,7 @@ final class CaptureMediaCorpusFixtures {
                 UNSUPPORTED_HEIC_PLACEHOLDER,
                 CORRUPTED_UNREADABLE_IMAGE,
                 EXTERNAL_IPHONE_STILLS,
+                MVP10_LOCAL_HEIC2_EVIDENCE,
                 EXTRACTED_VIDEO_FRAMES,
                 EXTRACTED_VIDEO_QUALITY_MIX,
                 FUTURE_DIRECT_VIDEO
@@ -726,6 +858,35 @@ final class CaptureMediaCorpusFixtures {
             graphics.dispose();
         }
         return canvas;
+    }
+
+    private static BufferedImage compressionLikeImage(RenderedFrame frame) {
+        return boxBlurredImage(colorShiftedImage(frame, 24));
+    }
+
+    private static BufferedImage ambiguousColorImage(RenderedFrame frame) {
+        BufferedImage source = toImage(frame);
+        BufferedImage ambiguous = new BufferedImage(source.getWidth(), source.getHeight(), BufferedImage.TYPE_INT_ARGB);
+        for (int y = 0; y < source.getHeight(); y++) {
+            for (int x = 0; x < source.getWidth(); x++) {
+                ambiguous.setRGB(x, y, ambiguousColor(source.getRGB(x, y)));
+            }
+        }
+        return ambiguous;
+    }
+
+    private static int ambiguousColor(int argb) {
+        int red = (argb >>> 16) & 0xFF;
+        int green = (argb >>> 8) & 0xFF;
+        int blue = argb & 0xFF;
+        int luminance = (int) Math.round((0.2126d * red) + (0.7152d * green) + (0.0722d * blue));
+        if (luminance < 96) {
+            return 0xFF6A7078;
+        }
+        if (luminance > 184) {
+            return 0xFF828890;
+        }
+        return 0xFF767C84;
     }
 
     private static void clearTilePayloadInteriors(BufferedImage image) {
@@ -862,6 +1023,39 @@ final class CaptureMediaCorpusFixtures {
             }
             graphics.setColor(new Color(0xFFE4E9EE, true));
             graphics.fillRect(1330, 240, 96, 560);
+        } finally {
+            graphics.dispose();
+        }
+        return image;
+    }
+
+    private static BufferedImage falsePositiveColorGridImage() {
+        BufferedImage image = monitorCanvas();
+        Graphics2D graphics = image.createGraphics();
+        try {
+            int left = 260;
+            int top = 180;
+            int cellSize = 44;
+            int rows = 12;
+            int cols = 20;
+            int[] colors = {
+                    0xFF2563EB,
+                    0xFF16A34A,
+                    0xFFEAB308,
+                    0xFFDC2626
+            };
+            graphics.setColor(new Color(0xFF101820, true));
+            graphics.fillRect(left - 20, top - 20, (cols * cellSize) + 40, (rows * cellSize) + 40);
+            for (int row = 0; row < rows; row++) {
+                for (int col = 0; col < cols; col++) {
+                    graphics.setColor(new Color(colors[((row / 2) + col) % colors.length], true));
+                    graphics.fillRect(left + (col * cellSize), top + (row * cellSize), cellSize - 4, cellSize - 4);
+                }
+            }
+            graphics.setColor(new Color(0xFFE5E7EB, true));
+            graphics.fillRect(left + 64, top + (rows * cellSize) + 34, 760, 18);
+            graphics.setColor(new Color(0xFF94A3B8, true));
+            graphics.fillRect(left + 64, top + (rows * cellSize) + 70, 540, 18);
         } finally {
             graphics.dispose();
         }

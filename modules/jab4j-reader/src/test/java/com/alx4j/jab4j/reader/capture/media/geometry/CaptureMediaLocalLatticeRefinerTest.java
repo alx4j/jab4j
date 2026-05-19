@@ -28,6 +28,11 @@ import com.alx4j.jab4j.reader.capture.media.evidence.ModuleSampleStatus;
 import com.alx4j.jab4j.reader.capture.media.evidence.ModuleSamplingAggregationMethod;
 import com.alx4j.jab4j.reader.capture.media.evidence.ModuleSamplingEvidence;
 import com.alx4j.jab4j.reader.capture.media.evidence.ModuleSamplingStatus;
+import com.alx4j.jab4j.reader.capture.media.evidence.ObservedPaletteClassificationMode;
+import com.alx4j.jab4j.reader.capture.media.evidence.ObservedPaletteColorMethod;
+import com.alx4j.jab4j.reader.capture.media.evidence.ObservedPaletteEvidence;
+import com.alx4j.jab4j.reader.capture.media.evidence.ObservedPaletteSafetyDecision;
+import com.alx4j.jab4j.reader.capture.media.evidence.ObservedPaletteStatus;
 import com.alx4j.jab4j.reader.capture.media.evidence.ReprojectionMetrics;
 import com.alx4j.jab4j.reader.capture.media.evidence.SourcePoint;
 import com.alx4j.jab4j.reader.capture.media.evidence.SourcePolygon;
@@ -175,9 +180,10 @@ class CaptureMediaLocalLatticeRefinerTest {
                 module(1, 2),
                 module(2, 2)
         );
+        CaptureMediaCandidateId samplingId = CaptureMediaCandidateId.samplingCandidate(geometryCandidateId(), 50, 1);
         return new ModuleSamplingEvidence(
                 1,
-                CaptureMediaCandidateId.samplingCandidate(geometryCandidateId(), 50, 1),
+                samplingId,
                 ModuleSamplingStatus.SAMPLED,
                 geometryCandidateId().geometryCandidateId().orElseThrow(),
                 "test-layout",
@@ -197,9 +203,15 @@ class CaptureMediaLocalLatticeRefinerTest {
                 0,
                 Map.of("mean", 80.0d),
                 Map.of("mean", 0.0d),
+                Map.of("mean", 1.0d),
+                Map.of("mean", 1.0d),
+                0,
+                0,
+                observedPaletteEvidence(samplingId),
                 true,
                 1,
                 0,
+                List.of(),
                 List.of("TILE_DECODE"),
                 modules,
                 List.of()
@@ -217,9 +229,10 @@ class CaptureMediaLocalLatticeRefinerTest {
                 shiftedModule(10, 19),
                 shiftedModule(19, 19)
         );
+        CaptureMediaCandidateId samplingId = CaptureMediaCandidateId.samplingCandidate(geometryCandidateId(), 50, 1);
         return new ModuleSamplingEvidence(
                 1,
-                CaptureMediaCandidateId.samplingCandidate(geometryCandidateId(), 50, 1),
+                samplingId,
                 ModuleSamplingStatus.SAMPLED,
                 geometryCandidateId().geometryCandidateId().orElseThrow(),
                 "source-space-test-layout",
@@ -239,9 +252,15 @@ class CaptureMediaLocalLatticeRefinerTest {
                 0,
                 Map.of("mean", 80.0d),
                 Map.of("mean", 0.0d),
+                Map.of("mean", 1.0d),
+                Map.of("mean", 1.0d),
+                0,
+                0,
+                observedPaletteEvidence(samplingId),
                 false,
                 0,
                 0,
+                List.of(),
                 List.of(),
                 modules,
                 List.of()
@@ -255,6 +274,26 @@ class CaptureMediaLocalLatticeRefinerTest {
                 || metrics.get("readableModulesAfter") > metrics.get("readableModulesBefore")
                 || metrics.get("problemModulesAfter") < metrics.get("problemModulesBefore")
                 || metrics.get("samplingConfidenceAfter") >= metrics.get("samplingConfidenceBefore") + 1.0d;
+    }
+
+    private ObservedPaletteEvidence observedPaletteEvidence(CaptureMediaCandidateId samplingId) {
+        return new ObservedPaletteEvidence(
+                1,
+                samplingId,
+                ObservedPaletteStatus.FALLBACK_EXACT,
+                "exact-rendered-palette-v1",
+                ObservedPaletteColorMethod.SRGB_EUCLIDEAN_V1,
+                ObservedPaletteClassificationMode.EXACT,
+                0.0d,
+                0.0d,
+                Optional.empty(),
+                0.0d,
+                "mvp10-palette-thresholds-v1",
+                Optional.of("test fallback"),
+                ObservedPaletteSafetyDecision.FALLBACK_EXACT,
+                List.of(),
+                List.of(CaptureMediaEvidenceReasonCode.EXACT_PALETTE_FALLBACK_SELECTED)
+        );
     }
 
     private ModuleEvidence module(int x, int y) {
@@ -271,6 +310,16 @@ class CaptureMediaLocalLatticeRefinerTest {
                 1.0d,
                 11.0d,
                 10.0d,
+                1.0d,
+                1.0d,
+                100.0d,
+                100.0d,
+                10.0d,
+                1.0d,
+                0.0d,
+                ObservedPaletteColorMethod.SRGB_EUCLIDEAN_V1,
+                ObservedPaletteClassificationMode.EXACT,
+                "exact-rendered-palette-v1",
                 ModuleSampleStatus.READABLE,
                 List.of()
         );
@@ -290,6 +339,16 @@ class CaptureMediaLocalLatticeRefinerTest {
                 1.0d,
                 80.0d,
                 79.0d,
+                1.0d,
+                1.0d,
+                100.0d,
+                64.0d,
+                8.0d,
+                1.0d,
+                0.0d,
+                ObservedPaletteColorMethod.SRGB_EUCLIDEAN_V1,
+                ObservedPaletteClassificationMode.EXACT,
+                "exact-rendered-palette-v1",
                 ModuleSampleStatus.READABLE,
                 List.of()
         );

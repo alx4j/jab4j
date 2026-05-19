@@ -120,6 +120,48 @@ class CaptureMediaCorpusFixturesTest {
     }
 
     @Test
+    @DisplayName("Generated MVP-10 sampling and color fixtures create readable temporary media")
+    void generatedMvp10SamplingAndColorFixturesCreateReadableTemporaryMedia() throws Exception {
+        GeneratedCaptureMediaFixture colorShift = CaptureMediaCorpusFixtures.mvp10SeparableColorShiftPng(tempDir);
+        GeneratedCaptureMediaFixture compression = CaptureMediaCorpusFixtures.mvp10CompressionLikeJpeg(tempDir);
+        GeneratedCaptureMediaFixture ambiguous = CaptureMediaCorpusFixtures.mvp10AmbiguousColorPng(tempDir);
+        GeneratedCaptureMediaFixture falsePositive = CaptureMediaCorpusFixtures.mvp10FalsePositiveColorGridPng(tempDir);
+        GeneratedCaptureMediaFixture structurallyInvalid =
+                CaptureMediaCorpusFixtures.mvp10StructurallyInvalidColorShiftPng(tempDir);
+        PlannedCaptureMediaScenario localHeic2 = CaptureMediaCorpusFixtures.mvp10LocalHeic2EvidenceScenario();
+
+        assertAll(
+                () -> assertEquals(CaptureMediaCorpusFixtures.MVP10_SEPARABLE_COLOR_SHIFT_PNG,
+                        colorShift.scenarioId()),
+                () -> assertEquals(CaptureMediaCorpusFixtures.MVP10_COMPRESSION_LIKE_JPEG,
+                        compression.scenarioId()),
+                () -> assertEquals(CaptureMediaCorpusFixtures.MVP10_AMBIGUOUS_COLOR_PNG,
+                        ambiguous.scenarioId()),
+                () -> assertEquals(CaptureMediaCorpusFixtures.MVP10_FALSE_POSITIVE_COLOR_GRID_PNG,
+                        falsePositive.scenarioId()),
+                () -> assertEquals(CaptureMediaCorpusFixtures.MVP10_STRUCTURALLY_INVALID_COLOR_SHIFT_PNG,
+                        structurallyInvalid.scenarioId()),
+                () -> assertEquals(CaptureMediaCorpusFixtures.MVP10_LOCAL_HEIC2_EVIDENCE,
+                        localHeic2.scenarioId()),
+                () -> assertTrue(colorShift.mediaFiles().stream()
+                        .allMatch(path -> path.getFileName().toString().endsWith(".png"))),
+                () -> assertTrue(compression.mediaFiles().stream()
+                        .allMatch(path -> path.getFileName().toString().endsWith(".jpeg"))),
+                () -> assertNotNull(ImageIO.read(colorShift.mediaFiles().get(0).toFile())),
+                () -> assertNotNull(ImageIO.read(compression.mediaFiles().get(0).toFile())),
+                () -> assertNotNull(ImageIO.read(ambiguous.mediaFiles().get(0).toFile())),
+                () -> assertNotNull(ImageIO.read(falsePositive.mediaFiles().get(0).toFile())),
+                () -> assertNotNull(ImageIO.read(structurallyInvalid.mediaFiles().get(0).toFile())),
+                () -> assertEquals(colorShift.expectedUniqueFrameCount(), colorShift.mediaFiles().size()),
+                () -> assertEquals(compression.expectedUniqueFrameCount(), compression.mediaFiles().size()),
+                () -> assertEquals(0, ambiguous.expectedUniqueFrameCount()),
+                () -> assertEquals(0, falsePositive.expectedUniqueFrameCount()),
+                () -> assertEquals(0, structurallyInvalid.expectedUniqueFrameCount()),
+                () -> assertEquals("external_private", localHeic2.assetAvailability())
+        );
+    }
+
+    @Test
     @DisplayName("Generated video-frame scenarios model duplicates and missing unique frames")
     void generatedVideoFrameScenariosModelDuplicatesAndMissingUniqueFrames() throws Exception {
         GeneratedCaptureMediaFixture duplicate = CaptureMediaCorpusFixtures.duplicateFrames(tempDir);

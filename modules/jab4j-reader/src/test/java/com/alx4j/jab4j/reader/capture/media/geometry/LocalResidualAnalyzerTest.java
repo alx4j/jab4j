@@ -28,6 +28,11 @@ import com.alx4j.jab4j.reader.capture.media.evidence.ModuleSampleStatus;
 import com.alx4j.jab4j.reader.capture.media.evidence.ModuleSamplingAggregationMethod;
 import com.alx4j.jab4j.reader.capture.media.evidence.ModuleSamplingEvidence;
 import com.alx4j.jab4j.reader.capture.media.evidence.ModuleSamplingStatus;
+import com.alx4j.jab4j.reader.capture.media.evidence.ObservedPaletteClassificationMode;
+import com.alx4j.jab4j.reader.capture.media.evidence.ObservedPaletteColorMethod;
+import com.alx4j.jab4j.reader.capture.media.evidence.ObservedPaletteEvidence;
+import com.alx4j.jab4j.reader.capture.media.evidence.ObservedPaletteSafetyDecision;
+import com.alx4j.jab4j.reader.capture.media.evidence.ObservedPaletteStatus;
 import com.alx4j.jab4j.reader.capture.media.evidence.ReprojectionMetrics;
 import com.alx4j.jab4j.reader.capture.media.evidence.SourcePoint;
 import com.alx4j.jab4j.reader.capture.media.evidence.SourcePolygon;
@@ -274,9 +279,15 @@ class LocalResidualAnalyzerTest {
                 0,
                 Map.of(),
                 Map.of(),
+                Map.of(),
+                Map.of(),
+                0,
+                0,
+                observedPaletteEvidence(samplingCandidateId()),
                 false,
                 0,
                 0,
+                List.of(),
                 List.of(),
                 List.of(),
                 List.of(CaptureMediaEvidenceReasonCode.SOURCE_PIXELS_UNAVAILABLE)
@@ -324,9 +335,15 @@ class LocalResidualAnalyzerTest {
                 0,
                 Map.of("mean", 80.0d),
                 Map.of("mean", 0.0d),
+                Map.of("mean", 1.0d),
+                Map.of("mean", 1.0d),
+                ambiguous + unreadable,
+                0,
+                observedPaletteEvidence(samplingCandidateId()),
                 sampled,
                 sampled ? 1 : 0,
                 0,
+                List.of(),
                 sampled ? List.of("TILE_DECODE") : List.of(),
                 modules,
                 List.of()
@@ -354,8 +371,38 @@ class LocalResidualAnalyzerTest {
                 1.0d,
                 readable ? 80.0d : 50.0d,
                 readable ? 79.0d : 49.0d,
+                readable ? 1.0d : 0.5d,
+                1.0d,
+                100.0d,
+                64.0d,
+                8.0d,
+                1.0d,
+                0.0d,
+                ObservedPaletteColorMethod.SRGB_EUCLIDEAN_V1,
+                ObservedPaletteClassificationMode.EXACT,
+                "exact-rendered-palette-v1",
                 status,
                 reasonCodes
+        );
+    }
+
+    private ObservedPaletteEvidence observedPaletteEvidence(CaptureMediaCandidateId samplingId) {
+        return new ObservedPaletteEvidence(
+                1,
+                samplingId,
+                ObservedPaletteStatus.FALLBACK_EXACT,
+                "exact-rendered-palette-v1",
+                ObservedPaletteColorMethod.SRGB_EUCLIDEAN_V1,
+                ObservedPaletteClassificationMode.EXACT,
+                0.0d,
+                0.0d,
+                Optional.empty(),
+                0.0d,
+                "mvp10-palette-thresholds-v1",
+                Optional.of("test fallback"),
+                ObservedPaletteSafetyDecision.FALLBACK_EXACT,
+                List.of(),
+                List.of(CaptureMediaEvidenceReasonCode.EXACT_PALETTE_FALLBACK_SELECTED)
         );
     }
 

@@ -25,12 +25,14 @@ import com.alx4j.jab4j.reader.capture.media.evidence.GeometryCandidateEvidence;
 import com.alx4j.jab4j.reader.capture.media.evidence.GeometryFitEvidence;
 import com.alx4j.jab4j.reader.capture.media.evidence.GeometryFitStatus;
 import com.alx4j.jab4j.reader.capture.media.evidence.LocalRefinementEvidence;
+import com.alx4j.jab4j.reader.capture.media.evidence.ModuleEvidence;
 import com.alx4j.jab4j.reader.capture.media.evidence.ModuleSamplingEvidence;
 import com.alx4j.jab4j.reader.capture.media.evidence.ModuleSamplingStatus;
 import com.alx4j.jab4j.reader.capture.media.evidence.PatternEvidence;
 import com.alx4j.jab4j.reader.capture.media.evidence.PatternFeatureEvidence;
 import com.alx4j.jab4j.reader.capture.media.evidence.PatternFeatureType;
 import com.alx4j.jab4j.reader.capture.media.evidence.ReprojectionMetrics;
+import com.alx4j.jab4j.reader.capture.media.evidence.WeakTileEvidence;
 import com.alx4j.jab4j.reader.capture.media.geometry.CaptureMediaGeometryFitter;
 import com.alx4j.jab4j.reader.capture.media.geometry.CaptureMediaLocalLatticeRefiner;
 import com.alx4j.jab4j.reader.capture.media.geometry.CaptureMediaPatternEvidenceDetector;
@@ -602,6 +604,7 @@ public final class CaptureMediaCandidateDebugExporter {
         addSourceSamplingEvidence(lines, sourceSamplingEvidence, selectedSourceSamplingEvidence);
         addLocalRefinementEvidence(lines, localRefinementEvidence);
         addDownstreamSummary(lines, downstreamSummary);
+        addDuplicateCandidateComparison(lines, inspection, selectedSourceSamplingEvidence);
         addOverlayEvidenceCounts(
                 lines,
                 patternEvidence,
@@ -735,6 +738,18 @@ public final class CaptureMediaCandidateDebugExporter {
         addMetricSummary(lines, "sourceSampling.colorVariance", selectedEvidence.isPresent(), selectedEvidence
                 .map(ModuleSamplingEvidence::colorVarianceSummary)
                 .orElse(Map.of()));
+        addMetricSummary(lines, "moduleConfidence", selectedEvidence.isPresent(), selectedEvidence
+                .map(ModuleSamplingEvidence::moduleConfidenceSummary)
+                .orElse(Map.of()));
+        addMetricSummary(lines, "moduleFootprint", selectedEvidence.isPresent(), selectedEvidence
+                .map(ModuleSamplingEvidence::geometryFootprintQualitySummary)
+                .orElse(Map.of()));
+        lines.add("moduleConfidence.weakModuleCount="
+                + sourceSamplingInt(selectedEvidence, ModuleSamplingEvidence::weakModuleCount));
+        lines.add("moduleFootprint.poorFootprintModuleCount="
+                + sourceSamplingInt(selectedEvidence, ModuleSamplingEvidence::poorFootprintModuleCount));
+        addObservedPaletteEvidence(lines, selectedEvidence);
+        addWeakModuleEvidence(lines, selectedEvidence);
         lines.add("sourceSampling.tileDecodeAttempted=" + selectedEvidence
                 .map(evidence -> Boolean.toString(evidence.tileDecodeAttempted()))
                 .orElse(ModuleSamplingStatus.NOT_AVAILABLE.name()));
@@ -752,6 +767,189 @@ public final class CaptureMediaCandidateDebugExporter {
         lines.add("sourceSampling.moduleDetailCount=0");
     }
 
+    private void addObservedPaletteEvidence(
+            List<String> lines,
+            Optional<ModuleSamplingEvidence> selectedEvidence
+    ) {
+        if (selectedEvidence.isEmpty()) {
+            lines.add("palette.observed.status=" + ModuleSamplingStatus.NOT_AVAILABLE);
+            lines.add("palette.observed.colorMethod=" + ModuleSamplingStatus.NOT_AVAILABLE);
+            lines.add("palette.observed.classificationMode=" + ModuleSamplingStatus.NOT_AVAILABLE);
+            lines.add("palette.safety.decision=" + ModuleSamplingStatus.NOT_AVAILABLE);
+            lines.add("classification.colorMethod=" + ModuleSamplingStatus.NOT_AVAILABLE);
+            lines.add("classification.mode=" + ModuleSamplingStatus.NOT_AVAILABLE);
+            lines.add("classification.paletteModelSource=" + ModuleSamplingStatus.NOT_AVAILABLE);
+            lines.add("palette.observed.colorCount=0");
+            return;
+        }
+        ModuleSamplingEvidence evidence = selectedEvidence.orElseThrow();
+        var palette = evidence.observedPaletteEvidence();
+        lines.add("palette.observed.status=" + palette.status());
+        lines.add("palette.observed.source=" + palette.paletteSource());
+        lines.add("palette.observed.colorMethod=" + palette.colorMethod());
+        lines.add("palette.observed.classificationMode=" + palette.classificationMode());
+        lines.add("classification.colorMethod=" + palette.colorMethod());
+        lines.add("classification.mode=" + palette.classificationMode());
+        lines.add("classification.paletteModelSource=" + selectedPaletteModelSource(evidence));
+        lines.add("palette.observed.coverageRatio=" + palette.observedCoverageRatio());
+        lines.add("palette.observed.separationScore=" + palette.separationScore());
+        lines.add("palette.observed.weakestPalettePair=" + palette.weakestPalettePair().orElse(""));
+        lines.add("palette.observed.minimumConfidence=" + palette.minimumConfidence());
+        lines.add("palette.observed.thresholdVersion=" + palette.thresholdVersion());
+        lines.add("palette.observed.fallbackReason=" + palette.fallbackReason().orElse(""));
+        lines.add("palette.safety.decision=" + palette.safetyDecision());
+        lines.add("palette.safety.reasonCodes=" + reasonCodes(palette.reasonCodes()));
+        lines.add("palette.observed.colorCount=" + palette.colors().size());
+        int colorLimit = Math.min(8, palette.colors().size());
+        for (int index = 0; index < colorLimit; index++) {
+            var color = palette.colors().get(index);
+            String prefix = "palette.observed.color." + index;
+            lines.add(prefix + ".paletteIndex=" + color.paletteIndex());
+            lines.add(prefix + ".sampleCount=" + color.sampleCount());
+            lines.add(prefix + ".centerSource=" + color.centerSource());
+            lines.add(prefix + ".confidence=" + color.confidence());
+            lines.add(prefix + ".maximumDistanceToCentroid=" + color.maximumDistanceToCentroid());
+            lines.add(prefix + ".maximumDistanceToExpected=" + color.maximumDistanceToExpected());
+        }
+    }
+
+    private String selectedPaletteModelSource(ModuleSamplingEvidence evidence) {
+        return evidence.modules()
+                .stream()
+                .map(ModuleEvidence::paletteModelSource)
+                .filter(value -> !value.isBlank())
+                .findFirst()
+                .orElse(evidence.observedPaletteEvidence().paletteSource());
+    }
+
+    private void addWeakModuleEvidence(
+            List<String> lines,
+            Optional<ModuleSamplingEvidence> selectedEvidence
+    ) {
+        if (selectedEvidence.isEmpty()) {
+            lines.add("weakModule.included=false");
+            lines.add("weakModule.count=0");
+            addWeakTileEvidence(lines, selectedEvidence);
+            addFrameBlockerEvidence(lines, selectedEvidence);
+            return;
+        }
+        List<ModuleEvidence> weakModules = selectedEvidence.orElseThrow().modules().stream()
+                .filter(this::weakModule)
+                .sorted(this::compareWeakModules)
+                .limit(20)
+                .toList();
+        lines.add("weakModule.included=true");
+        lines.add("weakModule.count=" + weakModules.size());
+        for (int index = 0; index < weakModules.size(); index++) {
+            ModuleEvidence module = weakModules.get(index);
+            String prefix = "weakModule." + index;
+            lines.add(prefix + ".moduleX=" + module.moduleX());
+            lines.add(prefix + ".moduleY=" + module.moduleY());
+            lines.add(prefix + ".status=" + module.status());
+            lines.add(prefix + ".moduleConfidence=" + module.moduleConfidence());
+            lines.add(prefix + ".geometryFootprintQuality=" + module.geometryFootprintQuality());
+            lines.add(prefix + ".sourceFootprintAreaPx=" + module.sourceFootprintAreaPx());
+            lines.add(prefix + ".innerFootprintAreaPx=" + module.innerFootprintAreaPx());
+            lines.add(prefix + ".minimumFootprintEdgePx=" + module.minimumFootprintEdgePx());
+            lines.add(prefix + ".clippedFraction=" + module.clippedFraction());
+            lines.add(prefix + ".confidenceMargin=" + module.confidenceMargin());
+            lines.add(prefix + ".colorVariance=" + module.colorVariance());
+            lines.add(prefix + ".reasonCodes=" + reasonCodes(module.reasonCodes()));
+        }
+        addWeakTileEvidence(lines, selectedEvidence);
+        addFrameBlockerEvidence(lines, selectedEvidence);
+    }
+
+    private void addWeakTileEvidence(
+            List<String> lines,
+            Optional<ModuleSamplingEvidence> selectedEvidence
+    ) {
+        if (selectedEvidence.isEmpty()) {
+            lines.add("weakTile.included=false");
+            lines.add("weakTile.totalTileRegionCount=0");
+            lines.add("weakTile.count=0");
+            return;
+        }
+        List<WeakTileEvidence> weakTiles = selectedEvidence.orElseThrow().weakTileEvidence()
+                .stream()
+                .sorted(this::compareWeakTiles)
+                .limit(5)
+                .toList();
+        lines.add("weakTile.included=true");
+        lines.add("weakTile.totalTileRegionCount=" + selectedEvidence.orElseThrow().weakTileEvidence().size());
+        lines.add("weakTile.count=" + weakTiles.size());
+        for (int index = 0; index < weakTiles.size(); index++) {
+            WeakTileEvidence tile = weakTiles.get(index);
+            String prefix = "weakTile." + index;
+            lines.add(prefix + ".tileIndex=" + tile.tileIndex());
+            lines.add(prefix + ".moduleStartX=" + tile.moduleStartX());
+            lines.add(prefix + ".moduleStartY=" + tile.moduleStartY());
+            lines.add(prefix + ".moduleWidth=" + tile.moduleWidth());
+            lines.add(prefix + ".moduleHeight=" + tile.moduleHeight());
+            lines.add(prefix + ".weakModuleCount=" + tile.weakModuleCount());
+            lines.add(prefix + ".weakModuleDensity=" + tile.weakModuleDensity());
+            lines.add(prefix + ".poorFootprintModuleCount=" + tile.poorFootprintModuleCount());
+            lines.add(prefix + ".minimumModuleConfidence=" + tile.minimumModuleConfidence());
+            lines.add(prefix + ".minimumGeometryFootprintQuality=" + tile.minimumGeometryFootprintQuality());
+            lines.add(prefix + ".tileDecodeAttempted=" + tile.tileDecodeAttempted());
+            lines.add(prefix + ".acceptedPayload=" + tile.acceptedPayload());
+            lines.add(prefix + ".failureStages=" + textList(tile.failureStages()));
+            lines.add(prefix + ".reasonCodes=" + reasonCodes(tile.reasonCodes()));
+        }
+    }
+
+    private int compareWeakTiles(WeakTileEvidence first, WeakTileEvidence second) {
+        int accepted = Boolean.compare(first.acceptedPayload(), second.acceptedPayload());
+        if (accepted != 0) {
+            return accepted;
+        }
+        int density = Double.compare(second.weakModuleDensity(), first.weakModuleDensity());
+        if (density != 0) {
+            return density;
+        }
+        int weakCount = Integer.compare(second.weakModuleCount(), first.weakModuleCount());
+        return weakCount != 0 ? weakCount : Integer.compare(first.tileIndex(), second.tileIndex());
+    }
+
+    private void addFrameBlockerEvidence(
+            List<String> lines,
+            Optional<ModuleSamplingEvidence> selectedEvidence
+    ) {
+        if (selectedEvidence.isEmpty()) {
+            lines.add("frameBlocker.stage=NO_SOURCE_SPACE_SAMPLING");
+            lines.add("frameBlocker.paletteSafetyStatus=" + ModuleSamplingStatus.NOT_AVAILABLE);
+            lines.add("frameBlocker.weakModuleCount=0");
+            lines.add("frameBlocker.poorFootprintModuleCount=0");
+            lines.add("frameBlocker.weakTileCount=0");
+            return;
+        }
+        ModuleSamplingEvidence evidence = selectedEvidence.orElseThrow();
+        String stage;
+        if (evidence.acceptedPayloadCount() > 0) {
+            stage = "VALIDATED_TILE_AVAILABLE";
+        } else if (evidence.tileDecodeAttempted()) {
+            stage = evidence.tileDecodeFailureStages().isEmpty()
+                    ? "TILE_DECODE"
+                    : String.join(",", evidence.tileDecodeFailureStages());
+        } else if (evidence.observedPaletteEvidence().safetyDecision().name().contains("UNSAFE")
+                || evidence.observedPaletteEvidence().safetyDecision().name().contains("WITHHELD")) {
+            stage = "PALETTE_SAFETY";
+        } else if (evidence.weakModuleCount() > 0) {
+            stage = "MODULE_CONFIDENCE_OR_GEOMETRY";
+        } else {
+            stage = "NO_PLAUSIBLE_TILE";
+        }
+        long weakTileCount = evidence.weakTileEvidence()
+                .stream()
+                .filter(tile -> tile.weakModuleCount() > 0 || !tile.acceptedPayload())
+                .count();
+        lines.add("frameBlocker.stage=" + stage);
+        lines.add("frameBlocker.paletteSafetyStatus=" + evidence.observedPaletteEvidence().status());
+        lines.add("frameBlocker.weakModuleCount=" + evidence.weakModuleCount());
+        lines.add("frameBlocker.poorFootprintModuleCount=" + evidence.poorFootprintModuleCount());
+        lines.add("frameBlocker.weakTileCount=" + weakTileCount);
+    }
+
     private void addDownstreamSummary(List<String> lines, DownstreamSummary summary) {
         lines.add("downstream.summary=" + summary.summary());
         lines.add("downstream.restoreEligible=" + summary.restoreEligible());
@@ -767,6 +965,89 @@ public final class CaptureMediaCandidateDebugExporter {
                 + summary.sourceSamplingValidatedTileCount());
         lines.add("downstream.failureStage=" + summary.failureStage());
         lines.add("downstream.sourceSamplingFailureStages=" + summary.sourceSamplingFailureStages());
+    }
+
+    private void addDuplicateCandidateComparison(
+            List<String> lines,
+            FrameInspection inspection,
+            Optional<ModuleSamplingEvidence> selectedSourceSamplingEvidence
+    ) {
+        Map<String, List<DecodedCandidateSummary>> acceptedByIdentity = new LinkedHashMap<>();
+        for (SlotInspection slot : inspection.slots()) {
+            for (CandidateInspection candidate : slot.candidates()) {
+                if (candidate.decodeStatus() != DecodeInspectionStatus.ACCEPTED_PAYLOAD) {
+                    continue;
+                }
+                DecodedCandidateSummary summary = decodedCandidateSummary(slot, candidate);
+                acceptedByIdentity.computeIfAbsent(summary.identity(), ignored -> new ArrayList<>()).add(summary);
+            }
+        }
+        List<Map.Entry<String, List<DecodedCandidateSummary>>> duplicateGroups = acceptedByIdentity.entrySet()
+                .stream()
+                .filter(entry -> entry.getValue().size() > 1)
+                .limit(5)
+                .toList();
+        lines.add("duplicateCandidate.included=true");
+        lines.add("duplicateCandidate.groupCount=" + duplicateGroups.size());
+        lines.add("duplicateCandidate.acceptedCandidateCount=" + acceptedByIdentity.values()
+                .stream()
+                .mapToInt(List::size)
+                .sum());
+        lines.add("duplicateCandidate.sourceSamplingAcceptedPayloadCount=" + selectedSourceSamplingEvidence
+                .map(ModuleSamplingEvidence::acceptedPayloadCount)
+                .orElse(0));
+        for (int groupIndex = 0; groupIndex < duplicateGroups.size(); groupIndex++) {
+            Map.Entry<String, List<DecodedCandidateSummary>> group = duplicateGroups.get(groupIndex);
+            String groupPrefix = "duplicateCandidate.group." + groupIndex;
+            lines.add(groupPrefix + ".identity=" + group.getKey());
+            lines.add(groupPrefix + ".candidateCount=" + group.getValue().size());
+            lines.add(groupPrefix + ".equivalentContent=true");
+            int candidateLimit = Math.min(4, group.getValue().size());
+            for (int candidateIndex = 0; candidateIndex < candidateLimit; candidateIndex++) {
+                DecodedCandidateSummary candidate = group.getValue().get(candidateIndex);
+                String prefix = groupPrefix + ".candidate." + candidateIndex;
+                lines.add(prefix + ".slotIndex=" + candidate.slotIndex());
+                lines.add(prefix + ".sideVersion=" + candidate.sideVersion());
+                lines.add(prefix + ".moduleConfidence=" + candidate.moduleConfidence());
+                lines.add(prefix + ".paletteMinimumConfidence=" + candidate.paletteMinimumConfidence());
+                lines.add(prefix + ".moduleOffsetXPx=" + candidate.moduleOffsetXPx());
+                lines.add(prefix + ".moduleOffsetYPx=" + candidate.moduleOffsetYPx());
+                lines.add(prefix + ".classificationSource=normalized-sampler");
+            }
+        }
+    }
+
+    private DecodedCandidateSummary decodedCandidateSummary(SlotInspection slot, CandidateInspection candidate) {
+        String layoutProfileId = candidate.decodedPayloadLayoutProfileId()
+                .or(() -> optionalDiagnostic(candidate.decodeDiagnostics(), "decodedPayload.layoutProfileId"))
+                .orElse("");
+        String tileIndex = optionalDiagnostic(candidate.decodeDiagnostics(), "decodedPayload.tileIndex")
+                .orElse(Integer.toString(slot.tileIndex()));
+        String totalTiles = optionalDiagnostic(candidate.decodeDiagnostics(), "decodedPayload.totalTiles").orElse("");
+        String identity = "layoutProfileId:" + layoutProfileId
+                + ",tileIndex:" + tileIndex
+                + ",totalTiles:" + totalTiles;
+        double paletteMinimumConfidence = candidate.paletteConfidence()
+                .map(PaletteConfidenceSummary::minimumConfidence)
+                .orElse(0.0d);
+        double moduleConfidence = Math.min(
+                paletteMinimumConfidence,
+                candidate.selectedPhase().paletteCalibrationConfidence()
+        );
+        return new DecodedCandidateSummary(
+                identity,
+                slot.tileIndex(),
+                candidate.sideVersion(),
+                moduleConfidence,
+                paletteMinimumConfidence,
+                candidate.moduleCenterOffsetXPx(),
+                candidate.moduleCenterOffsetYPx()
+        );
+    }
+
+    private Optional<String> optionalDiagnostic(Map<String, String> diagnostics, String key) {
+        String value = diagnostics.get(key);
+        return value == null || value.isBlank() ? Optional.empty() : Optional.of(value);
     }
 
     private void addOverlayEvidenceCounts(
@@ -981,6 +1262,46 @@ public final class CaptureMediaCandidateDebugExporter {
         return evidence
                 .map(value -> Integer.toString(extractor.applyAsInt(value)))
                 .orElse(ModuleSamplingStatus.NOT_AVAILABLE.name());
+    }
+
+    private boolean weakModule(ModuleEvidence module) {
+        return module.status().name().equals("OUT_OF_BOUNDS")
+                || module.status().name().equals("CLIPPED")
+                || module.status().name().equals("UNREADABLE")
+                || module.status().name().equals("AMBIGUOUS")
+                || module.moduleConfidence() < 0.20d
+                || module.geometryFootprintQuality() < 0.25d;
+    }
+
+    private int compareWeakModules(ModuleEvidence first, ModuleEvidence second) {
+        int status = Integer.compare(weakStatusRank(first), weakStatusRank(second));
+        if (status != 0) {
+            return status;
+        }
+        int confidence = Double.compare(first.moduleConfidence(), second.moduleConfidence());
+        if (confidence != 0) {
+            return confidence;
+        }
+        int footprint = Double.compare(first.geometryFootprintQuality(), second.geometryFootprintQuality());
+        if (footprint != 0) {
+            return footprint;
+        }
+        int variance = Double.compare(second.colorVariance(), first.colorVariance());
+        if (variance != 0) {
+            return variance;
+        }
+        int y = Integer.compare(first.moduleY(), second.moduleY());
+        return y != 0 ? y : Integer.compare(first.moduleX(), second.moduleX());
+    }
+
+    private int weakStatusRank(ModuleEvidence module) {
+        return switch (module.status()) {
+            case OUT_OF_BOUNDS -> 0;
+            case CLIPPED -> 1;
+            case UNREADABLE -> 2;
+            case AMBIGUOUS -> 3;
+            case READABLE -> 4;
+        };
     }
 
     private void addMetricSummary(
@@ -1768,6 +2089,33 @@ public final class CaptureMediaCandidateDebugExporter {
             }
             Objects.requireNonNull(failureStage, "failureStage must not be null");
             Objects.requireNonNull(sourceSamplingFailureStages, "sourceSamplingFailureStages must not be null");
+        }
+    }
+
+    private record DecodedCandidateSummary(
+            String identity,
+            int slotIndex,
+            int sideVersion,
+            double moduleConfidence,
+            double paletteMinimumConfidence,
+            int moduleOffsetXPx,
+            int moduleOffsetYPx
+    ) {
+        private DecodedCandidateSummary {
+            if (identity == null || identity.isBlank()) {
+                throw new IllegalArgumentException("identity must not be blank");
+            }
+            if (slotIndex < 0 || sideVersion < 0) {
+                throw new IllegalArgumentException("decoded candidate indexes must be non-negative");
+            }
+            if (!Double.isFinite(moduleConfidence)
+                    || moduleConfidence < 0.0d
+                    || moduleConfidence > 1.0d
+                    || !Double.isFinite(paletteMinimumConfidence)
+                    || paletteMinimumConfidence < 0.0d
+                    || paletteMinimumConfidence > 1.0d) {
+                throw new IllegalArgumentException("decoded candidate confidence values must be unit scores");
+            }
         }
     }
 }
